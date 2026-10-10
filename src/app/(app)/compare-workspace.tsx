@@ -39,7 +39,7 @@ function StepTitle({ n, children, done }: { n: number; children: React.ReactNode
 }
 
 export function CompareWorkspace() {
-  const { settings } = useSettings();
+  const { settings, spira } = useSettings();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [loaded, setLoaded] = useState<LoadedWorkbook | null>(null);
@@ -153,7 +153,6 @@ export function CompareWorkspace() {
         projectId: settings.projectId,
         releaseId: settings.releaseId,
         releaseLabel: settings.releaseLabel,
-        mock: settings.mockMode,
         source: { fileName: loaded.fileName, inScopeSheet, needsConfirmationSheet: needsSheet || null },
         rows: matchedRows,
         testSetIds: ids,
@@ -178,7 +177,8 @@ export function CompareWorkspace() {
   const ids = Object.keys(statuses).map(Number);
   const allOk = ids.length > 0 && ids.every((id) => statuses[id] === "ok");
   const anyRunning = ids.some((id) => statuses[id] === "running" || statuses[id] === "pending");
-  const canCompare = !!rows && !!module && selected.size > 0 && matchedRows.length > 0 && !locked;
+  const canCompare =
+    !!rows && !!module && selected.size > 0 && matchedRows.length > 0 && !locked && spira?.configured === true;
 
   return (
     <div className="flex flex-col gap-6">
@@ -187,9 +187,9 @@ export function CompareWorkspace() {
         description="Upload the release scope workbook, pick a module, and compare it with that module’s test sets. Nothing in Spira changes until you review and apply."
       />
 
-      {settings?.mockMode && (
-        <Notice tone="warning" title="Mock mode is on">
-          Comparisons use simulated Spira data. Turn it off in Settings to use n8n.
+      {spira && !spira.configured && (
+        <Notice tone="warning" title="Spira is not connected">
+          {spira.problems.join(" ")} Ask an admin to set these on the server, then reload.
         </Notice>
       )}
 

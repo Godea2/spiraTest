@@ -9,7 +9,6 @@ import {
 import type {
   ApplyActionResult,
   Draft,
-  MockState,
   PreflightResult,
   TestSetComparison,
   TestSetMapping,
@@ -19,7 +18,6 @@ import type {
 import { logActivity } from "./activity";
 import { api } from "./api";
 import { getDraft, mutateDraft } from "./drafts";
-import { loadMockState, saveMockState } from "./mock-state";
 
 // The server is stateless: each call carries the board it acts on and the draft
 // in this browser is updated with the result.
@@ -28,11 +26,7 @@ const contextOf = (draft: Draft): WorkflowContext => ({
   projectId: draft.projectId,
   releaseId: draft.releaseId,
   module: draft.module,
-  mock: draft.mock,
 });
-
-const mockStateFor = (draft: Draft): { mockState?: MockState } => (draft.mock ? { mockState: loadMockState() } : {});
-const modeNote = (draft: Draft) => (draft.mock ? " (Mock mode)" : "");
 
 /** Compares one test set and stores the result in the draft, preserving manual decisions. */
 export async function compareTestSet(
@@ -55,7 +49,6 @@ export async function compareTestSet(
         context: contextOf(draft),
         testSet: { testSetId, testSetName: mapping.testSetName, platform: mapping.platform },
         rows: draft.rows,
-        ...mockStateFor(draft),
       },
     }));
   } catch (error) {
@@ -66,7 +59,7 @@ export async function compareTestSet(
       message: `Comparison failed for test set ${testSetId}: ${message}`,
       draftId,
       module: draft.module,
-      details: { testSetId, mock: draft.mock },
+      details: { testSetId },
     });
     throw error;
   }
@@ -74,10 +67,10 @@ export async function compareTestSet(
   const updated = mutateDraft(draftId, (d) => recordComparison(d, comparison));
   logActivity({
     type: "compare.succeeded",
-    message: `Compared ${comparison.testSetName} (${comparison.cards.length} cards)${modeNote(draft)}.`,
+    message: `Compared ${comparison.testSetName} (${comparison.cards.length} cards).`,
     draftId,
     module: draft.module,
-    details: { testSetId, cards: comparison.cards.length, mock: draft.mock },
+    details: { testSetId, cards: comparison.cards.length },
   });
   return updated;
 }
@@ -88,11 +81,9 @@ export async function runPreflight(draftId: string): Promise<{ draft: Draft; pre
     method: "POST",
     body: {
       context: contextOf(draft),
-      rows: draft.rows,
       testSets: draft.testSets,
       decisions: draft.decisions,
       removed: draft.apply.removed,
-      ...mockStateFor(draft),
     },
   });
   const updated = mutateDraft(draftId, (d) => recordPreflight(d, preflight));
@@ -121,7 +112,7 @@ export async function applyBatch(
   batch: ApplyBatchInput,
 ): Promise<{ draft: Draft; results: ApplyActionResult[] }> {
   const draft = getDraft(draftId);
-  const out = await api<{ results: ApplyActionResult[]; mockState?: MockState }>("/api/workflow/apply", {
+  const { results } = await api<{ results: ApplyActionResult[] }>("/api/workflow/apply", {
     method: "POST",
     body: {
       context: contextOf(draft),
@@ -130,26 +121,23 @@ export async function applyBatch(
       removed: draft.apply.removed,
       preflight: draft.apply.preflight,
       batch,
-      ...mockStateFor(draft),
     },
   });
-  if (draft.mock && out.mockState) saveMockState(out.mockState);
-  const updated = mutateDraft(draftId, (d) => recordApplyResults(d, batch, out.results));
+  const updated = mutateDraft(draftId, (d) => recordApplyResults(d, batch, results));
 
-  const failed = out.results.filter((r) => r.status === "failed");
+  const failed = results.filter((r) => r.status === "failed");
   logActivity({
     type: batch.dryRun ? "apply.dryRun" : failed.length ? "apply.batchWithErrors" : "apply.batch",
-    message: `${batch.dryRun ? "Dry run" : "Live apply"} for test set ${batch.testSetId}: ${out.results.length - failed.length} ok, ${failed.length} failed${modeNote(draft)}.`,
+    message: `${batch.dryRun ? "Dry run" : "Live apply"} for test set ${batch.testSetId}: ${results.length - failed.length} ok, ${failed.length} failed.`,
     draftId,
     module: draft.module,
     details: {
       testSetId: batch.testSetId,
       dryRun: batch.dryRun,
-      mock: draft.mock,
       failed: failed.map((r) => r.testSetTestCaseId),
     },
   });
-  return { draft: updated, results: out.results };
+  return { draft: updated, results };
 }
 
 export async function verifyApply(draftId: string): Promise<{ draft: Draft; verification: VerificationResult }> {
@@ -159,10 +147,8 @@ export async function verifyApply(draftId: string): Promise<{ draft: Draft; veri
     method: "POST",
     body: {
       context: contextOf(draft),
-      rows: draft.rows,
       testSets: draft.testSets,
       decisions: draft.decisions,
-      ...mockStateFor(draft),
     },
   });
   const updated = mutateDraft(draftId, (d) => recordVerification(d, verification));

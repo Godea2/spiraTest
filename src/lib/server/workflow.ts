@@ -1,10 +1,11 @@
 import "server-only";
 import { validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
 import { allCards, diffMembership, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
+import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
+  ApplyAction,
   ApplyActionResult,
   Column,
-  MockState,
   Platform,
   PreflightResult,
   TestSetComparison,
@@ -12,13 +13,14 @@ import type {
   WorkbookRow,
   WorkflowContext,
 } from "@/lib/domain/types";
-import type { EndpointOverrides } from "./endpoint-overrides";
-import { emptyMockState, mockApply, mockReconcile, type ReconcileOutput } from "./mock";
-import { AutomationError, n8nApply, n8nReconcile } from "./n8n";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
+import { getMembership, getTestSet, getTestSetCases, removeFromTestSet, SpiraError } from "./spira";
 
 // Stateless: every request carries the board it acts on. Anything that decides what
 // may be removed is checked against the server's own signatures before it is used.
+
+/** Parallel Spira removals per batch; keeps a 25-case batch well inside the function time limit. */
+const REMOVE_CONCURRENCY = 5;
 
 export interface TestSetRef {
   testSetId: number;
@@ -26,24 +28,7 @@ export interface TestSetRef {
   platform: Platform;
 }
 
-async function reconcileOnce(
-  ctx: WorkflowContext,
-  set: TestSetRef,
-  rows: WorkbookRow[],
-  mockState: MockState,
-  overrides: EndpointOverrides,
-): Promise<ReconcileOutput> {
-  if (ctx.mock) return mockReconcile(mockState, set.testSetId, ctx.module);
-  return n8nReconcile(overrides.reconcileUrl, {
-    projectId: ctx.projectId,
-    releaseId: ctx.releaseId,
-    module: ctx.module,
-    testSetId: set.testSetId,
-    testSetName: set.testSetName,
-    platform: set.platform,
-    rows,
-  });
-}
+const errorText = (error: unknown) => (error instanceof Error ? error.message : "Spira request failed.");
 
 /** Verified comparisons plus decisions reduced to genuine overrides of those cards. */
 function verifiedBoard(ctx: WorkflowContext, testSets: TestSetComparison[], decisions: Record<string, Column>) {
@@ -51,36 +36,36 @@ function verifiedBoard(ctx: WorkflowContext, testSets: TestSetComparison[], deci
   return { sets, decisions: normalizeDecisions(allCards(sets), decisions) };
 }
 
-export async function reconcileTestSet(
-  input: { context: WorkflowContext; testSet: TestSetRef; rows: WorkbookRow[]; mockState?: MockState },
-  overrides: EndpointOverrides,
-): Promise<{ comparison: TestSetComparison }> {
+export async function reconcileTestSet(input: {
+  context: WorkflowContext;
+  testSet: TestSetRef;
+  rows: WorkbookRow[];
+}): Promise<{ comparison: TestSetComparison }> {
   const { context: ctx, testSet } = input;
-  const output = await reconcileOnce(ctx, testSet, input.rows, input.mockState ?? emptyMockState(), overrides);
+  const [spiraSet, cases] = await Promise.all([
+    getTestSet(ctx.projectId, testSet.testSetId),
+    getTestSetCases(ctx.projectId, testSet.testSetId),
+  ]);
+  const output = matchTestSet(testSet.testSetId, input.rows, cases);
   const comparison = sealComparison(ctx, {
     testSetId: testSet.testSetId,
-    testSetName: testSet.testSetName,
+    testSetName: spiraSet.name || testSet.testSetName,
     platform: testSet.platform,
     comparedAt: new Date().toISOString(),
     cards: output.cards,
     missingFromSpira: output.missingFromSpira,
-    baselineMembership: [...output.membership].sort((a, b) => a - b),
+    baselineMembership: output.membership,
   });
   return { comparison };
 }
 
-/** Freshly reconciles every set and checks membership still matches the reviewed baseline. */
-export async function runPreflight(
-  input: {
-    context: WorkflowContext;
-    rows: WorkbookRow[];
-    testSets: TestSetComparison[];
-    decisions: Record<string, Column>;
-    removed: Record<string, number[]>;
-    mockState?: MockState;
-  },
-  overrides: EndpointOverrides,
-): Promise<{ preflight: PreflightResult }> {
+/** Reads every set's current membership and checks it still matches the reviewed baseline. */
+export async function runPreflight(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+  removed: Record<string, number[]>;
+}): Promise<{ preflight: PreflightResult }> {
   const ctx = input.context;
   const { sets: verified, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
   const sets = await Promise.all(
@@ -88,21 +73,11 @@ export async function runPreflight(
       const alreadyRemoved = new Set(input.removed[String(set.testSetId)] ?? []);
       const expected = set.baselineMembership.filter((id) => !alreadyRemoved.has(id));
       try {
-        const fresh = await reconcileOnce(ctx, set, input.rows, input.mockState ?? emptyMockState(), overrides);
-        const diff = diffMembership(expected, fresh.membership);
-        return {
-          testSetId: set.testSetId,
-          ok: diff.unexpected.length === 0 && diff.missing.length === 0,
-          ...diff,
-        };
+        const current = await getMembership(ctx.projectId, set.testSetId);
+        const diff = diffMembership(expected, [...current.keys()]);
+        return { testSetId: set.testSetId, ok: diff.unexpected.length === 0 && diff.missing.length === 0, ...diff };
       } catch (error) {
-        return {
-          testSetId: set.testSetId,
-          ok: false,
-          unexpected: [],
-          missing: [],
-          error: error instanceof Error ? error.message : "Reconciliation failed.",
-        };
+        return { testSetId: set.testSetId, ok: false, unexpected: [], missing: [], error: errorText(error) };
       }
     }),
   );
@@ -115,19 +90,32 @@ export async function runPreflight(
   return { preflight };
 }
 
-/** Remove-only, batched apply against a verified board. */
-export async function applyBatch(
-  input: {
-    context: WorkflowContext;
-    testSets: TestSetComparison[];
-    decisions: Record<string, Column>;
-    removed: Record<string, number[]>;
-    preflight: PreflightResult | null;
-    batch: ApplyBatchInput;
-    mockState?: MockState;
-  },
-  overrides: EndpointOverrides,
-): Promise<{ results: ApplyActionResult[]; mockState?: MockState }> {
+async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await run(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Remove-only, batched apply against a verified board. Membership is re-read from Spira
+ * first, and a case is only removed if that membership still points at the same test case.
+ * Dry runs make no changes.
+ */
+export async function applyBatch(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+  removed: Record<string, number[]>;
+  preflight: PreflightResult | null;
+  batch: ApplyBatchInput;
+}): Promise<{ results: ApplyActionResult[] }> {
   const ctx = input.context;
   const { batch } = input;
   const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
@@ -137,59 +125,55 @@ export async function applyBatch(
   );
 
   const alreadyRemoved = new Set(input.removed[String(batch.testSetId)] ?? []);
-  const skipped: ApplyActionResult[] = [];
-  const toSend = batch.actions.filter((action) => {
-    if (!batch.dryRun && alreadyRemoved.has(action.testSetTestCaseId)) {
-      skipped.push({ ...action, status: "skipped", message: "Already removed in an earlier run." });
-      return false;
-    }
-    return true;
+  const result = (action: ApplyAction, status: ApplyActionResult["status"], message: string | null = null) => ({
+    ...action,
+    status,
+    message,
   });
 
-  let sent: ApplyActionResult[] = [];
-  let mockState = input.mockState;
-  if (toSend.length > 0) {
-    if (ctx.mock) {
-      const out = mockApply(mockState ?? emptyMockState(), batch.testSetId, toSend, batch.dryRun);
-      sent = out.results;
-      mockState = out.state;
-    } else {
-      try {
-        sent = await n8nApply(overrides.applyUrl, {
-          projectId: ctx.projectId,
-          releaseId: ctx.releaseId,
-          testSetId: batch.testSetId,
-          dryRun: batch.dryRun,
-          actions: toSend,
-        });
-      } catch (error) {
-        if (!(error instanceof AutomationError)) throw error;
-        sent = toSend.map((action) => ({ ...action, status: "failed", message: error.message }));
-      }
-    }
+  let current: Map<number, number>;
+  try {
+    current = await getMembership(ctx.projectId, batch.testSetId);
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    return { results: batch.actions.map((action) => result(action, "failed", error.message)) };
   }
-  return { results: [...skipped, ...sent], ...(ctx.mock ? { mockState } : {}) };
+
+  const results = await inPool(batch.actions, REMOVE_CONCURRENCY, async (action): Promise<ApplyActionResult> => {
+    if (!batch.dryRun && alreadyRemoved.has(action.testSetTestCaseId)) {
+      return result(action, "skipped", "Already removed in an earlier run.");
+    }
+    const testCaseId = current.get(action.testSetTestCaseId);
+    if (testCaseId === undefined) return result(action, "skipped", "No longer in this test set in Spira.");
+    if (testCaseId !== action.testCaseId) {
+      return result(action, "failed", `This membership now points at test case ${testCaseId}. Recompare before applying.`);
+    }
+    if (batch.dryRun) return result(action, "wouldRemove");
+    try {
+      await removeFromTestSet(ctx.projectId, batch.testSetId, action.testSetTestCaseId);
+      return result(action, "removed");
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return result(action, "failed", error.message);
+    }
+  });
+  return { results };
 }
 
-/** Reconciles again after live apply and compares final membership with the intended membership. */
-export async function verifyApply(
-  input: {
-    context: WorkflowContext;
-    rows: WorkbookRow[];
-    testSets: TestSetComparison[];
-    decisions: Record<string, Column>;
-    mockState?: MockState;
-  },
-  overrides: EndpointOverrides,
-): Promise<{ verification: VerificationResult }> {
+/** Reads membership again after live apply and compares it with the intended membership. */
+export async function verifyApply(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+}): Promise<{ verification: VerificationResult }> {
   const ctx = input.context;
   const { sets: verified, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
   const sets = await Promise.all(
     verified.map(async (set) => {
       const intended = intendedMembership(set, decisions);
       try {
-        const fresh = await reconcileOnce(ctx, set, input.rows, input.mockState ?? emptyMockState(), overrides);
-        const diff = diffMembership(intended, fresh.membership);
+        const current = await getMembership(ctx.projectId, set.testSetId);
+        const diff = diffMembership(intended, [...current.keys()]);
         return {
           testSetId: set.testSetId,
           ok: diff.unexpected.length === 0 && diff.missing.length === 0,
@@ -197,13 +181,7 @@ export async function verifyApply(
           unexpectedlyRemoved: diff.missing,
         };
       } catch (error) {
-        return {
-          testSetId: set.testSetId,
-          ok: false,
-          stillPresent: [],
-          unexpectedlyRemoved: [],
-          error: error instanceof Error ? error.message : "Reconciliation failed.",
-        };
+        return { testSetId: set.testSetId, ok: false, stillPresent: [], unexpectedlyRemoved: [], error: errorText(error) };
       }
     }),
   );

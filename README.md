@@ -1,79 +1,65 @@
 # Spira Test Set Reconciler
 
-Compare a release-scope workbook with Spira test set membership, decide which cases stay, and remove the rest through n8n. The browser only talks to this app; the server calls n8n with a shared secret, and n8n calls Spira.
+Compare a release-scope workbook with Spira test set membership, decide which cases stay, and remove the rest from their test sets. The browser only talks to this app; the app's server calls the Spira REST API (v7.0) with credentials held in its environment.
 
 Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
 
 ## Setup
 
 1. `npm install`
-2. Copy `.env.example` to `.env.local` and fill in the secrets:
+2. Copy `.env.example` to `.env.local` and fill in the values:
 
    | Name | Purpose |
    | --- | --- |
    | `APP_PASSWORD` | Team password for the sign-in page |
    | `SESSION_SECRET` | At least 16 characters; signs the session cookie and comparisons |
-   | `WEBHOOK_SECRET` | Sent to n8n as the `X-Webhook-Secret` header |
-   | `RECONCILE_WEBHOOK_URL` | Fallback Reconcile webhook (optional) |
-   | `APPLY_WEBHOOK_URL` | Fallback Apply webhook (optional) |
+   | `SPIRA_BASE_URL` | Spira site URL, e.g. `https://yourcompany.spiraservice.net` |
+   | `SPIRA_USERNAME` | Spira user the server acts as |
+   | `SPIRA_API_KEY` | That user's API key (RSS token), including the `{ }` braces |
 
-   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. n8n calls are refused until `WEBHOOK_SECRET` is set.
+   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set; **Settings → Test connection** checks them with read-only calls.
 
 3. `npm run dev` and open http://localhost:3004.
 
+Use a dedicated Spira service account with access to the project and permission to edit its test sets. The API key is sent as a request header, never in the URL, and is never returned to the browser.
+
+## How it works with Spira
+
+| Step | Spira calls |
+| --- | --- |
+| Compare | `GET projects/{p}/test-sets/{t}`, `…/test-case-mapping` and `…/test-cases` (read only) |
+| Membership check | `GET …/test-case-mapping` |
+| Dry run | `GET …/test-case-mapping`; nothing is changed |
+| Live apply | `GET …/test-case-mapping`, then `DELETE projects/{p}/test-sets/{t}/test-cases/{test_set_test_case_id}` per case |
+| Verify | `GET …/test-case-mapping` |
+
+Live apply removes a test case from a test set; the test case itself is never deleted. Before each batch the server re-reads the test set and only removes memberships that still point at the reviewed test case. Reads are retried on temporary errors; removals are never retried automatically, so a failed case is retried only when you choose to.
+
+### Matching rules
+
+For each test case in a test set:
+
+1. If a workbook **TC ID** (for example `TC-ONB-001`) appears in the test case name or in one of its custom property values, it matches that row. Separators and case are ignored, so `TC ONB 001` matches too, but `TC-ONB-0010` does not.
+2. Otherwise, if the test case name equals a workbook **Test Scenario** (ignoring case and punctuation), it matches that row.
+3. A match on the In-Scope sheet suggests **In Scope**; on the Needs Confirmation sheet, or on several different rows, **Needs Review**.
+4. No match suggests **Out of Scope**, unless the name closely resembles a scenario, in which case it goes to **Needs Review** for a person to check.
+
+Workbook rows that no test case matched are listed as missing from Spira.
+
 ## Storage
 
-There is no database. Settings, drafts, the activity log and the Mock mode state are kept in the browser's `localStorage`, so each browser (and each domain, including Vercel preview URLs) has its own drafts. Use Duplicate or recompare to move work between browsers.
+There is no database. Settings, drafts and the activity log are kept in the browser's `localStorage`, so each browser (and each domain, including Vercel preview URLs) has its own drafts.
 
-The server is stateless. It signs every comparison and passing membership check with `SESSION_SECRET`, and re-verifies those signatures before a membership check, apply or verify, so suggestions edited in the browser are rejected. The signature also covers Mock mode, so a Mock comparison can never drive a real apply, and the membership check covers the reviewed decisions, so changing a decision requires a new check.
-
-A Reconcile or Apply URL override saved in **Settings** is stored in an encrypted, httpOnly cookie for that browser and takes priority over the environment value until "Clear saved override" is used. Saved URLs and the webhook secret are never readable by the browser — Settings only shows where each URL comes from and its host.
+The server is stateless. It signs every comparison and passing membership check with `SESSION_SECRET` and re-verifies those signatures before a membership check, apply or verify, so suggestions edited in the browser are rejected. The membership check also covers the reviewed decisions, so changing a decision requires a new check.
 
 ## Deploying to Vercel
 
-Set `APP_PASSWORD`, `SESSION_SECRET`, `WEBHOOK_SECRET`, `RECONCILE_WEBHOOK_URL` and `APPLY_WEBHOOK_URL` under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. Sign-in stays disabled until the first two are set.
+Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SPIRA_API_KEY` under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. If your Spira instance restricts access by IP address, it must allow Vercel's outbound traffic.
 
 ## Scripts
 
 | Command | What it does |
 | --- | --- |
-| `npm run check` | Typecheck, lint and unit tests |
-| `npm run smoke` | End-to-end HTTP checks against a running server; every workflow request is sent in Mock mode |
+| `npm run check` | Typecheck, lint and unit tests (Spira is replaced by an in-memory fake; nothing real is called) |
+| `npm run smoke` | HTTP checks against a running server; sends nothing that could change Spira |
 | `node scripts/make-sample-workbook.mjs` | Regenerates `tests/fixtures/sample-scope.xlsx` |
-
-## n8n contract
-
-Both webhooks receive `POST` JSON with the `X-Webhook-Secret` header.
-
-**Reconcile** (one call per test set)
-
-```json
-{ "projectId": 24, "releaseId": 157, "module": "Onboarding", "testSetId": 125,
-  "testSetName": "Onboarding-IOS", "platform": "iOS", "rows": [{ "sheet": "…", "rowNumber": 4, "scope": "inScope", "values": {} }] }
-```
-
-Response:
-
-```json
-{ "cards": [{ "testCaseId": 3519, "testSetTestCaseId": 12318, "name": "…", "tcId": "TC-001",
-              "executionStatus": "Passed", "executed": true, "suggestion": "inScope|outOfScope|needsReview", "reason": "…" }],
-  "missingFromSpira": [{ "tcId": "TC-999", "testScenario": "…", "reason": "…" }],
-  "membership": [12318, 12319] }
-```
-
-Row `scope` is `inScope` or `needsConfirmation`. `suggestion` also accepts `keep`/`in` and `remove`/`out`. `membership` (the current test set test case IDs) is optional; when it is omitted, the IDs from `cards` are used.
-
-**Apply** (up to 25 actions per call, remove only)
-
-```json
-{ "projectId": 24, "releaseId": 157, "testSetId": 125, "dryRun": true,
-  "actions": [{ "action": "remove", "testSetTestCaseId": 12319, "testCaseId": 3520 }] }
-```
-
-Response:
-
-```json
-{ "results": [{ "testSetTestCaseId": 12319, "status": "wouldRemove|removed|failed|skipped", "message": "…" }] }
-```
-
-Any action missing from `results` is treated as failed. When `dryRun` is true, n8n must not change Spira.

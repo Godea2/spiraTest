@@ -20,7 +20,6 @@ export function defaultSettings(): AppSettings {
     projectId: 24,
     releaseId: 157,
     releaseLabel: "1.0.0.0.0002 - Sprint3",
-    mockMode: true,
     mappings: DEFAULT_MAPPINGS.map(([module, testSetId, testSetName, platform]) => ({
       id: `ts-${testSetId}`,
       module,
@@ -37,7 +36,6 @@ export const settingsUpdateSchema = z.object({
   projectId: z.number().int().positive(),
   releaseId: z.number().int().positive(),
   releaseLabel: z.string().trim().max(200),
-  mockMode: z.boolean(),
   mappings: z
     .array(
       z.object({
@@ -89,7 +87,6 @@ export function applySettingsUpdate(update: SettingsUpdate, now = new Date()): A
     projectId: value.projectId,
     releaseId: value.releaseId,
     releaseLabel: value.releaseLabel,
-    mockMode: value.mockMode,
     mappings: value.mappings,
     moduleAliases,
     updatedAt: now.toISOString(),

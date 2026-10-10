@@ -38,9 +38,25 @@ export function listDrafts(): DraftSummary[] {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/**
+ * Mock mode has been removed. Drafts made with simulated data, and the simulated Spira
+ * state, are deleted so they can never be mistaken for real comparisons.
+ */
+export function purgeMockData(): number {
+  removeItem("mock-state");
+  let removed = 0;
+  for (const key of keysWithPrefix(PREFIX)) {
+    if (readItem<{ mock?: unknown }>(key)?.mock === true) {
+      removeItem(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export type NewDraft = Pick<
   Draft,
-  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "mock" | "source" | "rows" | "testSetIds"
+  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds"
 >;
 
 export function createDraft(input: NewDraft): Draft {
@@ -60,10 +76,10 @@ export function createDraft(input: NewDraft): Draft {
   writeItem(keyFor(draft.id), draft);
   logActivity({
     type: "draft.created",
-    message: `Created draft "${draft.name}" with ${draft.rows.length} workbook rows${draft.mock ? " in Mock mode" : ""}.`,
+    message: `Created draft "${draft.name}" with ${draft.rows.length} workbook rows.`,
     draftId: draft.id,
     module: draft.module,
-    details: { testSetIds: draft.testSetIds, mock: draft.mock },
+    details: { testSetIds: draft.testSetIds },
   });
   return draft;
 }

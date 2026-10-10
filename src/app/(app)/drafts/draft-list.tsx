@@ -110,9 +110,7 @@ export function DraftList() {
                       {d.name}
                     </Link>
                     <Badge tone={STATUS_TONE[d.status]}>{STATUS_LABEL[d.status]}</Badge>
-                    {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}
-                    {d.mock && <Badge>Mock</Badge>}
-                  </div>
+                    {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}                  </div>
                   <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                     {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} · updated {relativeTime(d.updatedAt)}
                   </p>

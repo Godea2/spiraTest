@@ -2,9 +2,8 @@ import "server-only";
 import { z } from "zod";
 import { ApplyValidationError } from "@/lib/domain/apply-rules";
 import { hasSession } from "./auth";
-import { EndpointValidationError } from "./endpoint-overrides";
-import { AutomationError } from "./n8n";
 import { SealError } from "./seal";
+import { SpiraError } from "./spira";
 
 export class HttpError extends Error {
   constructor(
@@ -49,10 +48,9 @@ export async function parseBody<T extends z.ZodType>(request: Request, schema: T
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof HttpError) return jsonError(error.status, error.message, error.fieldErrors);
-  if (error instanceof EndpointValidationError) return jsonError(400, error.message, error.fieldErrors);
   if (error instanceof ApplyValidationError) return jsonError(error.status, error.message);
   if (error instanceof SealError) return jsonError(error.status, error.message);
-  if (error instanceof AutomationError) return jsonError(error.status, error.message);
+  if (error instanceof SpiraError) return jsonError(error.status, error.message);
   console.error("Unhandled API error", error);
   return jsonError(500, "Something went wrong on the server. Check the server logs.");
 }

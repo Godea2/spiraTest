@@ -2,20 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useSettings } from "@/components/settings-context";
-import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner, Switch } from "@/components/ui";
+import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { logActivity } from "@/lib/client/activity";
-import { api, ApiError, errorMessage } from "@/lib/client/api";
+import { api, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
-import { resetMockState } from "@/lib/client/mock-state";
 import { saveSettings } from "@/lib/client/settings-store";
-import { applySettingsUpdate, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
-import {
-  PLATFORMS,
-  type AppSettings,
-  type EndpointKind,
-  type EndpointsStatus,
-  type Platform,
-} from "@/lib/domain/types";
+import { SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
+import { PLATFORMS, type AppSettings, type Platform } from "@/lib/domain/types";
 
 interface MappingDraft {
   id: string;
@@ -29,27 +22,17 @@ interface FormState {
   projectId: string;
   releaseId: string;
   releaseLabel: string;
-  mockMode: boolean;
   mappings: MappingDraft[];
   moduleAliases: Record<string, string>;
-  endpoints: Record<EndpointKind, { url: string; clear: boolean }>;
 }
-
-const ENV_NAME: Record<EndpointKind, string> = { reconcile: "RECONCILE_WEBHOOK_URL", apply: "APPLY_WEBHOOK_URL" };
-const ENDPOINT_COPY: Record<EndpointKind, { title: string; hint: string }> = {
-  reconcile: { title: "Reconcile webhook", hint: "Called to compare workbook rows with a test set." },
-  apply: { title: "Apply webhook", hint: "Called to remove cases from a test set (dry run or live)." },
-};
 
 function toForm(s: AppSettings): FormState {
   return {
     projectId: String(s.projectId),
     releaseId: String(s.releaseId),
     releaseLabel: s.releaseLabel,
-    mockMode: s.mockMode,
     mappings: s.mappings.map((m) => ({ ...m, testSetId: String(m.testSetId) })),
     moduleAliases: { ...s.moduleAliases },
-    endpoints: { reconcile: { url: "", clear: false }, apply: { url: "", clear: false } },
   };
 }
 
@@ -63,7 +46,7 @@ export function SettingsForm() {
 }
 
 function SettingsEditor({ settings }: { settings: AppSettings }) {
-  const { replace, endpoints, endpointsError, replaceEndpoints } = useSettings();
+  const { replace } = useSettings();
   const [form, setForm] = useState<FormState>(() => toForm(settings));
   const [initial, setInitial] = useState<string>(() => JSON.stringify(toForm(settings)));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -120,13 +103,10 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     setSaving(true);
     setMessage(null);
     try {
-      const endpoint = (kind: EndpointKind) =>
-        form.endpoints[kind].clear ? { clear: true } : form.endpoints[kind].url.trim() ? { url: form.endpoints[kind].url.trim() } : undefined;
       const update: SettingsUpdate = {
         projectId: Number(form.projectId),
         releaseId: Number(form.releaseId),
         releaseLabel: form.releaseLabel.trim(),
-        mockMode: form.mockMode,
         mappings: form.mappings.map((m) => ({
           id: m.id,
           module: m.module.trim(),
@@ -138,24 +118,12 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
           Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
         ),
       };
-      applySettingsUpdate(update);
-
-      const endpointChanges = { reconcile: endpoint("reconcile"), apply: endpoint("apply") };
-      const notes: string[] = [];
-      if (endpointChanges.reconcile || endpointChanges.apply) {
-        replaceEndpoints(await api<EndpointsStatus>("/api/endpoints", { method: "PUT", body: endpointChanges }));
-        for (const kind of ["reconcile", "apply"] as const) {
-          const change = endpointChanges[kind];
-          if (change) notes.push(change.clear ? `${kind} override cleared` : `${kind} URL replaced`);
-        }
-      }
-
       const saved = saveSettings(update);
       replace(saved);
       logActivity({
         type: "settings.updated",
-        message: `Settings saved${notes.length ? ` (${notes.join(", ")})` : ""}.`,
-        details: { mockMode: saved.mockMode, projectId: saved.projectId, releaseId: saved.releaseId, mappings: saved.mappings.length },
+        message: "Settings saved.",
+        details: { projectId: saved.projectId, releaseId: saved.releaseId, mappings: saved.mappings.length },
       });
       const f = toForm(saved);
       setForm(f);
@@ -163,31 +131,18 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       setErrors({});
       setMessage({ tone: "success", text: "Settings saved." });
     } catch (err) {
-      if (err instanceof ApiError || err instanceof SettingsValidationError) setErrors(err.fieldErrors);
+      if (err instanceof SettingsValidationError) setErrors(err.fieldErrors);
       setMessage({ tone: "danger", text: errorMessage(err) });
     } finally {
       setSaving(false);
     }
   }
 
-  function resetMock() {
-    resetMockState();
-    logActivity({ type: "mock.reset", message: "Mock Spira data reset to its original fixture." });
-    setMessage({ tone: "success", text: "Mock Spira data was reset to the original fixture." });
-  }
-
-  const liveWithoutEndpoints =
-    !form.mockMode &&
-    endpoints !== null &&
-    (["reconcile", "apply"] as const).some(
-      (k) => (endpoints.endpoints[k].source === "none" || form.endpoints[k].clear) && !form.endpoints[k].url.trim(),
-    );
-
   return (
     <div className="flex flex-col gap-6 pb-24">
       <PageHeader
         title="Settings"
-        description="Where comparisons point, how modules map to Spira test sets, and which n8n workflows run them. Saved in this browser."
+        description="Which Spira project and release to compare against, and how modules map to Spira test sets. Saved in this browser."
         actions={settings.updatedAt && <span className="text-xs text-zinc-500">Last saved {formatDateTime(settings.updatedAt)}</span>}
       />
 
@@ -205,97 +160,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         </div>
       </Section>
 
-      <Section title="Data source">
-        <Switch
-          checked={form.mockMode}
-          onChange={(mockMode) => update({ mockMode })}
-          label="Mock mode"
-          description="Use simulated Spira data instead of n8n for new comparisons. Each draft keeps the mode it was created in, so a Mock draft can never change real Spira."
-        />
-        {liveWithoutEndpoints && (
-          <Notice tone="warning" className="mt-4">With Mock mode off, both webhooks need a URL. Add one below or set the environment variables.</Notice>
-        )}
-        {settings.mockMode && (
-          <div className="mt-4 flex items-center justify-between gap-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">Restore simulated test sets after a mock live apply.</p>
-            <Button size="sm" onClick={resetMock}>Reset mock data</Button>
-          </div>
-        )}
-      </Section>
-
-      <Section
-        title="Automation endpoints"
-        description="The server calls these n8n webhooks. The browser never contacts n8n or Spira directly. A saved URL is kept encrypted for this browser only and is never shown again; to set it for everyone, use the environment variables on the server."
-      >
-        {!endpoints ? (
-          endpointsError ? (
-            <Notice tone="danger" title="Endpoint status could not be loaded">{endpointsError}</Notice>
-          ) : (
-            <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading…</div>
-          )
-        ) : (
-        <>
-        <div className="mb-5 flex items-center gap-2 text-sm">
-          {endpoints.webhookSecretConfigured ? (
-            <><Badge tone="success">Secret configured</Badge><span className="text-zinc-600 dark:text-zinc-400">WEBHOOK_SECRET is sent as the X-Webhook-Secret header.</span></>
-          ) : (
-            <><Badge tone="danger">Secret missing</Badge><span className="text-zinc-600 dark:text-zinc-400">Set WEBHOOK_SECRET in the server environment. n8n calls are disabled until then.</span></>
-          )}
-        </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          {(["reconcile", "apply"] as const).map((kind) => {
-            const status = endpoints.endpoints[kind];
-            const change = form.endpoints[kind];
-            const setChange = (patch: Partial<typeof change>) =>
-              update({ endpoints: { ...form.endpoints, [kind]: { ...change, ...patch } } });
-            return (
-              <div key={kind} className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                <div>
-                  <h3 className="text-sm font-semibold">{ENDPOINT_COPY[kind].title}</h3>
-                  <p className="text-xs text-zinc-500">{ENDPOINT_COPY[kind].hint}</p>
-                </div>
-                <p className="flex flex-wrap items-center gap-2 text-sm">
-                  {status.source === "override" && <Badge tone="brand">Saved URL</Badge>}
-                  {status.source === "environment" && <Badge>Environment</Badge>}
-                  {status.source === "none" && <Badge tone="warning">Not configured</Badge>}
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    {status.source === "override" && <>Using the URL saved in this browser{status.host && <> · <span className="font-mono">{status.host}</span></>}</>}
-                    {status.source === "environment" && <>Using {ENV_NAME[kind]}{status.host && <> · <span className="font-mono">{status.host}</span></>}</>}
-                    {status.source === "none" && <>No saved URL and no {ENV_NAME[kind]}</>}
-                  </span>
-                </p>
-                {change.clear ? (
-                  <Notice tone="warning" action={<Button size="sm" onClick={() => setChange({ clear: false })}>Keep it</Button>}>
-                    The saved URL will be removed on save. {kind === "reconcile" ? "Reconcile" : "Apply"} will fall back to {ENV_NAME[kind]}, if it is set.
-                  </Notice>
-                ) : (
-                  <Field label="Replace URL" hint="Leave blank to keep the current endpoint." error={errors[`endpoints.${kind}`]}>
-                    {(p) => (
-                      <input
-                        {...p}
-                        className="input font-mono"
-                        type="url"
-                        autoComplete="off"
-                        spellCheck={false}
-                        placeholder="https://n8n.example.com/webhook/…"
-                        value={change.url}
-                        onChange={(e) => setChange({ url: e.target.value })}
-                      />
-                    )}
-                  </Field>
-                )}
-                {status.source === "override" && !change.clear && (
-                  <Button size="sm" variant="ghost" className="self-start" onClick={() => setChange({ clear: true, url: "" })}>
-                    Clear saved override
-                  </Button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        </>
-        )}
-      </Section>
+      <SpiraConnection projectId={settings.projectId} />
 
       <Section
         title="Modules and test sets"
@@ -444,5 +309,69 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         Its test set mappings and Excel alias are removed when you save. Existing drafts are not affected.
       </Dialog>
     </div>
+  );
+}
+
+function SpiraConnection({ projectId }: { projectId: number }) {
+  const { spira, spiraError } = useSettings();
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+
+  async function check() {
+    setChecking(true);
+    setResult(null);
+    try {
+      const { userName, projectName } = await api<{ userName: string; projectName: string }>("/api/spira", {
+        method: "POST",
+        body: { projectId },
+      });
+      setResult({ tone: "success", text: `Signed in as ${userName}. Project ${projectId} is "${projectName}".` });
+      logActivity({ type: "spira.checked", message: `Spira connection checked for project ${projectId}.` });
+    } catch (err) {
+      setResult({ tone: "danger", text: errorMessage(err) });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return (
+    <Section
+      title="Spira connection"
+      description="The server calls Spira with credentials set in its environment. The browser never contacts Spira and never sees the API key."
+      actions={spira?.configured && <Button size="sm" onClick={check} busy={checking}>Test connection</Button>}
+    >
+      {!spira ? (
+        spiraError ? (
+          <Notice tone="danger" title="Connection status could not be loaded">{spiraError}</Notice>
+        ) : (
+          <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading…</div>
+        )
+      ) : (
+        <div className="flex flex-col gap-4">
+          <dl className="grid gap-3 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-xs text-zinc-500">Spira site</dt>
+              <dd className="mt-0.5 font-mono">{spira.host ?? "Not set"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-zinc-500">User</dt>
+              <dd className="mt-0.5 font-mono">{spira.username ?? "Not set"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-zinc-500">API key</dt>
+              <dd className="mt-0.5">
+                {spira.apiKeyConfigured ? <Badge tone="success">Configured</Badge> : <Badge tone="warning">Not set</Badge>}
+              </dd>
+            </div>
+          </dl>
+          {!spira.configured && (
+            <Notice tone="warning" title="Spira is not connected">
+              {spira.problems.join(" ")} Set SPIRA_BASE_URL, SPIRA_USERNAME and SPIRA_API_KEY in the server environment, then redeploy.
+            </Notice>
+          )}
+          {result && <Notice tone={result.tone}>{result.text}</Notice>}
+        </div>
+      )}
+    </Section>
   );
 }

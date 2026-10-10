@@ -121,8 +121,6 @@ export interface Draft {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
-  /** Fixed at creation: a Mock mode draft can never be applied to real Spira. */
-  mock: boolean;
   status: DraftStatus;
   createdAt: string;
   updatedAt: string;
@@ -147,7 +145,6 @@ export interface DraftSummary {
   id: string;
   name: string;
   module: string;
-  mock: boolean;
   status: DraftStatus;
   createdAt: string;
   updatedAt: string;
@@ -167,29 +164,23 @@ export interface TestSetMapping {
   platform: Platform;
 }
 
-export type EndpointKind = "reconcile" | "apply";
-export type EndpointSource = "override" | "environment" | "none";
-
-export interface EndpointStatus {
-  source: EndpointSource;
-  /** Host only, never the full URL — paths can carry webhook tokens. */
-  host: string | null;
-}
-
-/** Saved in the browser. Holds nothing secret; webhook URLs live on the server. */
+/** Saved in the browser. Holds nothing secret; Spira credentials live on the server. */
 export interface AppSettings {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
-  mockMode: boolean;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
   updatedAt: string | null;
 }
 
-export interface EndpointsStatus {
-  endpoints: Record<EndpointKind, EndpointStatus>;
-  webhookSecretConfigured: boolean;
+/** Server-side Spira configuration as shown in Settings. Never includes the API key. */
+export interface SpiraStatus {
+  configured: boolean;
+  host: string | null;
+  username: string | null;
+  apiKeyConfigured: boolean;
+  problems: string[];
 }
 
 /** Identifies what a comparison or membership check was run against. */
@@ -197,13 +188,6 @@ export interface WorkflowContext {
   projectId: number;
   releaseId: number;
   module: string;
-  mock: boolean;
-}
-
-/** Simulated Spira state for Mock mode, kept in the browser. */
-export interface MockState {
-  removed: Record<string, number[]>;
-  transientFailureUsed: Record<string, boolean>;
 }
 
 export type ApplyActionStatus = "removed" | "wouldRemove" | "failed" | "skipped";

@@ -20,7 +20,6 @@ export const contextSchema = z.object({
   projectId: id,
   releaseId: id,
   module: z.string().trim().min(1).max(120),
-  mock: z.boolean(),
 });
 
 const testSetRef = z.object({
@@ -56,11 +55,6 @@ const testSets = z.array(comparisonSchema).min(1).max(50);
 const decisions = z.record(z.string().max(64), column);
 const removed = z.record(z.string().max(20), z.array(id).max(20_000));
 
-const mockStateSchema = z.object({
-  removed: z.record(z.string().max(20), z.array(id).max(20_000)),
-  transientFailureUsed: z.record(z.string().max(64), z.boolean()),
-});
-
 const preflightSchema = z.object({
   at: z.string().max(40),
   ok: z.boolean(),
@@ -82,16 +76,13 @@ export const reconcileSchema = z.object({
   context: contextSchema,
   testSet: testSetRef,
   rows,
-  mockState: mockStateSchema.optional(),
 });
 
 export const preflightRequestSchema = z.object({
   context: contextSchema,
-  rows,
   testSets,
   decisions,
   removed,
-  mockState: mockStateSchema.optional(),
 });
 
 export const applyRequestSchema = z.object({
@@ -109,17 +100,12 @@ export const applyRequestSchema = z.object({
       .min(1)
       .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} actions per batch.`),
   }),
-  mockState: mockStateSchema.optional(),
 });
 
 export const verifyRequestSchema = z.object({
   context: contextSchema,
-  rows,
   testSets,
   decisions,
-  mockState: mockStateSchema.optional(),
 });
 
-const endpointChange = z.object({ url: z.string().max(4096).optional(), clear: z.boolean().optional() }).optional();
-
-export const endpointsUpdateSchema = z.object({ reconcile: endpointChange, apply: endpointChange });
+export const connectionCheckSchema = z.object({ projectId: id });

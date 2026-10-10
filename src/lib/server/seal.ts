@@ -37,11 +37,11 @@ function matches(seal: string | null | undefined, payload: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-const contextPart = (ctx: WorkflowContext) => [ctx.projectId, ctx.releaseId, ctx.module, ctx.mock];
+const contextPart = (ctx: WorkflowContext) => [ctx.projectId, ctx.releaseId, ctx.module];
 
 function comparisonPayload(ctx: WorkflowContext, c: Omit<TestSetComparison, "seal">): string {
   return JSON.stringify([
-    "comparison/v1",
+    "comparison/v2",
     ...contextPart(ctx),
     c.testSetId,
     c.comparedAt,
@@ -57,7 +57,7 @@ function preflightPayload(
   decisions: Record<string, Column>,
 ): string {
   return JSON.stringify([
-    "preflight/v1",
+    "preflight/v2",
     ...contextPart(ctx),
     at,
     [...testSets].sort((a, b) => a.testSetId - b.testSetId).map((set) => [set.testSetId, set.seal]),
@@ -71,7 +71,7 @@ export function sealComparison(ctx: WorkflowContext, comparison: Omit<TestSetCom
 
 /**
  * Returns the comparisons with card keys rebuilt from their IDs, or throws if any
- * comparison was altered or belongs to a different project, release, module or mode.
+ * comparison was altered or belongs to a different project, release or module.
  */
 export function verifyComparisons(ctx: WorkflowContext, testSets: TestSetComparison[]): TestSetComparison[] {
   const seen = new Set<number>();
@@ -80,7 +80,7 @@ export function verifyComparisons(ctx: WorkflowContext, testSets: TestSetCompari
     seen.add(set.testSetId);
     if (!matches(set.seal, comparisonPayload(ctx, set))) {
       throw new SealError(
-        `The comparison for test set ${set.testSetId} could not be verified. It may have been made in a different mode or edited. Recompare it.`,
+        `The comparison for test set ${set.testSetId} could not be verified. It may be from an older version of the app or have been edited. Recompare it.`,
       );
     }
     return {

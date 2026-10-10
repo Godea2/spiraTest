@@ -14,7 +14,7 @@ const GROUPS: Record<string, { label: string; match: (type: string) => boolean }
   apply: { label: "Apply and verify", match: (t) => t.startsWith("apply.") || t.startsWith("verify.") || t.startsWith("preflight.") },
   compare: { label: "Comparisons", match: (t) => t.startsWith("compare.") },
   drafts: { label: "Drafts", match: (t) => t.startsWith("draft.") },
-  settings: { label: "Settings", match: (t) => t.startsWith("settings.") || t.startsWith("mock.") },
+  settings: { label: "Settings", match: (t) => t.startsWith("settings.") || t.startsWith("spira.") },
 };
 
 function tone(type: string): "danger" | "warning" | "success" | "neutral" {

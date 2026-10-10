@@ -412,9 +412,7 @@ export function Board({ id }: { id: string }) {
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
             {draft.module} · Release {draft.releaseLabel || draft.releaseId}
-            <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
-            {draft.mock && <Badge tone="warning">Mock</Badge>}
-          </span>
+            <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>          </span>
         }
         title={
           <button type="button" className="text-left hover:underline decoration-zinc-300 underline-offset-4" onClick={() => setRenaming(draft.name)} title="Rename draft">

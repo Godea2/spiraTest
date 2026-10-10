@@ -159,10 +159,6 @@ export function Review({ id }: { id: string }) {
         description={`Removes Out of Scope cases from ${draft.module} test sets in project ${draft.projectId}, release ${draft.releaseLabel || draft.releaseId}. Only removals are made. Nothing is added or edited.`}
       />
 
-      {draft.mock && (
-        <Notice tone="warning" title="This is a Mock mode draft">Live apply changes simulated data only. Spira is not contacted.</Notice>
-      )}
-
       <Section title="What will change" description="Cards in Out of Scope are removed from their test set. In Scope cards stay.">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[32rem] text-left text-sm">
@@ -218,7 +214,7 @@ export function Review({ id }: { id: string }) {
       <Section title="Apply">
         <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Apply mode">
           <ModeCard checked={mode === "dry"} onSelect={() => setMode("dry")} title="Dry run" disabled={running}>
-            Checks membership and asks n8n what would be removed. Spira is not changed.
+            Checks membership and confirms each case is still in its test set. Spira is not changed.
           </ModeCard>
           <ModeCard checked={mode === "live"} onSelect={() => setMode("live")} title="Live apply" danger disabled={running}>
             Removes {removalCount} case{removalCount === 1 ? "" : "s"} from Spira in batches of {MAX_APPLY_BATCH}.
@@ -362,7 +358,7 @@ function RunPanel({
     <Section title={runMode === "dry" ? "Dry run" : "Live apply"}>
       <ol className="flex flex-col gap-2">
         <Step state={stepState("preflight")}>Check Spira membership matches the reviewed board</Step>
-        <Step state={stepState("applying")}>{runMode === "dry" ? "Ask n8n what would be removed" : "Remove cases in batches"}</Step>
+        <Step state={stepState("applying")}>{runMode === "dry" ? "Confirm what would be removed" : "Remove cases in batches"}</Step>
         {runMode === "live" && <Step state={stepState("verifying")}>Reconcile again and verify the result</Step>}
       </ol>
 

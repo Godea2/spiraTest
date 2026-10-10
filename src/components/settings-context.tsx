@@ -2,42 +2,46 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/client/api";
+import { purgeMockData } from "@/lib/client/drafts";
 import { loadSettings } from "@/lib/client/settings-store";
-import type { AppSettings, EndpointsStatus } from "@/lib/domain/types";
+import type { AppSettings, SpiraStatus } from "@/lib/domain/types";
 
 interface SettingsState {
   /** Saved in this browser. */
   settings: AppSettings | null;
-  /** Webhook configuration as reported by the server (source and host only). */
-  endpoints: EndpointsStatus | null;
-  endpointsError: string | null;
+  /** Spira connection as configured on the server (host and username only). */
+  spira: SpiraStatus | null;
+  spiraError: string | null;
   replace: (settings: AppSettings) => void;
-  replaceEndpoints: (endpoints: EndpointsStatus) => void;
-  reloadEndpoints: () => Promise<void>;
+  reloadSpira: () => Promise<void>;
 }
 
 const SettingsContext = createContext<SettingsState | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [endpoints, setEndpoints] = useState<EndpointsStatus | null>(null);
-  const [endpointsError, setEndpointsError] = useState<string | null>(null);
+  const [spira, setSpira] = useState<SpiraStatus | null>(null);
+  const [spiraError, setSpiraError] = useState<string | null>(null);
 
-  const reloadEndpoints = useCallback(async () => {
+  const reloadSpira = useCallback(async () => {
     try {
-      setEndpoints(await api<EndpointsStatus>("/api/endpoints"));
-      setEndpointsError(null);
+      setSpira(await api<SpiraStatus>("/api/spira"));
+      setSpiraError(null);
     } catch (err) {
-      setEndpointsError(errorMessage(err));
+      setSpiraError(errorMessage(err));
     }
   }, []);
 
   useEffect(() => {
     let active = true;
-    Promise.resolve().then(() => active && setSettings(loadSettings()));
-    api<EndpointsStatus>("/api/endpoints").then(
-      (loaded) => active && setEndpoints(loaded),
-      (err) => active && setEndpointsError(errorMessage(err)),
+    Promise.resolve().then(() => {
+      if (!active) return;
+      purgeMockData();
+      setSettings(loadSettings());
+    });
+    api<SpiraStatus>("/api/spira").then(
+      (loaded) => active && setSpira(loaded),
+      (err) => active && setSpiraError(errorMessage(err)),
     );
     return () => {
       active = false;
@@ -45,9 +49,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SettingsContext.Provider
-      value={{ settings, endpoints, endpointsError, replace: setSettings, replaceEndpoints: setEndpoints, reloadEndpoints }}
-    >
+    <SettingsContext.Provider value={{ settings, spira, spiraError, replace: setSettings, reloadSpira }}>
       {children}
     </SettingsContext.Provider>
   );

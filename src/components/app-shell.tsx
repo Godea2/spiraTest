@@ -52,24 +52,24 @@ function ThemeToggle() {
   );
 }
 
-function ModePill() {
-  const { settings } = useSettings();
-  if (!settings) return null;
-  return settings.mockMode ? (
+function SpiraPill() {
+  const { settings, spira } = useSettings();
+  if (!settings || !spira) return null;
+  return spira.configured ? (
     <Link
       href="/settings"
-      className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200"
-      title="Using simulated Spira data. Change in Settings."
+      className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-200"
+      title={`Spira at ${spira.host}. Details in Settings.`}
     >
-      Mock mode
+      Spira · Project {settings.projectId}
     </Link>
   ) : (
     <Link
       href="/settings"
-      className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-200"
-      title="Connected to n8n and Spira. Change in Settings."
+      className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200"
+      title="Spira credentials are not set on the server. Details in Settings."
     >
-      Live · Project {settings.projectId}
+      Spira not connected
     </Link>
   );
 }
@@ -112,7 +112,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-1.5">
-            <ModePill />
+            <SpiraPill />
             <ThemeToggle />
             <button
               type="button"
