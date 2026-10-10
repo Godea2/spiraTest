@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Spira Test Set Reconciler
 
-## Getting Started
+Compare a release-scope workbook with Spira test set membership, decide which cases stay, and remove the rest through n8n. The browser only talks to this app; the server calls n8n with a shared secret, and n8n calls Spira.
 
-First, run the development server:
+Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Setup
+
+1. `npm install`
+2. Copy `.env.example` to `.env.local` and fill in the secrets:
+
+   | Name | Purpose |
+   | --- | --- |
+   | `APP_PASSWORD` | Team password for the sign-in page |
+   | `SESSION_SECRET` | At least 16 characters; signs the session cookie |
+   | `WEBHOOK_SECRET` | Sent to n8n as the `X-Webhook-Secret` header |
+   | `RECONCILE_WEBHOOK_URL` | Fallback Reconcile webhook (optional) |
+   | `APPLY_WEBHOOK_URL` | Fallback Apply webhook (optional) |
+
+   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. n8n calls are refused until `WEBHOOK_SECRET` is set.
+
+3. `npm run dev` and open http://localhost:3004.
+
+Admins can save a Reconcile or Apply URL override in **Settings**; it takes priority over the environment value until "Clear saved override" is used. Saved URLs and the webhook secret are never sent to the browser — Settings only shows where each URL comes from and its host.
+
+Settings, drafts and the activity log are stored as JSON files in `data/` (override with `DATA_DIR`). Mount it on persistent storage in production.
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `npm run check` | Typecheck, lint and unit tests |
+| `npm run smoke` | End-to-end HTTP checks against a running server; refuses to run apply steps unless Mock mode is on |
+| `node scripts/make-sample-workbook.mjs` | Regenerates `tests/fixtures/sample-scope.xlsx` |
+
+## n8n contract
+
+Both webhooks receive `POST` JSON with the `X-Webhook-Secret` header.
+
+**Reconcile** (one call per test set)
+
+```json
+{ "projectId": 24, "releaseId": 157, "module": "Onboarding", "testSetId": 125,
+  "testSetName": "Onboarding-IOS", "platform": "iOS", "rows": [{ "sheet": "…", "rowNumber": 4, "scope": "inScope", "values": {} }] }
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Response:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```json
+{ "cards": [{ "testCaseId": 3519, "testSetTestCaseId": 12318, "name": "…", "tcId": "TC-001",
+              "executionStatus": "Passed", "executed": true, "suggestion": "inScope|outOfScope|needsReview", "reason": "…" }],
+  "missingFromSpira": [{ "tcId": "TC-999", "testScenario": "…", "reason": "…" }],
+  "membership": [12318, 12319] }
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Row `scope` is `inScope` or `needsConfirmation`. `suggestion` also accepts `keep`/`in` and `remove`/`out`. `membership` (the current test set test case IDs) is optional; when it is omitted, the IDs from `cards` are used.
 
-## Learn More
+**Apply** (up to 25 actions per call, remove only)
 
-To learn more about Next.js, take a look at the following resources:
+```json
+{ "projectId": 24, "releaseId": 157, "testSetId": 125, "dryRun": true,
+  "actions": [{ "action": "remove", "testSetTestCaseId": 12319, "testCaseId": 3520 }] }
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Response:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```json
+{ "results": [{ "testSetTestCaseId": 12319, "status": "wouldRemove|removed|failed|skipped", "message": "…" }] }
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Any action missing from `results` is treated as failed. When `dryRun` is true, n8n must not change Spira.
