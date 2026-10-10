@@ -12,7 +12,7 @@ Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
    | Name | Purpose |
    | --- | --- |
    | `APP_PASSWORD` | Team password for the sign-in page |
-   | `SESSION_SECRET` | At least 16 characters; signs the session cookie |
+   | `SESSION_SECRET` | At least 16 characters; signs the session cookie and comparisons |
    | `WEBHOOK_SECRET` | Sent to n8n as the `X-Webhook-Secret` header |
    | `RECONCILE_WEBHOOK_URL` | Fallback Reconcile webhook (optional) |
    | `APPLY_WEBHOOK_URL` | Fallback Apply webhook (optional) |
@@ -21,16 +21,24 @@ Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
 
 3. `npm run dev` and open http://localhost:3004.
 
-Admins can save a Reconcile or Apply URL override in **Settings**; it takes priority over the environment value until "Clear saved override" is used. Saved URLs and the webhook secret are never sent to the browser — Settings only shows where each URL comes from and its host.
+## Storage
 
-Settings, drafts and the activity log are stored as JSON files in `data/` (override with `DATA_DIR`). Mount it on persistent storage in production.
+There is no database. Settings, drafts, the activity log and the Mock mode state are kept in the browser's `localStorage`, so each browser (and each domain, including Vercel preview URLs) has its own drafts. Use Duplicate or recompare to move work between browsers.
+
+The server is stateless. It signs every comparison and passing membership check with `SESSION_SECRET`, and re-verifies those signatures before a membership check, apply or verify, so suggestions edited in the browser are rejected. The signature also covers Mock mode, so a Mock comparison can never drive a real apply, and the membership check covers the reviewed decisions, so changing a decision requires a new check.
+
+A Reconcile or Apply URL override saved in **Settings** is stored in an encrypted, httpOnly cookie for that browser and takes priority over the environment value until "Clear saved override" is used. Saved URLs and the webhook secret are never readable by the browser — Settings only shows where each URL comes from and its host.
+
+## Deploying to Vercel
+
+Set `APP_PASSWORD`, `SESSION_SECRET`, `WEBHOOK_SECRET`, `RECONCILE_WEBHOOK_URL` and `APPLY_WEBHOOK_URL` under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. Sign-in stays disabled until the first two are set.
 
 ## Scripts
 
 | Command | What it does |
 | --- | --- |
 | `npm run check` | Typecheck, lint and unit tests |
-| `npm run smoke` | End-to-end HTTP checks against a running server; refuses to run apply steps unless Mock mode is on |
+| `npm run smoke` | End-to-end HTTP checks against a running server; every workflow request is sent in Mock mode |
 | `node scripts/make-sample-workbook.mjs` | Regenerates `tests/fixtures/sample-scope.xlsx` |
 
 ## n8n contract

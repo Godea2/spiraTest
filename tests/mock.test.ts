@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { countColumns } from "@/lib/domain/board";
-import { buildFixture, mockApply, mockReconcile } from "@/lib/server/mock";
+import { buildFixture, emptyMockState, mockApply, mockReconcile } from "@/lib/server/mock";
 
 describe("mock reconciliation fixture", () => {
-  it("returns exactly 211 cards for test set 125 split 142 / 64 / 5", async () => {
-    const { cards, missingFromSpira, membership } = await mockReconcile(125, "Onboarding");
+  it("returns exactly 211 cards for test set 125 split 142 / 64 / 5", () => {
+    const { cards, missingFromSpira, membership } = mockReconcile(emptyMockState(), 125, "Onboarding");
     expect(cards).toHaveLength(211);
     expect(countColumns(cards, {})).toEqual({ inScope: 142, outOfScope: 64, needsReview: 5, total: 211 });
     expect(missingFromSpira).toHaveLength(2);
@@ -35,22 +35,26 @@ describe("mock reconciliation fixture", () => {
 describe("mock apply", () => {
   const target = () => buildFixture(125, "Onboarding").find((c) => c.testCaseId === 3661)!;
 
-  it("dry run does not change membership", async () => {
-    const card = target();
-    const results = await mockApply(125, [card], true);
+  it("dry run does not change membership", () => {
+    const start = emptyMockState();
+    const { results, state } = mockApply(start, 125, [target()], true);
     expect(results[0].status).toBe("wouldRemove");
-    const { cards } = await mockReconcile(125, "Onboarding");
-    expect(cards).toHaveLength(211);
+    expect(mockReconcile(state, 125, "Onboarding").cards).toHaveLength(211);
   });
 
-  it("fails case 3661 once on live apply, then succeeds on retry", async () => {
-    const card = target();
-    const first = await mockApply(125, [card], false);
-    expect(first[0].status).toBe("failed");
-    expect((await mockReconcile(125, "Onboarding")).cards).toHaveLength(211);
+  it("fails case 3661 once on live apply, then succeeds on retry", () => {
+    const first = mockApply(emptyMockState(), 125, [target()], false);
+    expect(first.results[0].status).toBe("failed");
+    expect(mockReconcile(first.state, 125, "Onboarding").cards).toHaveLength(211);
 
-    const retry = await mockApply(125, [card], false);
-    expect(retry[0].status).toBe("removed");
-    expect((await mockReconcile(125, "Onboarding")).cards).toHaveLength(210);
+    const retry = mockApply(first.state, 125, [target()], false);
+    expect(retry.results[0].status).toBe("removed");
+    expect(mockReconcile(retry.state, 125, "Onboarding").cards).toHaveLength(210);
+  });
+
+  it("does not modify the state it is given", () => {
+    const start = emptyMockState();
+    mockApply(start, 125, [target()], false);
+    expect(start).toEqual(emptyMockState());
   });
 });

@@ -50,6 +50,8 @@ export interface TestSetComparison {
   missingFromSpira: MissingRow[];
   /** Test-set membership IDs present in Spira when this comparison ran. */
   baselineMembership: number[];
+  /** Server signature over the cards, suggestions and baseline; checked before any apply. */
+  seal: string;
 }
 
 export interface CardChange {
@@ -78,6 +80,8 @@ export interface PreflightResult {
   at: string;
   ok: boolean;
   sets: PreflightSetResult[];
+  /** Present only on a passing check; binds it to the comparisons and decisions it covered. */
+  seal: string | null;
 }
 
 export interface VerificationSetResult {
@@ -117,6 +121,8 @@ export interface Draft {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
+  /** Fixed at creation: a Mock mode draft can never be applied to real Spira. */
+  mock: boolean;
   status: DraftStatus;
   createdAt: string;
   updatedAt: string;
@@ -141,6 +147,7 @@ export interface DraftSummary {
   id: string;
   name: string;
   module: string;
+  mock: boolean;
   status: DraftStatus;
   createdAt: string;
   updatedAt: string;
@@ -169,16 +176,34 @@ export interface EndpointStatus {
   host: string | null;
 }
 
-export interface PublicSettings {
+/** Saved in the browser. Holds nothing secret; webhook URLs live on the server. */
+export interface AppSettings {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
   mockMode: boolean;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
+  updatedAt: string | null;
+}
+
+export interface EndpointsStatus {
   endpoints: Record<EndpointKind, EndpointStatus>;
   webhookSecretConfigured: boolean;
-  updatedAt: string | null;
+}
+
+/** Identifies what a comparison or membership check was run against. */
+export interface WorkflowContext {
+  projectId: number;
+  releaseId: number;
+  module: string;
+  mock: boolean;
+}
+
+/** Simulated Spira state for Mock mode, kept in the browser. */
+export interface MockState {
+  removed: Record<string, number[]>;
+  transientFailureUsed: Record<string, boolean>;
 }
 
 export type ApplyActionStatus = "removed" | "wouldRemove" | "failed" | "skipped";

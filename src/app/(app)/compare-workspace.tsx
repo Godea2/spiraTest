@@ -5,7 +5,9 @@ import { useMemo, useRef, useState, type DragEvent } from "react";
 import type { WorkBook } from "xlsx";
 import { modulesFrom, useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
-import { api, errorMessage } from "@/lib/client/api";
+import { errorMessage } from "@/lib/client/api";
+import { createDraft } from "@/lib/client/drafts";
+import { compareTestSet } from "@/lib/client/workflow";
 import type { Draft, WorkbookRow } from "@/lib/domain/types";
 
 type SetStatus = "pending" | "running" | "ok" | "failed";
@@ -37,7 +39,7 @@ function StepTitle({ n, children, done }: { n: number; children: React.ReactNode
 }
 
 export function CompareWorkspace() {
-  const { settings, error: settingsError } = useSettings();
+  const { settings } = useSettings();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [loaded, setLoaded] = useState<LoadedWorkbook | null>(null);
@@ -131,11 +133,7 @@ export function CompareWorkspace() {
       return next;
     });
     try {
-      const { draft: updated } = await api<{ draft: Draft }>(`/api/drafts/${draftId}/compare`, {
-        method: "POST",
-        body: { testSetId },
-      });
-      setDraft(updated);
+      setDraft(await compareTestSet(draftId, testSetId, settings?.mappings ?? []));
       setStatuses((s) => ({ ...s, [testSetId]: "ok" }));
     } catch (err) {
       setStatuses((s) => ({ ...s, [testSetId]: "failed" }));
@@ -144,20 +142,21 @@ export function CompareWorkspace() {
   }
 
   async function startComparison() {
-    if (!loaded || !rows) return;
+    if (!loaded || !rows || !settings) return;
     setStarting(true);
     setStartError(null);
     const ids = mappings.filter((m) => selected.has(m.testSetId)).map((m) => m.testSetId);
     try {
-      const { draft: created } = await api<{ draft: Draft }>("/api/drafts", {
-        method: "POST",
-        body: {
-          name: draftName.trim() || module,
-          module,
-          source: { fileName: loaded.fileName, inScopeSheet, needsConfirmationSheet: needsSheet || null },
-          rows: matchedRows,
-          testSetIds: ids,
-        },
+      const created = createDraft({
+        name: draftName.trim() || module,
+        module,
+        projectId: settings.projectId,
+        releaseId: settings.releaseId,
+        releaseLabel: settings.releaseLabel,
+        mock: settings.mockMode,
+        source: { fileName: loaded.fileName, inScopeSheet, needsConfirmationSheet: needsSheet || null },
+        rows: matchedRows,
+        testSetIds: ids,
       });
       setDraft(created);
       setStatuses(Object.fromEntries(ids.map((id) => [id, "pending" as SetStatus])));
@@ -188,7 +187,6 @@ export function CompareWorkspace() {
         description="Upload the release scope workbook, pick a module, and compare it with that module’s test sets. Nothing in Spira changes until you review and apply."
       />
 
-      {settingsError && <Notice tone="danger" title="Settings could not be loaded">{settingsError}</Notice>}
       {settings?.mockMode && (
         <Notice tone="warning" title="Mock mode is on">
           Comparisons use simulated Spira data. Turn it off in Settings to use n8n.

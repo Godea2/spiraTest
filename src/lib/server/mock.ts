@@ -1,23 +1,18 @@
 import "server-only";
+import { cardKey } from "@/lib/domain/board";
 import type {
   ApplyAction,
   ApplyActionResult,
   Card,
   Column,
   MissingRow,
+  MockState,
 } from "@/lib/domain/types";
-import { cardKey } from "@/lib/domain/board";
-import { dataPath, readJson, withFileLock, writeJson } from "./json-store";
 
 export interface ReconcileOutput {
   cards: Card[];
   missingFromSpira: MissingRow[];
   membership: number[];
-}
-
-interface MockState {
-  removed: Record<string, number[]>;
-  transientFailureUsed: Record<string, boolean>;
 }
 
 const TRANSIENT_FAILURE = { testSetId: 125, testCaseId: 3661 };
@@ -36,10 +31,8 @@ const SCENARIOS = [
 ];
 const EXECUTION_STATUSES = ["Passed", "Failed", "Blocked", "Caution"];
 
-const stateFile = () => dataPath("mock-state.json");
-
-async function readState(): Promise<MockState> {
-  return (await readJson<MockState>(stateFile())) ?? { removed: {}, transientFailureUsed: {} };
+export function emptyMockState(): MockState {
+  return { removed: {}, transientFailureUsed: {} };
 }
 
 function fixtureShape(testSetId: number): { size: number; caseBase: number; membershipBase: number } {
@@ -97,8 +90,7 @@ export function buildFixture(testSetId: number, module: string): Card[] {
   return cards;
 }
 
-export async function mockReconcile(testSetId: number, module: string): Promise<ReconcileOutput> {
-  const state = await readState();
+export function mockReconcile(state: MockState, testSetId: number, module: string): ReconcileOutput {
   const removed = new Set(state.removed[String(testSetId)] ?? []);
   const cards = buildFixture(testSetId, module).filter((card) => !removed.has(card.testSetTestCaseId));
   const prefix = prefixFor(module);
@@ -114,49 +106,33 @@ export async function mockReconcile(testSetId: number, module: string): Promise<
   };
 }
 
-export async function mockApply(
+/** Returns the results and the simulated state after the batch; the input state is not modified. */
+export function mockApply(
+  state: MockState,
   testSetId: number,
   actions: ApplyAction[],
   dryRun: boolean,
-): Promise<ApplyActionResult[]> {
-  return withFileLock(stateFile(), async () => {
-    const state = await readState();
-    const key = String(testSetId);
-    const removed = new Set(state.removed[key] ?? []);
-    const results: ApplyActionResult[] = actions.map((action) => {
-      if (removed.has(action.testSetTestCaseId)) {
-        return { ...action, status: "skipped", message: "Already removed from the test set." };
-      }
-      if (dryRun) return { ...action, status: "wouldRemove", message: null };
-      const isTransient =
-        testSetId === TRANSIENT_FAILURE.testSetId &&
-        action.testCaseId === TRANSIENT_FAILURE.testCaseId &&
-        !state.transientFailureUsed[`${testSetId}:${action.testCaseId}`];
-      if (isTransient) {
-        state.transientFailureUsed[`${testSetId}:${action.testCaseId}`] = true;
-        return { ...action, status: "failed", message: "Simulated transient Spira error (HTTP 503). Retry should succeed." };
-      }
-      removed.add(action.testSetTestCaseId);
-      return { ...action, status: "removed", message: null };
-    });
-    if (!dryRun) {
-      state.removed[key] = [...removed].sort((a, b) => a - b);
-      await writeJson(stateFile(), state);
+): { results: ApplyActionResult[]; state: MockState } {
+  const next: MockState = structuredClone(state);
+  const key = String(testSetId);
+  const removed = new Set(next.removed[key] ?? []);
+  const results: ApplyActionResult[] = actions.map((action) => {
+    if (removed.has(action.testSetTestCaseId)) {
+      return { ...action, status: "skipped", message: "Already removed from the test set." };
     }
-    return results;
+    if (dryRun) return { ...action, status: "wouldRemove", message: null };
+    const failureKey = `${testSetId}:${action.testCaseId}`;
+    const isTransient =
+      testSetId === TRANSIENT_FAILURE.testSetId &&
+      action.testCaseId === TRANSIENT_FAILURE.testCaseId &&
+      !next.transientFailureUsed[failureKey];
+    if (isTransient) {
+      next.transientFailureUsed[failureKey] = true;
+      return { ...action, status: "failed", message: "Simulated transient Spira error (HTTP 503). Retry should succeed." };
+    }
+    removed.add(action.testSetTestCaseId);
+    return { ...action, status: "removed", message: null };
   });
-}
-
-export async function resetMockState(): Promise<void> {
-  await withFileLock(stateFile(), () => writeJson(stateFile(), { removed: {}, transientFailureUsed: {} }));
-}
-
-/** Test hook: simulate someone else changing Spira membership between review and apply. */
-export async function mockRemoveMembership(testSetId: number, membershipIds: number[]): Promise<void> {
-  await withFileLock(stateFile(), async () => {
-    const state = await readState();
-    const key = String(testSetId);
-    state.removed[key] = [...new Set([...(state.removed[key] ?? []), ...membershipIds])];
-    await writeJson(stateFile(), state);
-  });
+  if (!dryRun) next.removed[key] = [...removed].sort((a, b) => a - b);
+  return { results, state: next };
 }

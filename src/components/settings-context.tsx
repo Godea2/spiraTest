@@ -2,35 +2,42 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, errorMessage } from "@/lib/client/api";
-import type { PublicSettings } from "@/lib/domain/types";
+import { loadSettings } from "@/lib/client/settings-store";
+import type { AppSettings, EndpointsStatus } from "@/lib/domain/types";
 
 interface SettingsState {
-  settings: PublicSettings | null;
-  error: string | null;
-  reload: () => Promise<void>;
-  replace: (settings: PublicSettings) => void;
+  /** Saved in this browser. */
+  settings: AppSettings | null;
+  /** Webhook configuration as reported by the server (source and host only). */
+  endpoints: EndpointsStatus | null;
+  endpointsError: string | null;
+  replace: (settings: AppSettings) => void;
+  replaceEndpoints: (endpoints: EndpointsStatus) => void;
+  reloadEndpoints: () => Promise<void>;
 }
 
 const SettingsContext = createContext<SettingsState | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<PublicSettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [endpoints, setEndpoints] = useState<EndpointsStatus | null>(null);
+  const [endpointsError, setEndpointsError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  const reloadEndpoints = useCallback(async () => {
     try {
-      setSettings(await api<PublicSettings>("/api/settings"));
-      setError(null);
+      setEndpoints(await api<EndpointsStatus>("/api/endpoints"));
+      setEndpointsError(null);
     } catch (err) {
-      setError(errorMessage(err));
+      setEndpointsError(errorMessage(err));
     }
   }, []);
 
   useEffect(() => {
     let active = true;
-    api<PublicSettings>("/api/settings").then(
-      (loaded) => active && setSettings(loaded),
-      (err) => active && setError(errorMessage(err)),
+    Promise.resolve().then(() => active && setSettings(loadSettings()));
+    api<EndpointsStatus>("/api/endpoints").then(
+      (loaded) => active && setEndpoints(loaded),
+      (err) => active && setEndpointsError(errorMessage(err)),
     );
     return () => {
       active = false;
@@ -38,7 +45,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SettingsContext.Provider value={{ settings, error, reload, replace: setSettings }}>
+    <SettingsContext.Provider
+      value={{ settings, endpoints, endpointsError, replace: setSettings, replaceEndpoints: setEndpoints, reloadEndpoints }}
+    >
       {children}
     </SettingsContext.Provider>
   );
@@ -50,7 +59,7 @@ export function useSettings(): SettingsState {
   return value;
 }
 
-export function modulesFrom(settings: PublicSettings | null): string[] {
+export function modulesFrom(settings: AppSettings | null): string[] {
   if (!settings) return [];
   return [...new Set(settings.mappings.map((m) => m.module))].sort((a, b) => a.localeCompare(b));
 }

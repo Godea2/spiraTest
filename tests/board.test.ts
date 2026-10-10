@@ -36,6 +36,7 @@ const set: TestSetComparison = {
   cards,
   missingFromSpira: [],
   baselineMembership: [1, 2, 3, 4],
+  seal: "",
 };
 
 describe("board moves", () => {

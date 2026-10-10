@@ -160,6 +160,7 @@ export function summarizeDraft(draft: Draft): DraftSummary {
     id: draft.id,
     name: draft.name,
     module: draft.module,
+    mock: draft.mock,
     status: draft.status,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,

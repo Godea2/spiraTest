@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadSettings, saveSettings } from "@/lib/client/settings-store";
+import { defaultSettings, type SettingsUpdate } from "@/lib/domain/settings";
+import {
+  applyEndpointChanges,
+  decryptOverrides,
+  encryptOverrides,
+  NO_OVERRIDES,
+  toEndpointsStatus,
+} from "@/lib/server/endpoint-overrides";
 import { validateWebhookUrl } from "@/lib/server/endpoints";
 import { n8nApply, n8nReconcile } from "@/lib/server/n8n";
-import { defaultSettings, getSettings, toPublicSettings, updateSettings } from "@/lib/server/settings-store";
 import { createSessionToken, verifySessionToken } from "@/lib/server/session";
 
-const ENV_KEYS = ["RECONCILE_WEBHOOK_URL", "APPLY_WEBHOOK_URL", "WEBHOOK_SECRET", "SESSION_SECRET", "APP_PASSWORD"];
+const ENV_KEYS = ["RECONCILE_WEBHOOK_URL", "APPLY_WEBHOOK_URL", "WEBHOOK_SECRET", "APP_PASSWORD"];
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -17,12 +25,11 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  vi.unstubAllGlobals();
 });
 
-function update(overrides: Partial<Parameters<typeof updateSettings>[0]> = {}) {
+function update(overrides: Partial<SettingsUpdate> = {}) {
   const { projectId, releaseId, releaseLabel, mockMode, mappings, moduleAliases } = defaultSettings();
-  return updateSettings({ projectId, releaseId, releaseLabel, mockMode, mappings, moduleAliases, ...overrides });
+  return saveSettings({ projectId, releaseId, releaseLabel, mockMode, mappings, moduleAliases, ...overrides });
 }
 
 describe("webhook URL validation", () => {
@@ -38,48 +45,70 @@ describe("webhook URL validation", () => {
   });
 });
 
-describe("settings", () => {
-  it("defaults to project 24 / release 157 with Mock mode on and 11 mappings", async () => {
-    const settings = await getSettings();
+describe("settings saved in the browser", () => {
+  it("defaults to project 24 / release 157 with Mock mode on and 11 mappings", () => {
+    const settings = loadSettings();
     expect(settings).toMatchObject({ projectId: 24, releaseId: 157, releaseLabel: "1.0.0.0.0002 - Sprint3", mockMode: true });
     expect(settings.mappings).toHaveLength(11);
     expect(settings.mappings.find((m) => m.testSetId === 126)).toMatchObject({ module: "Payments", platform: "iOS" });
   });
 
-  it("saves an override, keeps it when the field is blank, and clears back to the environment fallback", async () => {
-    process.env.RECONCILE_WEBHOOK_URL = "https://env.example.com/webhook/reconcile";
-    await update({ endpoints: { reconcile: { url: "https://override.example.com/webhook/r" } } });
-    expect(toPublicSettings(await getSettings()).endpoints.reconcile).toEqual({ source: "override", host: "override.example.com" });
-
-    await update({ endpoints: { reconcile: { url: "  " } } });
-    expect((await getSettings()).endpoints.reconcileUrl).toBe("https://override.example.com/webhook/r");
-
-    await update({ endpoints: { reconcile: { clear: true } } });
-    expect(toPublicSettings(await getSettings()).endpoints.reconcile).toEqual({ source: "environment", host: "env.example.com" });
+  it("persists a saved update", () => {
+    update({ projectId: 30, mockMode: false });
+    expect(loadSettings()).toMatchObject({ projectId: 30, mockMode: false });
   });
 
-  it("never exposes full URLs or the secret in the public settings", async () => {
+  it("rejects duplicate test sets with a field error and keeps the previous settings", () => {
+    const mappings = defaultSettings().mappings;
+    expect(() => update({ mappings: [...mappings, { ...mappings[0], id: "dup" }] })).toThrow(
+      expect.objectContaining({ fieldErrors: { "mappings.11.testSetId": expect.stringContaining("more than once") } }),
+    );
+    expect(loadSettings().mappings).toHaveLength(11);
+  });
+
+  it("drops aliases for modules that no longer have mappings", () => {
+    update({ moduleAliases: { Onboarding: "Onboarding App", Ghost: "x" } });
+    expect(loadSettings().moduleAliases).toEqual({ Onboarding: "Onboarding App" });
+  });
+});
+
+describe("webhook URL overrides", () => {
+  it("saves an override, keeps it when the field is blank, and clears back to the environment fallback", () => {
+    process.env.RECONCILE_WEBHOOK_URL = "https://env.example.com/webhook/reconcile";
+    let overrides = applyEndpointChanges(NO_OVERRIDES, { reconcile: { url: "https://override.example.com/webhook/r" } });
+    expect(toEndpointsStatus(overrides).endpoints.reconcile).toEqual({ source: "override", host: "override.example.com" });
+
+    overrides = applyEndpointChanges(overrides, { reconcile: { url: "  " } });
+    expect(overrides.reconcileUrl).toBe("https://override.example.com/webhook/r");
+
+    overrides = applyEndpointChanges(overrides, { reconcile: { clear: true } });
+    expect(toEndpointsStatus(overrides).endpoints.reconcile).toEqual({ source: "environment", host: "env.example.com" });
+  });
+
+  it("never exposes full URLs or the secret in the endpoint status", () => {
     process.env.WEBHOOK_SECRET = "super-secret-value";
-    await update({ endpoints: { apply: { url: "https://n8n.example.com/webhook/apply-token-123" } } });
-    const json = JSON.stringify(toPublicSettings(await getSettings()));
+    const overrides = applyEndpointChanges(NO_OVERRIDES, { apply: { url: "https://n8n.example.com/webhook/apply-token-123" } });
+    const json = JSON.stringify(toEndpointsStatus(overrides));
     expect(json).not.toContain("apply-token-123");
     expect(json).not.toContain("super-secret-value");
     expect(json).toContain('"webhookSecretConfigured":true');
   });
 
-  it("rejects invalid URLs and duplicate test sets with field errors", async () => {
-    await expect(update({ endpoints: { apply: { url: "http://n8n.example.com/x" } } })).rejects.toMatchObject({
-      fieldErrors: { "endpoints.apply": expect.stringContaining("https") },
-    });
-    const mappings = defaultSettings().mappings;
-    await expect(update({ mappings: [...mappings, { ...mappings[0], id: "dup" }] })).rejects.toMatchObject({
-      fieldErrors: { "mappings.11.testSetId": expect.stringContaining("more than once") },
-    });
+  it("rejects invalid URLs with a field error", () => {
+    expect(() => applyEndpointChanges(NO_OVERRIDES, { apply: { url: "http://n8n.example.com/x" } })).toThrow(
+      expect.objectContaining({ fieldErrors: { "endpoints.apply": expect.stringContaining("https") } }),
+    );
   });
 
-  it("drops aliases for modules that no longer have mappings", async () => {
-    await update({ moduleAliases: { Onboarding: "Onboarding App", Ghost: "x" } });
-    expect((await getSettings()).moduleAliases).toEqual({ Onboarding: "Onboarding App" });
+  it("stores overrides encrypted, readable only with the current session secret", async () => {
+    const overrides = { reconcileUrl: "https://n8n.example.com/webhook/reconcile-token-9", applyUrl: null };
+    const cookie = await encryptOverrides(overrides);
+    expect(cookie).not.toContain("reconcile-token-9");
+    expect(await decryptOverrides(cookie)).toEqual(overrides);
+
+    process.env.SESSION_SECRET = "a-different-secret-0123456789";
+    expect(await decryptOverrides(cookie)).toEqual(NO_OVERRIDES);
+    expect(await decryptOverrides("garbage")).toEqual(NO_OVERRIDES);
   });
 });
 

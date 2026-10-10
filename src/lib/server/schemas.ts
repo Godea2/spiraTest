@@ -1,59 +1,125 @@
 import "server-only";
 import { z } from "zod";
-import { COLUMNS } from "@/lib/domain/types";
+import { MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { COLUMNS, PLATFORMS } from "@/lib/domain/types";
 
+const id = z.number().int().positive();
+const column = z.enum(COLUMNS);
 const cell = z.union([z.string().max(10_000), z.number(), z.boolean(), z.null()]);
 
 export const workbookRowSchema = z.object({
   sheet: z.string().max(200),
-  rowNumber: z.number().int().positive(),
+  rowNumber: id,
   scope: z.enum(["inScope", "needsConfirmation"]),
   values: z.record(z.string().max(300), cell),
 });
 
-export const createDraftSchema = z.object({
-  name: z.string().trim().min(1, "Give the draft a name.").max(160),
+const rows = z.array(workbookRowSchema).max(20_000);
+
+export const contextSchema = z.object({
+  projectId: id,
+  releaseId: id,
   module: z.string().trim().min(1).max(120),
-  source: z.object({
-    fileName: z.string().max(260),
-    inScopeSheet: z.string().min(1).max(200),
-    needsConfirmationSheet: z.string().max(200).nullable(),
+  mock: z.boolean(),
+});
+
+const testSetRef = z.object({
+  testSetId: id,
+  testSetName: z.string().max(200),
+  platform: z.enum(PLATFORMS),
+});
+
+const cardSchema = z.object({
+  key: z.string().max(64),
+  testSetId: id,
+  testCaseId: id,
+  testSetTestCaseId: id,
+  name: z.string().max(2_000),
+  tcId: z.string().max(200).nullable(),
+  executionStatus: z.string().max(200),
+  executed: z.boolean(),
+  suggestion: column,
+  reason: z.string().max(2_000),
+});
+
+const comparisonSchema = testSetRef.extend({
+  comparedAt: z.string().max(40),
+  cards: z.array(cardSchema).max(20_000),
+  missingFromSpira: z
+    .array(z.object({ tcId: z.string().max(200), testScenario: z.string().max(2_000), reason: z.string().max(2_000) }))
+    .max(20_000),
+  baselineMembership: z.array(id).max(20_000),
+  seal: z.string().max(200),
+});
+
+const testSets = z.array(comparisonSchema).min(1).max(50);
+const decisions = z.record(z.string().max(64), column);
+const removed = z.record(z.string().max(20), z.array(id).max(20_000));
+
+const mockStateSchema = z.object({
+  removed: z.record(z.string().max(20), z.array(id).max(20_000)),
+  transientFailureUsed: z.record(z.string().max(64), z.boolean()),
+});
+
+const preflightSchema = z.object({
+  at: z.string().max(40),
+  ok: z.boolean(),
+  sets: z
+    .array(
+      z.object({
+        testSetId: id,
+        ok: z.boolean(),
+        unexpected: z.array(id),
+        missing: z.array(id),
+        error: z.string().max(2_000).optional(),
+      }),
+    )
+    .max(50),
+  seal: z.string().max(200).nullable(),
+});
+
+export const reconcileSchema = z.object({
+  context: contextSchema,
+  testSet: testSetRef,
+  rows,
+  mockState: mockStateSchema.optional(),
+});
+
+export const preflightRequestSchema = z.object({
+  context: contextSchema,
+  rows,
+  testSets,
+  decisions,
+  removed,
+  mockState: mockStateSchema.optional(),
+});
+
+export const applyRequestSchema = z.object({
+  context: contextSchema,
+  testSets,
+  decisions,
+  removed,
+  preflight: preflightSchema.nullable(),
+  batch: z.object({
+    testSetId: id,
+    dryRun: z.boolean(),
+    confirmModule: z.string().max(200).optional(),
+    actions: z
+      .array(z.object({ testCaseId: id, testSetTestCaseId: id }))
+      .min(1)
+      .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} actions per batch.`),
   }),
-  rows: z.array(workbookRowSchema).max(20_000),
-  testSetIds: z.array(z.number().int().positive()).min(1, "Choose at least one test set.").max(50),
+  mockState: mockStateSchema.optional(),
 });
 
-const column = z.enum(COLUMNS);
-
-export const updateDraftSchema = z.object({
-  name: z.string().trim().min(1).max(160).optional(),
-  decisions: z.record(z.string().max(64), column).optional(),
-  history: z
-    .array(
-      z.object({
-        at: z.string().max(40),
-        label: z.string().max(300),
-        changes: z
-          .array(z.object({ key: z.string().max(64), from: column, to: column }))
-          .max(50_000),
-      }),
-    )
-    .max(5_000)
-    .optional(),
-  expectedUpdatedAt: z.string().max(40).optional(),
+export const verifyRequestSchema = z.object({
+  context: contextSchema,
+  rows,
+  testSets,
+  decisions,
+  mockState: mockStateSchema.optional(),
 });
 
-export const applyBatchSchema = z.object({
-  testSetId: z.number().int().positive(),
-  dryRun: z.boolean(),
-  confirmModule: z.string().max(200).optional(),
-  actions: z
-    .array(
-      z.object({
-        testCaseId: z.number().int().positive(),
-        testSetTestCaseId: z.number().int().positive(),
-      }),
-    )
-    .min(1)
-    .max(25),
-});
+const endpointChange = z.object({ url: z.string().max(4096).optional(), clear: z.boolean().optional() }).optional();
+
+export const endpointsUpdateSchema = z.object({ reconcile: endpointChange, apply: endpointChange });

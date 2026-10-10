@@ -1,10 +1,10 @@
 import "server-only";
 import { z } from "zod";
+import { ApplyValidationError } from "@/lib/domain/apply-rules";
 import { hasSession } from "./auth";
-import { DraftConflictError, DraftNotFoundError } from "./draft-store";
+import { EndpointValidationError } from "./endpoint-overrides";
 import { AutomationError } from "./n8n";
-import { ApplyValidationError } from "./reconciler";
-import { SettingsValidationError } from "./settings-store";
+import { SealError } from "./seal";
 
 export class HttpError extends Error {
   constructor(
@@ -41,9 +41,20 @@ export async function parseBody<T extends z.ZodType>(request: Request, schema: T
       const key = issue.path.join(".") || "_";
       fieldErrors[key] ??= issue.message;
     }
-    throw new HttpError(400, "Some fields are not valid.", fieldErrors);
+    const batchError = fieldErrors["batch.actions"];
+    throw new HttpError(400, batchError ?? "Some fields are not valid.", fieldErrors);
   }
   return parsed.data;
+}
+
+export function errorResponse(error: unknown): Response {
+  if (error instanceof HttpError) return jsonError(error.status, error.message, error.fieldErrors);
+  if (error instanceof EndpointValidationError) return jsonError(400, error.message, error.fieldErrors);
+  if (error instanceof ApplyValidationError) return jsonError(error.status, error.message);
+  if (error instanceof SealError) return jsonError(error.status, error.message);
+  if (error instanceof AutomationError) return jsonError(error.status, error.message);
+  console.error("Unhandled API error", error);
+  return jsonError(500, "Something went wrong on the server. Check the server logs.");
 }
 
 /**
@@ -59,14 +70,7 @@ export function handler<Args extends unknown[]>(
       if (!options.public && !(await hasSession())) return jsonError(401, "Sign in to continue.");
       return await fn(...args);
     } catch (error) {
-      if (error instanceof HttpError) return jsonError(error.status, error.message, error.fieldErrors);
-      if (error instanceof SettingsValidationError) return jsonError(400, error.message, error.fieldErrors);
-      if (error instanceof DraftNotFoundError) return jsonError(404, error.message);
-      if (error instanceof DraftConflictError) return jsonError(409, error.message);
-      if (error instanceof ApplyValidationError) return jsonError(error.status, error.message);
-      if (error instanceof AutomationError) return jsonError(error.status, error.message);
-      console.error("Unhandled API error", error);
-      return jsonError(500, "Something went wrong on the server. Check the server logs.");
+      return errorResponse(error);
     }
   };
 }

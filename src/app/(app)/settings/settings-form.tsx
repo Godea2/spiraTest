@@ -3,9 +3,19 @@
 import { useMemo, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner, Switch } from "@/components/ui";
+import { logActivity } from "@/lib/client/activity";
 import { api, ApiError, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
-import { PLATFORMS, type EndpointKind, type Platform, type PublicSettings } from "@/lib/domain/types";
+import { resetMockState } from "@/lib/client/mock-state";
+import { saveSettings } from "@/lib/client/settings-store";
+import { applySettingsUpdate, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
+import {
+  PLATFORMS,
+  type AppSettings,
+  type EndpointKind,
+  type EndpointsStatus,
+  type Platform,
+} from "@/lib/domain/types";
 
 interface MappingDraft {
   id: string;
@@ -31,7 +41,7 @@ const ENDPOINT_COPY: Record<EndpointKind, { title: string; hint: string }> = {
   apply: { title: "Apply webhook", hint: "Called to remove cases from a test set (dry run or live)." },
 };
 
-function toForm(s: PublicSettings): FormState {
+function toForm(s: AppSettings): FormState {
   return {
     projectId: String(s.projectId),
     releaseId: String(s.releaseId),
@@ -47,14 +57,13 @@ const newId = () => `m-${Math.random().toString(36).slice(2, 10)}`;
 const positiveInt = (v: string) => /^\d+$/.test(v.trim()) && Number(v) > 0;
 
 export function SettingsForm() {
-  const { settings, error } = useSettings();
-  if (error && !settings) return <Notice tone="danger" title="Settings could not be loaded">{error}</Notice>;
+  const { settings } = useSettings();
   if (!settings) return <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading settings…</div>;
   return <SettingsEditor settings={settings} />;
 }
 
-function SettingsEditor({ settings }: { settings: PublicSettings }) {
-  const { replace } = useSettings();
+function SettingsEditor({ settings }: { settings: AppSettings }) {
+  const { replace, endpoints, endpointsError, replaceEndpoints } = useSettings();
   const [form, setForm] = useState<FormState>(() => toForm(settings));
   const [initial, setInitial] = useState<string>(() => JSON.stringify(toForm(settings)));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -62,7 +71,6 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [newModule, setNewModule] = useState<string | null>(null);
   const [removeModule, setRemoveModule] = useState<string | null>(null);
-  const [resettingMock, setResettingMock] = useState(false);
 
   const modules = useMemo(() => {
     const order: string[] = [];
@@ -113,64 +121,73 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
     setMessage(null);
     try {
       const endpoint = (kind: EndpointKind) =>
-        form!.endpoints[kind].clear ? { clear: true } : form!.endpoints[kind].url.trim() ? { url: form!.endpoints[kind].url.trim() } : undefined;
-      const saved = await api<PublicSettings>("/api/settings", {
-        method: "PUT",
-        body: {
-          projectId: Number(form!.projectId),
-          releaseId: Number(form!.releaseId),
-          releaseLabel: form!.releaseLabel.trim(),
-          mockMode: form!.mockMode,
-          mappings: form!.mappings.map((m) => ({
-            id: m.id,
-            module: m.module.trim(),
-            testSetId: Number(m.testSetId),
-            testSetName: m.testSetName.trim(),
-            platform: m.platform,
-          })),
-          moduleAliases: Object.fromEntries(
-            Object.entries(form!.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
-          ),
-          endpoints: { reconcile: endpoint("reconcile"), apply: endpoint("apply") },
-        },
-      });
+        form.endpoints[kind].clear ? { clear: true } : form.endpoints[kind].url.trim() ? { url: form.endpoints[kind].url.trim() } : undefined;
+      const update: SettingsUpdate = {
+        projectId: Number(form.projectId),
+        releaseId: Number(form.releaseId),
+        releaseLabel: form.releaseLabel.trim(),
+        mockMode: form.mockMode,
+        mappings: form.mappings.map((m) => ({
+          id: m.id,
+          module: m.module.trim(),
+          testSetId: Number(m.testSetId),
+          testSetName: m.testSetName.trim(),
+          platform: m.platform,
+        })),
+        moduleAliases: Object.fromEntries(
+          Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
+        ),
+      };
+      applySettingsUpdate(update);
+
+      const endpointChanges = { reconcile: endpoint("reconcile"), apply: endpoint("apply") };
+      const notes: string[] = [];
+      if (endpointChanges.reconcile || endpointChanges.apply) {
+        replaceEndpoints(await api<EndpointsStatus>("/api/endpoints", { method: "PUT", body: endpointChanges }));
+        for (const kind of ["reconcile", "apply"] as const) {
+          const change = endpointChanges[kind];
+          if (change) notes.push(change.clear ? `${kind} override cleared` : `${kind} URL replaced`);
+        }
+      }
+
+      const saved = saveSettings(update);
       replace(saved);
+      logActivity({
+        type: "settings.updated",
+        message: `Settings saved${notes.length ? ` (${notes.join(", ")})` : ""}.`,
+        details: { mockMode: saved.mockMode, projectId: saved.projectId, releaseId: saved.releaseId, mappings: saved.mappings.length },
+      });
       const f = toForm(saved);
       setForm(f);
       setInitial(JSON.stringify(f));
       setErrors({});
       setMessage({ tone: "success", text: "Settings saved." });
     } catch (err) {
-      if (err instanceof ApiError) setErrors(err.fieldErrors);
+      if (err instanceof ApiError || err instanceof SettingsValidationError) setErrors(err.fieldErrors);
       setMessage({ tone: "danger", text: errorMessage(err) });
     } finally {
       setSaving(false);
     }
   }
 
-  async function resetMock() {
-    setResettingMock(true);
-    try {
-      await api("/api/mock/reset", { method: "POST" });
-      setMessage({ tone: "success", text: "Mock Spira data was reset to the original fixture." });
-    } catch (err) {
-      setMessage({ tone: "danger", text: errorMessage(err) });
-    } finally {
-      setResettingMock(false);
-    }
+  function resetMock() {
+    resetMockState();
+    logActivity({ type: "mock.reset", message: "Mock Spira data reset to its original fixture." });
+    setMessage({ tone: "success", text: "Mock Spira data was reset to the original fixture." });
   }
 
   const liveWithoutEndpoints =
     !form.mockMode &&
+    endpoints !== null &&
     (["reconcile", "apply"] as const).some(
-      (k) => (settings.endpoints[k].source === "none" || form.endpoints[k].clear) && !form.endpoints[k].url.trim(),
+      (k) => (endpoints.endpoints[k].source === "none" || form.endpoints[k].clear) && !form.endpoints[k].url.trim(),
     );
 
   return (
     <div className="flex flex-col gap-6 pb-24">
       <PageHeader
         title="Settings"
-        description="Where comparisons point, how modules map to Spira test sets, and which n8n workflows run them."
+        description="Where comparisons point, how modules map to Spira test sets, and which n8n workflows run them. Saved in this browser."
         actions={settings.updatedAt && <span className="text-xs text-zinc-500">Last saved {formatDateTime(settings.updatedAt)}</span>}
       />
 
@@ -193,7 +210,7 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
           checked={form.mockMode}
           onChange={(mockMode) => update({ mockMode })}
           label="Mock mode"
-          description="Use simulated Spira data instead of n8n. Recommended for training and testing; live apply only changes the simulation."
+          description="Use simulated Spira data instead of n8n for new comparisons. Each draft keeps the mode it was created in, so a Mock draft can never change real Spira."
         />
         {liveWithoutEndpoints && (
           <Notice tone="warning" className="mt-4">With Mock mode off, both webhooks need a URL. Add one below or set the environment variables.</Notice>
@@ -201,17 +218,25 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
         {settings.mockMode && (
           <div className="mt-4 flex items-center justify-between gap-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
             <p className="text-sm text-zinc-600 dark:text-zinc-400">Restore simulated test sets after a mock live apply.</p>
-            <Button size="sm" onClick={resetMock} busy={resettingMock}>Reset mock data</Button>
+            <Button size="sm" onClick={resetMock}>Reset mock data</Button>
           </div>
         )}
       </Section>
 
       <Section
         title="Automation endpoints"
-        description="The server calls these n8n webhooks. The browser never contacts n8n or Spira directly, and saved URLs are never sent back to the browser."
+        description="The server calls these n8n webhooks. The browser never contacts n8n or Spira directly. A saved URL is kept encrypted for this browser only and is never shown again; to set it for everyone, use the environment variables on the server."
       >
+        {!endpoints ? (
+          endpointsError ? (
+            <Notice tone="danger" title="Endpoint status could not be loaded">{endpointsError}</Notice>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading…</div>
+          )
+        ) : (
+        <>
         <div className="mb-5 flex items-center gap-2 text-sm">
-          {settings.webhookSecretConfigured ? (
+          {endpoints.webhookSecretConfigured ? (
             <><Badge tone="success">Secret configured</Badge><span className="text-zinc-600 dark:text-zinc-400">WEBHOOK_SECRET is sent as the X-Webhook-Secret header.</span></>
           ) : (
             <><Badge tone="danger">Secret missing</Badge><span className="text-zinc-600 dark:text-zinc-400">Set WEBHOOK_SECRET in the server environment. n8n calls are disabled until then.</span></>
@@ -219,7 +244,7 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
         </div>
         <div className="grid gap-6 lg:grid-cols-2">
           {(["reconcile", "apply"] as const).map((kind) => {
-            const status = settings.endpoints[kind];
+            const status = endpoints.endpoints[kind];
             const change = form.endpoints[kind];
             const setChange = (patch: Partial<typeof change>) =>
               update({ endpoints: { ...form.endpoints, [kind]: { ...change, ...patch } } });
@@ -234,7 +259,7 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
                   {status.source === "environment" && <Badge>Environment</Badge>}
                   {status.source === "none" && <Badge tone="warning">Not configured</Badge>}
                   <span className="text-zinc-600 dark:text-zinc-400">
-                    {status.source === "override" && <>Using the URL saved here{status.host && <> · <span className="font-mono">{status.host}</span></>}</>}
+                    {status.source === "override" && <>Using the URL saved in this browser{status.host && <> · <span className="font-mono">{status.host}</span></>}</>}
                     {status.source === "environment" && <>Using {ENV_NAME[kind]}{status.host && <> · <span className="font-mono">{status.host}</span></>}</>}
                     {status.source === "none" && <>No saved URL and no {ENV_NAME[kind]}</>}
                   </span>
@@ -268,6 +293,8 @@ function SettingsEditor({ settings }: { settings: PublicSettings }) {
             );
           })}
         </div>
+        </>
+        )}
       </Section>
 
       <Section

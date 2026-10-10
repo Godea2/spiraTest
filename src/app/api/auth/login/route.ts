@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { cookies, headers } from "next/headers";
-import { logActivity } from "@/lib/server/activity-store";
 import {
   clearFailedLogins,
   loginRateLimited,
@@ -45,7 +44,6 @@ export const POST = handler(
       path: "/",
       maxAge: SESSION_TTL_SECONDS,
     });
-    await logActivity({ type: "auth.signIn", message: "Signed in." });
     return ok({ ok: true });
   },
   { public: true },

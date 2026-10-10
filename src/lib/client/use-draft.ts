@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Draft } from "@/lib/domain/types";
-import { api, errorMessage } from "./api";
+import { errorMessage } from "./api";
+import { getDraft } from "./drafts";
 
 export function useDraft(id: string) {
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -10,10 +11,13 @@ export function useDraft(id: string) {
 
   useEffect(() => {
     let active = true;
-    api<{ draft: Draft }>(`/api/drafts/${id}`).then(
-      ({ draft: loaded }) => active && setDraft(loaded),
-      (err) => active && setError(errorMessage(err)),
-    );
+    // Deferred so the first render matches the server, which cannot see browser storage.
+    Promise.resolve()
+      .then(() => getDraft(id))
+      .then(
+        (loaded) => active && setDraft(loaded),
+        (err) => active && setError(errorMessage(err)),
+      );
     return () => {
       active = false;
     };
@@ -21,7 +25,7 @@ export function useDraft(id: string) {
 
   const reload = useCallback(async () => {
     try {
-      const { draft: loaded } = await api<{ draft: Draft }>(`/api/drafts/${id}`);
+      const loaded = getDraft(id);
       setDraft(loaded);
       setError(null);
       return loaded;

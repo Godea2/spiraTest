@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeader, Spinner } from "@/components/ui";
-import { api, errorMessage } from "@/lib/client/api";
+import { errorMessage } from "@/lib/client/api";
+import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/client/drafts";
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
-import type { Draft, DraftSummary } from "@/lib/domain/types";
+import type { DraftSummary } from "@/lib/domain/types";
 
 type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
 
@@ -21,7 +22,7 @@ export function DraftList() {
 
   const load = useCallback(async () => {
     try {
-      setDrafts((await api<{ drafts: DraftSummary[] }>("/api/drafts")).drafts);
+      setDrafts(listDrafts());
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -30,10 +31,12 @@ export function DraftList() {
 
   useEffect(() => {
     let active = true;
-    api<{ drafts: DraftSummary[] }>("/api/drafts").then(
-      ({ drafts: loaded }) => active && setDrafts(loaded),
-      (err) => active && setError(errorMessage(err)),
-    );
+    Promise.resolve()
+      .then(listDrafts)
+      .then(
+        (loaded) => active && setDrafts(loaded),
+        (err) => active && setError(errorMessage(err)),
+      );
     return () => {
       active = false;
     };
@@ -60,8 +63,7 @@ export function DraftList() {
 
   const duplicate = (d: DraftSummary) =>
     run(d.id, async () => {
-      const { draft } = await api<{ draft: Draft }>(`/api/drafts/${d.id}/duplicate`, { method: "POST" });
-      router.push(`/drafts/${draft.id}`);
+      router.push(`/drafts/${duplicateDraft(d.id).id}`);
     });
 
   const confirmPending = () => {
@@ -69,8 +71,8 @@ export function DraftList() {
     const { kind, draft } = pending;
     setPending(null);
     void run(draft.id, async () => {
-      if (kind === "delete") await api(`/api/drafts/${draft.id}`, { method: "DELETE" });
-      else await api(`/api/drafts/${draft.id}`, { method: "PUT", body: { name } });
+      if (kind === "delete") deleteDraft(draft.id);
+      else renameDraft(draft.id, name);
     });
   };
 
@@ -78,7 +80,7 @@ export function DraftList() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Drafts"
-        description="Every comparison is saved as a draft you can reopen, review and apply."
+        description="Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later."
         actions={<ButtonLink href="/" variant="primary">New comparison</ButtonLink>}
       />
       {error && <Notice tone="danger">{error}</Notice>}
@@ -109,6 +111,7 @@ export function DraftList() {
                     </Link>
                     <Badge tone={STATUS_TONE[d.status]}>{STATUS_LABEL[d.status]}</Badge>
                     {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}
+                    {d.mock && <Badge>Mock</Badge>}
                   </div>
                   <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
                     {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} · updated {relativeTime(d.updatedAt)}

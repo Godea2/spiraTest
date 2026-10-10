@@ -14,10 +14,14 @@ import clsx from "clsx";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Badge, Button, ButtonLink, Dialog, Field, Notice, PageHeader, Spinner, Stat } from "@/components/ui";
-import { api, ApiError, errorMessage } from "@/lib/client/api";
+import { useSettings } from "@/components/settings-context";
+import { errorMessage } from "@/lib/client/api";
+import { DraftConflictError, mutateDraft, renameDraft } from "@/lib/client/drafts";
 import { exportBoard } from "@/lib/client/exports";
 import { formatDateTime, relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
+import { compareTestSet } from "@/lib/client/workflow";
+import { recordBoardEdits } from "@/lib/domain/draft-ops";
 import {
   allCards,
   applyChanges,
@@ -50,6 +54,7 @@ function describeMove(changes: CardChange[], to?: Column) {
 
 export function Board({ id }: { id: string }) {
   const router = useRouter();
+  const { settings } = useSettings();
   const { draft, setDraft, error: loadError, reload } = useDraft(id);
 
   const [decisions, setDecisions] = useState<Record<string, Column>>({});
@@ -137,17 +142,14 @@ export function Board({ id }: { id: string }) {
     if (!current || !isDirty) return true;
     setSaving(true);
     try {
-      const { draft: saved } = await api<{ draft: Draft }>(`/api/drafts/${current.id}`, {
-        method: "PUT",
-        body: { decisions: d, history: h, expectedUpdatedAt: current.updatedAt },
-      });
+      const saved = mutateDraft(current.id, (draftCopy) => recordBoardEdits(draftCopy, { decisions: d, history: h }), current.updatedAt);
       setDraft(saved);
       setSavedAt(saved.updatedAt);
       setSaveError(null);
       if (stateRef.current.decisions === d && stateRef.current.history === h) setDirty(false);
       return true;
     } catch (err) {
-      setSaveError({ message: errorMessage(err), conflict: err instanceof ApiError && err.status === 409 });
+      setSaveError({ message: errorMessage(err), conflict: err instanceof DraftConflictError });
       return false;
     } finally {
       setSaving(false);
@@ -358,14 +360,10 @@ export function Board({ id }: { id: string }) {
   async function rename() {
     if (!draft || !renaming?.trim()) return;
     try {
-      const { draft: saved } = await api<{ draft: Draft }>(`/api/drafts/${draft.id}`, {
-        method: "PUT",
-        body: { name: renaming.trim(), expectedUpdatedAt: draft.updatedAt },
-      });
-      setDraft(saved);
+      setDraft(renameDraft(draft.id, renaming, draft.updatedAt));
       setRenaming(null);
     } catch (err) {
-      setSaveError({ message: errorMessage(err), conflict: err instanceof ApiError && err.status === 409 });
+      setSaveError({ message: errorMessage(err), conflict: err instanceof DraftConflictError });
       setRenaming(null);
     }
   }
@@ -377,7 +375,7 @@ export function Board({ id }: { id: string }) {
     let latest: Draft | null = null;
     for (const [i, testSetId] of testSetIds.entries()) {
       try {
-        latest = (await api<{ draft: Draft }>(`/api/drafts/${draft.id}/compare`, { method: "POST", body: { testSetId } })).draft;
+        latest = await compareTestSet(draft.id, testSetId, settings?.mappings ?? []);
         setRecompare((r) => r && { ...r, done: i + 1 });
       } catch (err) {
         setRecompare({ running: false, error: `${setNames.get(testSetId) ?? testSetId}: ${errorMessage(err)}`, done: i, total: testSetIds.length });
@@ -415,6 +413,7 @@ export function Board({ id }: { id: string }) {
           <span className="flex flex-wrap items-center gap-2">
             {draft.module} · Release {draft.releaseLabel || draft.releaseId}
             <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
+            {draft.mock && <Badge tone="warning">Mock</Badge>}
           </span>
         }
         title={

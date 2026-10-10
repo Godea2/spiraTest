@@ -2,11 +2,11 @@
 
 import clsx from "clsx";
 import { Fragment, useMemo, useState } from "react";
-import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
-import { api, errorMessage } from "@/lib/client/api";
+import { errorMessage } from "@/lib/client/api";
 import { formatDateTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
+import { applyBatch, runPreflight, verifyApply } from "@/lib/client/workflow";
 import {
   allCards,
   chunk,
@@ -34,7 +34,6 @@ interface SetProgress {
 }
 
 export function Review({ id }: { id: string }) {
-  const { settings } = useSettings();
   const { draft, setDraft, error: loadError } = useDraft(id);
 
   const [mode, setMode] = useState<Mode>("dry");
@@ -94,7 +93,7 @@ export function Review({ id }: { id: string }) {
 
     try {
       setPhase("preflight");
-      const pre = await api<{ draft: Draft; preflight: PreflightResult }>(`/api/drafts/${draft.id}/preflight`, { method: "POST" });
+      const pre = await runPreflight(draft.id);
       setPreflight(pre.preflight);
       setDraft(pre.draft);
       if (!pre.preflight.ok && runAs === "live") {
@@ -106,9 +105,11 @@ export function Review({ id }: { id: string }) {
       let latest = pre.draft;
       for (const [testSetId, actions] of work) {
         for (const batch of chunk(actions, MAX_APPLY_BATCH)) {
-          const out = await api<{ draft: Draft; results: ApplyActionResult[] }>(`/api/drafts/${draft.id}/apply`, {
-            method: "POST",
-            body: { testSetId, dryRun: runAs === "dry", confirmModule: runAs === "live" ? confirmText : undefined, actions: batch },
+          const out = await applyBatch(draft.id, {
+            testSetId,
+            dryRun: runAs === "dry",
+            confirmModule: runAs === "live" ? confirmText : undefined,
+            actions: batch,
           });
           latest = out.draft;
           setProgress((p) => ({
@@ -121,7 +122,7 @@ export function Review({ id }: { id: string }) {
 
       if (runAs === "live") {
         setPhase("verifying");
-        const ver = await api<{ draft: Draft; verification: VerificationResult }>(`/api/drafts/${draft.id}/verify`, { method: "POST" });
+        const ver = await verifyApply(draft.id);
         setVerification(ver.verification);
         setDraft(ver.draft);
       }
@@ -158,8 +159,8 @@ export function Review({ id }: { id: string }) {
         description={`Removes Out of Scope cases from ${draft.module} test sets in project ${draft.projectId}, release ${draft.releaseLabel || draft.releaseId}. Only removals are made. Nothing is added or edited.`}
       />
 
-      {settings?.mockMode && (
-        <Notice tone="warning" title="Mock mode is on">Live apply changes simulated data only. Spira is not contacted.</Notice>
+      {draft.mock && (
+        <Notice tone="warning" title="This is a Mock mode draft">Live apply changes simulated data only. Spira is not contacted.</Notice>
       )}
 
       <Section title="What will change" description="Cards in Out of Scope are removed from their test set. In Scope cards stay.">

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, EmptyState, Notice, PageHeader, Spinner } from "@/components/ui";
-import { api, errorMessage } from "@/lib/client/api";
+import { listActivity } from "@/lib/client/activity";
+import { errorMessage } from "@/lib/client/api";
 import { exportActivity } from "@/lib/client/exports";
 import { formatDateTime } from "@/lib/client/format";
 import type { ActivityEntry } from "@/lib/domain/types";
@@ -13,7 +14,7 @@ const GROUPS: Record<string, { label: string; match: (type: string) => boolean }
   apply: { label: "Apply and verify", match: (t) => t.startsWith("apply.") || t.startsWith("verify.") || t.startsWith("preflight.") },
   compare: { label: "Comparisons", match: (t) => t.startsWith("compare.") },
   drafts: { label: "Drafts", match: (t) => t.startsWith("draft.") },
-  settings: { label: "Settings and sign-in", match: (t) => t.startsWith("settings.") || t.startsWith("auth.") || t.startsWith("mock.") },
+  settings: { label: "Settings", match: (t) => t.startsWith("settings.") || t.startsWith("mock.") },
 };
 
 function tone(type: string): "danger" | "warning" | "success" | "neutral" {
@@ -30,7 +31,7 @@ export function ActivityLog() {
 
   const load = useCallback(async () => {
     try {
-      setEntries((await api<{ entries: ActivityEntry[] }>("/api/activity")).entries);
+      setEntries(listActivity());
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -39,10 +40,12 @@ export function ActivityLog() {
 
   useEffect(() => {
     let active = true;
-    api<{ entries: ActivityEntry[] }>("/api/activity").then(
-      ({ entries: loaded }) => active && setEntries(loaded),
-      (err) => active && setError(errorMessage(err)),
-    );
+    Promise.resolve()
+      .then(listActivity)
+      .then(
+        (loaded: ActivityEntry[]) => active && setEntries(loaded),
+        (err) => active && setError(errorMessage(err)),
+      );
     return () => {
       active = false;
     };
@@ -54,7 +57,7 @@ export function ActivityLog() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Activity"
-        description="A record of comparisons, membership checks, applies and settings changes."
+        description="Comparisons, membership checks, applies and settings changes made in this browser."
         actions={
           <>
             <Button onClick={() => void load()}>Refresh</Button>
