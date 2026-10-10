@@ -139,16 +139,24 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
  * errors. Writes are never retried automatically: a lost response could hide a change
  * that already happened, so the caller re-reads membership instead.
  */
-async function call(method: "GET" | "DELETE", path: string, what: string): Promise<unknown> {
+async function call(method: "GET" | "SEARCH" | "DELETE", path: string, what: string): Promise<unknown> {
   const config = requireConfig();
-  const attempts = method === "GET" ? READ_ATTEMPTS : 1;
+  // SEARCH is Spira's read-only POST …/search with an empty filter list.
+  const attempts = method === "DELETE" ? 1 : READ_ATTEMPTS;
+  const search = method === "SEARCH";
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const last = attempt === attempts - 1;
     let response: Response;
     try {
       response = await fetch(`${config.restBase}/${path}`, {
-        method,
-        headers: { Accept: "application/json", username: config.username, "api-key": config.apiKey },
+        method: search ? "POST" : method,
+        body: search ? "[]" : undefined,
+        headers: {
+          Accept: "application/json",
+          ...(search ? { "Content-Type": "application/json" } : {}),
+          username: config.username,
+          "api-key": config.apiKey,
+        },
         redirect: "error",
         cache: "no-store",
         signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -212,7 +220,15 @@ const testCaseSchema = z.array(
 
 const projectListSchema = z.array(z.object({ ProjectId: id, Name: z.string().nullish(), Active: z.boolean().nullish() }));
 const userSchema = z.object({ UserName: z.string().nullish(), FullName: z.string().nullish() });
-const releaseSchema = z.object({ ReleaseId: id, Name: z.string().nullish(), VersionNumber: z.string().nullish() });
+const releaseSchema = z.object({
+  ReleaseId: id,
+  Name: z.string().nullish(),
+  VersionNumber: z.string().nullish(),
+  IndentLevel: z.string().nullish(),
+  Active: z.boolean().nullish(),
+  ReleaseTypeName: z.string().nullish(),
+});
+const RELEASE_LIMIT = 1_000;
 const testSetListSchema = z.array(
   z.object({
     TestSetId: id,
@@ -303,17 +319,41 @@ export async function checkConnection(): Promise<{ userName: string; projects: S
   return { userName: u.FullName || u.UserName || "Unknown user", projects: list };
 }
 
-export async function getRelease(projectId: number, releaseId: number): Promise<SpiraRelease> {
-  const what = `reading release ${releaseId}`;
-  const raw = parse(releaseSchema, await call("GET", `projects/${projectId}/releases/${releaseId}`, what), what);
+function toRelease(raw: z.infer<typeof releaseSchema>): SpiraRelease {
   const name = raw.Name?.trim() ?? "";
   const version = raw.VersionNumber?.trim() ?? "";
   return {
     releaseId: raw.ReleaseId,
     name,
     versionNumber: version,
-    label: [version, name].filter(Boolean).join(" - ") || `Release ${releaseId}`,
+    label: [version, name].filter(Boolean).join(" - ") || `Release ${raw.ReleaseId}`,
+    depth: Math.max(0, Math.floor((raw.IndentLevel?.length ?? 3) / 3) - 1),
+    active: raw.Active !== false,
+    type: raw.ReleaseTypeName?.trim() || null,
   };
+}
+
+export async function getRelease(projectId: number, releaseId: number): Promise<SpiraRelease> {
+  const what = `reading release ${releaseId}`;
+  return toRelease(parse(releaseSchema, await call("GET", `projects/${projectId}/releases/${releaseId}`, what), what));
+}
+
+/**
+ * Releases and their sprints/iterations in hierarchy order. The plain release list leaves
+ * iterations out, so the read-only search is used first and the plain list is the fallback.
+ */
+export async function listReleases(projectId: number): Promise<SpiraRelease[]> {
+  const what = `listing releases in project ${projectId}`;
+  let raw: unknown;
+  try {
+    raw = await call("SEARCH", `projects/${projectId}/releases/search?start_row=1&number_rows=${RELEASE_LIMIT}`, what);
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    raw = await call("GET", `projects/${projectId}/releases?active_only=false`, what);
+  }
+  return parse(z.array(releaseSchema), raw, what)
+    .sort((a, b) => (a.IndentLevel ?? "").localeCompare(b.IndentLevel ?? ""))
+    .map(toRelease);
 }
 
 /** Every test set in the project, or only those planned for one release. Sorted by name. */

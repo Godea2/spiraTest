@@ -88,6 +88,31 @@ function useSpiraConnection(configured: boolean) {
   return { connection, retest: () => setAttempt((a) => a + 1) };
 }
 
+type Releases = { status: "idle" | "loading" } | { status: "ok"; releases: SpiraRelease[] } | { status: "error"; error: string };
+
+/** Loads the project's releases and sprints whenever a valid project is chosen. */
+function useReleases(configured: boolean, projectId: number | null) {
+  const [result, setResult] = useState<{ projectId: number; releases: Releases } | null>(null);
+
+  useEffect(() => {
+    if (!configured || projectId === null) return;
+    let cancelled = false;
+    api<{ releases: SpiraRelease[] }>("/api/spira/releases", { method: "POST", body: { projectId } })
+      .then(({ releases }) => {
+        if (!cancelled) setResult({ projectId, releases: { status: "ok", releases } });
+      })
+      .catch((err) => {
+        if (!cancelled) setResult({ projectId, releases: { status: "error", error: errorMessage(err) } });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, projectId]);
+
+  if (!configured || projectId === null) return { status: "idle" } as Releases;
+  return result && result.projectId === projectId ? result.releases : ({ status: "loading" } as Releases);
+}
+
 function SettingsEditor({ settings }: { settings: AppSettings }) {
   const { replace, spira } = useSettings();
   const { connection, retest } = useSpiraConnection(spira?.configured === true);
@@ -96,6 +121,8 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [form, setForm] = useState<FormState>(() => toForm(settings));
   const [initial, setInitial] = useState<string>(() => JSON.stringify(toForm(settings)));
+  const releases = useReleases(spira?.configured === true, positiveInt(form.projectId) ? Number(form.projectId) : null);
+  const releaseList = releases.status === "ok" && releases.releases.length > 0 ? releases.releases : null;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
@@ -248,8 +275,42 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
               )
             }
           </Field>
-          <Field label="Release ID" error={errors.releaseId ?? releaseLookup.error} hint="The release or sprint ID from Spira (RL:…).">
-            {(p) => (
+          <Field
+            label="Release"
+            error={errors.releaseId ?? releaseLookup.error}
+            hint={
+              releaseList
+                ? "Releases and sprints in this project."
+                : releases.status === "loading"
+                  ? "Reading releases from Spira…"
+                  : releases.status === "error"
+                    ? `Could not list releases (${releases.error}). Enter the release ID instead.`
+                    : "The release or sprint ID from Spira (RL:…)."
+            }
+          >
+            {(p) =>
+              releaseList ? (
+                <select
+                  {...p}
+                  className="input"
+                  value={form.releaseId}
+                  onChange={(e) => {
+                    const chosen = releaseList.find((r) => String(r.releaseId) === e.target.value);
+                    update({ releaseId: e.target.value, releaseLabel: chosen?.label ?? "" });
+                  }}
+                >
+                  <option value="">Choose a release…</option>
+                  {form.releaseId && !releaseList.some((r) => String(r.releaseId) === form.releaseId) && (
+                    <option value={form.releaseId}>Release {form.releaseId} (not in this project)</option>
+                  )}
+                  {releaseList.map((r) => (
+                    <option key={r.releaseId} value={r.releaseId}>
+                      {"\u00a0\u00a0".repeat(r.depth)}
+                      {r.label} (RL:{r.releaseId}){r.active ? "" : " · inactive"}
+                    </option>
+                  ))}
+                </select>
+              ) : (
               <div className="flex gap-2">
                 <input
                   {...p}
@@ -270,9 +331,10 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
                   Look up
                 </Button>
               </div>
-            )}
+              )
+            }
           </Field>
-          <Field label="Release label" hint="Shown on boards and exports. Look up fills it from Spira.">
+          <Field label="Release label" hint="Shown on boards and exports. Filled from Spira when you choose a release.">
             {(p) => <input {...p} className="input" value={form.releaseLabel} maxLength={200} onChange={(e) => update({ releaseLabel: e.target.value })} />}
           </Field>
         </div>

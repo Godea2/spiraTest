@@ -195,6 +195,10 @@ export interface SpiraRelease {
   versionNumber: string;
   /** "version - name", as shown on boards. */
   label: string;
+  /** 0 for top-level releases, 1+ for sprints and iterations under them. */
+  depth: number;
+  active: boolean;
+  type: string | null;
 }
 
 export interface SpiraTestSetSummary {

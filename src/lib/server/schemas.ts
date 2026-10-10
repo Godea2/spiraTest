@@ -110,4 +110,6 @@ export const verifyRequestSchema = z.object({
 
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });
 
+export const releaseListSchema = z.object({ projectId: id });
+
 export const testSetListSchema = z.object({ projectId: id, releaseId: id.nullable() });

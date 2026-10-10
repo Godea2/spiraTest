@@ -194,9 +194,16 @@ export function CompareWorkspace() {
         </Notice>
       )}
 
-      {settings && !projectChosen && (
-        <Notice tone="warning" title="Choose a Spira project and release" action={<ButtonLink href="/settings" size="sm">Open Settings</ButtonLink>}>
-          Pick the project and release in Settings, then load the module test sets from Spira.
+      {settings && (!projectChosen || modules.length === 0) && (
+        <Notice tone="warning" title="Finish setting up Spira" action={<ButtonLink href="/settings" size="sm">Open Settings</ButtonLink>}>
+          {[
+            settings.projectId === null && "No project is chosen.",
+            settings.releaseId === null && "No release is chosen.",
+            modules.length === 0 && "No test sets are loaded.",
+          ]
+            .filter(Boolean)
+            .join(" ")}{" "}
+          Complete this in Settings, then click Save changes.
         </Notice>
       )}
 
