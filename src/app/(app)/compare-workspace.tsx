@@ -1,16 +1,45 @@
 "use client";
 
 import clsx from "clsx";
-import { useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { WorkBook } from "xlsx";
 import { modulesFrom, useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
-import { errorMessage } from "@/lib/client/api";
+import { api, errorMessage } from "@/lib/client/api";
 import { createDraft } from "@/lib/client/drafts";
 import { compareTestSet } from "@/lib/client/workflow";
-import type { Draft, WorkbookRow } from "@/lib/domain/types";
+import { guessMapping } from "@/lib/domain/settings";
+import type { Draft, SpiraTestSetSummary, TestSetRef, WorkbookRow } from "@/lib/domain/types";
 
 type SetStatus = "pending" | "running" | "ok" | "failed";
+
+const moduleKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function toRef(t: SpiraTestSetSummary): TestSetRef {
+  return { testSetId: t.testSetId, testSetName: t.name, platform: guessMapping(t.name).platform };
+}
+
+/** All test sets in the chosen project, read from Spira once per project. */
+function useProjectTestSets(configured: boolean, projectId: number | null) {
+  const [result, setResult] = useState<{ projectId: number; sets: SpiraTestSetSummary[] | null; error: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!configured || projectId === null) return;
+    let cancelled = false;
+    api<{ testSets: SpiraTestSetSummary[] }>("/api/spira/test-sets", { method: "POST", body: { projectId, releaseId: null } })
+      .then(({ testSets }) => {
+        if (!cancelled) setResult({ projectId, sets: testSets, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled) setResult({ projectId, sets: null, error: errorMessage(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, projectId]);
+
+  return result && result.projectId === projectId ? result : null;
+}
 
 interface LoadedWorkbook {
   fileName: string;
@@ -38,6 +67,27 @@ function StepTitle({ n, children, done }: { n: number; children: React.ReactNode
   );
 }
 
+function TestSetOption({
+  testSet,
+  checked,
+  disabled,
+  onChange,
+}: {
+  testSet: TestSetRef;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
+      <input type="checkbox" className="size-4 accent-brand-600" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span className="min-w-0 flex-1 truncate">{testSet.testSetName || `Test set ${testSet.testSetId}`}</span>
+      <Badge>{testSet.platform}</Badge>
+      <span className="font-mono text-xs text-zinc-500">TX{testSet.testSetId}</span>
+    </label>
+  );
+}
+
 export function CompareWorkspace() {
   const { settings, spira } = useSettings();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,7 +103,8 @@ export function CompareWorkspace() {
 
   const [lib, setLib] = useState<WorkbookLib | null>(null);
   const [module, setModule] = useState("");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  /** Null until the user ticks or unticks something: the suggested test sets are used. */
+  const [picked, setPicked] = useState<Set<number> | null>(null);
   const [draftName, setDraftName] = useState("");
 
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -62,13 +113,35 @@ export function CompareWorkspace() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  const modules = useMemo(() => modulesFrom(settings), [settings]);
-  const mappings = useMemo(
-    () => (settings ? settings.mappings.filter((m) => m.module === module) : []),
-    [settings, module],
-  );
+  const projectId = settings?.projectId ?? null;
+  const projectSets = useProjectTestSets(spira?.configured === true, projectId);
+
+  const modules = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const m of [...modulesFrom(settings), ...workbookModules]) if (!byKey.has(moduleKey(m))) byKey.set(moduleKey(m), m);
+    return [...byKey.values()].sort((a, b) => a.localeCompare(b));
+  }, [settings, workbookModules]);
   const alias = settings?.moduleAliases[module] ?? "";
   const locked = draft !== null;
+
+  // Test sets mapped in Settings win; otherwise Spira test sets whose name starts with the module are suggested.
+  const { suggested, others, mappedInSettings } = useMemo(() => {
+    const mapped: TestSetRef[] = settings && module ? settings.mappings.filter((m) => m.module === module) : [];
+    const all = projectSets?.sets ?? [];
+    const keys = new Set([moduleKey(module), alias ? moduleKey(alias) : ""].filter(Boolean));
+    const found = module && !mapped.length ? all.filter((t) => keys.has(moduleKey(guessMapping(t.name).module))).map(toRef) : [];
+    const chosen = mapped.length ? mapped : found;
+    const ids = new Set(chosen.map((r) => r.testSetId));
+    return { suggested: chosen, others: all.filter((t) => !ids.has(t.testSetId)).map(toRef), mappedInSettings: mapped.length > 0 };
+  }, [settings, module, alias, projectSets]);
+  const refById = useMemo(() => new Map([...suggested, ...others].map((r) => [r.testSetId, r])), [suggested, others]);
+  const selected = useMemo(() => picked ?? new Set(suggested.map((r) => r.testSetId)), [picked, suggested]);
+  const toggle = (id: number, on: boolean) => {
+    const next = new Set(selected);
+    if (on) next.add(id);
+    else next.delete(id);
+    setPicked(next);
+  };
   const matchedRows = useMemo(
     () => (lib && rows && module ? lib.filterRowsByModule(rows, module, alias) : []),
     [lib, rows, module, alias],
@@ -113,8 +186,7 @@ export function CompareWorkspace() {
 
   function chooseModule(name: string) {
     setModule(name);
-    const ids = settings?.mappings.filter((m) => m.module === name).map((m) => m.testSetId) ?? [];
-    setSelected(new Set(ids));
+    setPicked(null);
     setDraftName(name ? `${name} · ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : "");
   }
 
@@ -142,10 +214,11 @@ export function CompareWorkspace() {
   }
 
   async function startComparison() {
-    if (!loaded || !rows || !settings || settings.projectId === null || settings.releaseId === null) return;
+    if (!loaded || !rows || !settings || settings.projectId === null) return;
     setStarting(true);
     setStartError(null);
-    const ids = mappings.filter((m) => selected.has(m.testSetId)).map((m) => m.testSetId);
+    const refs = [...refById.values()].filter((r) => selected.has(r.testSetId));
+    const ids = refs.map((r) => r.testSetId);
     try {
       const created = createDraft({
         name: draftName.trim() || module,
@@ -156,6 +229,7 @@ export function CompareWorkspace() {
         source: { fileName: loaded.fileName, inScopeSheet, needsConfirmationSheet: needsSheet || null },
         rows: matchedRows,
         testSetIds: ids,
+        testSetRefs: refs,
       });
       setDraft(created);
       setStatuses(Object.fromEntries(ids.map((id) => [id, "pending" as SetStatus])));
@@ -177,7 +251,7 @@ export function CompareWorkspace() {
   const ids = Object.keys(statuses).map(Number);
   const allOk = ids.length > 0 && ids.every((id) => statuses[id] === "ok");
   const anyRunning = ids.some((id) => statuses[id] === "running" || statuses[id] === "pending");
-  const projectChosen = settings !== null && settings.projectId !== null && settings.releaseId !== null;
+  const projectChosen = projectId !== null;
   const canCompare =
     !!rows && !!module && selected.size > 0 && matchedRows.length > 0 && !locked && spira?.configured === true && projectChosen;
 
@@ -194,16 +268,9 @@ export function CompareWorkspace() {
         </Notice>
       )}
 
-      {settings && (!projectChosen || modules.length === 0) && (
-        <Notice tone="warning" title="Finish setting up Spira" action={<ButtonLink href="/settings" size="sm">Open Settings</ButtonLink>}>
-          {[
-            settings.projectId === null && "No project is chosen.",
-            settings.releaseId === null && "No release is chosen.",
-            modules.length === 0 && "No test sets are loaded.",
-          ]
-            .filter(Boolean)
-            .join(" ")}{" "}
-          Complete this in Settings, then click Save changes.
+      {settings && spira?.configured && !projectChosen && (
+        <Notice tone="warning" title="Choose a Spira project" action={<ButtonLink href="/settings" size="sm">Open Settings</ButtonLink>}>
+          Pick the project in Settings and click Save changes. Its test sets are then read from Spira here.
         </Notice>
       )}
 
@@ -324,28 +391,39 @@ export function CompareWorkspace() {
             {module && (
               <fieldset>
                 <legend className="text-sm font-medium">Test sets</legend>
-                <div className="mt-2 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
-                  {mappings.map((m) => (
-                    <label key={m.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm">
-                      <input
-                        type="checkbox"
-                        className="size-4 accent-brand-600"
-                        checked={selected.has(m.testSetId)}
-                        disabled={locked}
-                        onChange={(e) => {
-                          const next = new Set(selected);
-                          if (e.target.checked) next.add(m.testSetId);
-                          else next.delete(m.testSetId);
-                          setSelected(next);
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{m.testSetName || `Test set ${m.testSetId}`}</span>
-                      <Badge>{m.platform}</Badge>
-                      <span className="font-mono text-xs text-zinc-500">TX{m.testSetId}</span>
-                    </label>
-                  ))}
-                  {mappings.length === 0 && <p className="px-3 py-2.5 text-sm text-zinc-500">No test sets mapped. Add them in Settings.</p>}
-                </div>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  {mappedInSettings
+                    ? "Mapped to this module in Settings."
+                    : "Read from Spira: test sets whose name starts with this module are ticked."}
+                </p>
+                {!mappedInSettings && !projectSets && projectChosen && spira?.configured && (
+                  <p className="mt-2 flex items-center gap-2 text-sm text-zinc-500"><Spinner className="size-3.5" /> Reading test sets from Spira…</p>
+                )}
+                {projectSets?.error && <Notice tone="danger" className="mt-2" title="Could not read test sets from Spira">{projectSets.error}</Notice>}
+                {suggested.length > 0 && (
+                  <div className="mt-2 divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                    {suggested.map((r) => (
+                      <TestSetOption key={r.testSetId} testSet={r} checked={selected.has(r.testSetId)} disabled={locked} onChange={(on) => toggle(r.testSetId, on)} />
+                    ))}
+                  </div>
+                )}
+                {projectSets?.sets && suggested.length === 0 && (
+                  <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                    No Spira test set name starts with “{module}”. Tick the right ones below.
+                  </p>
+                )}
+                {others.length > 0 && (
+                  <details className="mt-3" open={suggested.length === 0}>
+                    <summary className="cursor-pointer text-sm text-zinc-600 dark:text-zinc-400">
+                      Other test sets in this project ({others.length})
+                    </summary>
+                    <div className="mt-2 max-h-72 divide-y divide-zinc-100 overflow-y-auto rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                      {others.map((r) => (
+                        <TestSetOption key={r.testSetId} testSet={r} checked={selected.has(r.testSetId)} disabled={locked} onChange={(on) => toggle(r.testSetId, on)} />
+                      ))}
+                    </div>
+                  </details>
+                )}
               </fieldset>
             )}
           </div>
@@ -368,13 +446,13 @@ export function CompareWorkspace() {
           <div className="flex flex-col gap-4">
             <ul className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
               {ids.map((id) => {
-                const mapping = mappings.find((m) => m.testSetId === id);
                 const set = draft.testSets.find((s) => s.testSetId === id);
+                const name = set?.testSetName ?? draft.testSetRefs?.find((r) => r.testSetId === id)?.testSetName;
                 const status = statuses[id];
                 return (
                   <li key={id} className="flex flex-col items-start gap-2 px-4 py-3 sm:flex-row sm:items-center">
                     <div className="w-full min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{mapping?.testSetName ?? `Test set ${id}`}</p>
+                      <p className="truncate text-sm font-medium">{name ?? `Test set ${id}`}</p>
                       {status === "failed" && <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{errors[id]}</p>}
                       {status === "ok" && set && (
                         <p className="mt-0.5 text-xs text-zinc-500">

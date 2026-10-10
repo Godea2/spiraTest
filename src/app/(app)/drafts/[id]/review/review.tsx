@@ -156,7 +156,7 @@ export function Review({ id }: { id: string }) {
           </span>
         }
         title={`Review: ${draft.name}`}
-        description={`Removes Out of Scope cases from ${draft.module} test sets in project ${draft.projectId}, release ${draft.releaseLabel || draft.releaseId}. Only removals are made. Nothing is added or edited.`}
+        description={`Removes Out of Scope cases from ${draft.module} test sets in project ${draft.projectId}${draft.releaseLabel || draft.releaseId ? `, release ${draft.releaseLabel || draft.releaseId}` : ""}. Only removals are made. Nothing is added or edited.`}
       />
 
       <Section title="What will change" description="Cards in Out of Scope are removed from their test set. In Scope cards stay.">

@@ -119,7 +119,8 @@ export interface Draft {
   name: string;
   module: string;
   projectId: number;
-  releaseId: number;
+  /** Optional: only labels the draft; Spira calls do not depend on it. */
+  releaseId: number | null;
   releaseLabel: string;
   status: DraftStatus;
   createdAt: string;
@@ -127,6 +128,8 @@ export interface Draft {
   source: DraftSource;
   rows: WorkbookRow[];
   testSetIds: number[];
+  /** Name and platform of each test set as chosen on Compare. Missing on older drafts. */
+  testSetRefs?: TestSetRef[];
   testSets: TestSetComparison[];
   compareErrors: Record<string, string>;
   decisions: Record<string, Column>;
@@ -156,12 +159,15 @@ export interface DraftSummary {
   manualDecisions: number;
 }
 
-export interface TestSetMapping {
-  id: string;
-  module: string;
+export interface TestSetRef {
   testSetId: number;
   testSetName: string;
   platform: Platform;
+}
+
+export interface TestSetMapping extends TestSetRef {
+  id: string;
+  module: string;
 }
 
 /** Saved in the browser. Holds nothing secret; Spira credentials live on the server. */
@@ -211,7 +217,7 @@ export interface SpiraTestSetSummary {
 /** Identifies what a comparison or membership check was run against. */
 export interface WorkflowContext {
   projectId: number;
-  releaseId: number;
+  releaseId: number | null;
   module: string;
 }
 

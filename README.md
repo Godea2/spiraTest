@@ -17,7 +17,7 @@ Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
    | `SPIRA_USERNAME` | Spira user the server acts as |
    | `SPIRA_API_KEY` | That user's API key (RSS token), including the `{ }` braces |
 
-   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set. Nothing is preset: in **Settings**, pick the project (listed from Spira), enter the release ID and use **Look up** to read its name, then **Load test sets from Spira** and tick the ones each module compares against.
+   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set. Nothing is preset: in **Settings**, pick the project (listed from Spira) and save. On **Compare**, choose a module and the project's test sets are read from Spira, with those whose name starts with the module (for example `Onboarding-Android`, `Onboarding-IOS`) ticked. The release is optional and only labels drafts; module-to-test-set mappings in Settings are optional overrides.
 
 3. `npm run dev` and open http://localhost:3004.
 

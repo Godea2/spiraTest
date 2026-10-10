@@ -37,6 +37,7 @@ export async function compareTestSet(
   const draft = getDraft(draftId);
   if (!draft.testSetIds.includes(testSetId)) throw new Error(`Test set ${testSetId} is not part of this draft.`);
   const mapping =
+    draft.testSetRefs?.find((r) => r.testSetId === testSetId) ??
     mappings.find((m) => m.testSetId === testSetId && m.module === draft.module) ??
     draft.testSets.find((s) => s.testSetId === testSetId);
   if (!mapping) throw new Error(`Test set ${testSetId} is not mapped to ${draft.module} in Settings.`);

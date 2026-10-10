@@ -18,7 +18,7 @@ const rows = z.array(workbookRowSchema).max(20_000);
 
 export const contextSchema = z.object({
   projectId: id,
-  releaseId: id,
+  releaseId: id.nullable(),
   module: z.string().trim().min(1).max(120),
 });
 

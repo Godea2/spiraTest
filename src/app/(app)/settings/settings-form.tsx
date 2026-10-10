@@ -276,7 +276,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             }
           </Field>
           <Field
-            label="Release"
+            label="Release (optional)"
             error={errors.releaseId ?? releaseLookup.error}
             hint={
               releaseList
@@ -342,7 +342,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
 
       <Section
         title="Modules and test sets"
-        description="Each module compares against its test sets. If the workbook spells a module differently, set an Excel alias; it applies to every test set in that module."
+        description="Optional. Compare already finds a module's test sets in Spira by name (for example Onboarding-Android and Onboarding-IOS for Onboarding). Map them here only to pin a different set, or set an Excel alias if the workbook spells a module differently."
         actions={
           <div className="flex gap-2">
             <Button
@@ -426,7 +426,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             );
           })}
           {modules.length === 0 && (
-            <p className="text-sm text-zinc-500">No test sets yet. Choose a project, then load its test sets from Spira.</p>
+            <p className="text-sm text-zinc-500">No modules mapped. That is fine: Compare reads each module&rsquo;s test sets from Spira.</p>
           )}
         </div>
       </Section>

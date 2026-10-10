@@ -56,7 +56,7 @@ export function purgeMockData(): number {
 
 export type NewDraft = Pick<
   Draft,
-  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds"
+  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds" | "testSetRefs"
 >;
 
 export function createDraft(input: NewDraft): Draft {

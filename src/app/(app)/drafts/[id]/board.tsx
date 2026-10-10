@@ -411,7 +411,8 @@ export function Board({ id }: { id: string }) {
       <PageHeader
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
-            {draft.module} · Release {draft.releaseLabel || draft.releaseId}
+            {draft.module}
+            {draft.releaseLabel || draft.releaseId ? ` · Release ${draft.releaseLabel || draft.releaseId}` : ""}
             <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>          </span>
         }
         title={
