@@ -9,16 +9,19 @@ const PAGE = 150;
 
 export const COLUMN_STYLE: Record<Column, { dot: string; ring: string; key: string }> = {
   inScope: { dot: "bg-emerald-500", ring: "ring-emerald-500/40", key: "1" },
-  outOfScope: { dot: "bg-red-500", ring: "ring-red-500/40", key: "2" },
-  needsReview: { dot: "bg-amber-500", ring: "ring-amber-500/40", key: "3" },
+  blocked: { dot: "bg-orange-500", ring: "ring-orange-500/40", key: "2" },
+  outOfScope: { dot: "bg-red-500", ring: "ring-red-500/40", key: "3" },
+  needsReview: { dot: "bg-amber-500", ring: "ring-amber-500/40", key: "4" },
 };
 
-const SHORT: Record<Column, string> = { inScope: "In", outOfScope: "Out", needsReview: "Review" };
+const SHORT: Record<Column, string> = { inScope: "In", blocked: "Blocked", outOfScope: "Out", needsReview: "Review" };
 
 interface CardProps {
   card: Card;
   column: Column;
   setName: string | null;
+  /** Not-implemented keywords this case mentions. */
+  keywords: string[] | undefined;
   moved: boolean;
   selected: boolean;
   onToggle: (key: string, range: boolean) => void;
@@ -26,7 +29,7 @@ interface CardProps {
   onKey: (event: KeyboardEvent<HTMLDivElement>, card: Card) => void;
 }
 
-export const BoardCard = memo(function BoardCard({ card, column, setName, moved, selected, onToggle, onMove, onKey }: CardProps) {
+export const BoardCard = memo(function BoardCard({ card, column, setName, keywords, moved, selected, onToggle, onMove, onKey }: CardProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.key });
   return (
     <div
@@ -77,6 +80,11 @@ export const BoardCard = memo(function BoardCard({ card, column, setName, moved,
             {moved && (
               <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-900/40 dark:text-brand-200" title={`Suggested: ${COLUMN_LABELS[card.suggestion]}`}>
                 Moved
+              </span>
+            )}
+            {keywords && keywords.length > 0 && (
+              <span className="rounded bg-orange-50 px-1.5 py-0.5 text-[11px] font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" title="Mentions a not-implemented keyword">
+                {keywords.join(", ")}
               </span>
             )}
             {card.reason && <span className="line-clamp-1 text-[11px] text-zinc-500" title={card.reason}>{card.reason}</span>}

@@ -2,11 +2,11 @@
 
 import clsx from "clsx";
 import { Fragment, useMemo, useState } from "react";
-import { Badge, Button, ButtonLink, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
+import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { formatDateTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
-import { applyBatch, runPreflight, verifyApply } from "@/lib/client/workflow";
+import { applyBatch, runPreflight, signOffBatch, undoSignOff, verifyApply } from "@/lib/client/workflow";
 import {
   allCards,
   chunk,
@@ -16,16 +16,22 @@ import {
   MAX_APPLY_BATCH,
   removalActions,
 } from "@/lib/domain/board";
+import { keywordHits } from "@/lib/domain/keywords";
 import type {
   ApplyAction,
   ApplyActionResult,
+  Card,
   Draft,
   PreflightResult,
+  SignOffAction,
+  SignOffResult,
+  SignOffStatus,
+  TestSetComparison,
   VerificationResult,
 } from "@/lib/domain/types";
 
 type Mode = "dry" | "live";
-type Phase = "idle" | "preflight" | "applying" | "verifying" | "done" | "blocked";
+type Phase = "idle" | "preflight" | "applying" | "verifying" | "signing" | "done" | "blocked";
 
 interface SetProgress {
   sent: number;
@@ -33,18 +39,56 @@ interface SetProgress {
   results: ApplyActionResult[];
 }
 
+interface SignProgress {
+  testSetId: number;
+  status: SignOffStatus;
+  sent: number;
+  total: number;
+  results: SignOffResult[];
+}
+
+/** Work for one run: removals per test set, then results to record. */
+interface Work {
+  removals: Map<number, ApplyAction[]>;
+  signOff: SignOffAction[];
+}
+
+const STATUS_WORD: Record<SignOffStatus, string> = { blocked: "Blocked", passed: "Passed" };
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Cards of a column that this app has not already recorded a result for. */
+function signOffActions(set: TestSetComparison, draft: Draft, status: SignOffStatus): SignOffAction[] {
+  const column = status === "blocked" ? "blocked" : "inScope";
+  const done = new Set(
+    (draft.apply.signOffRuns ?? []).filter((r) => r.testSetId === set.testSetId && r.status === status).map((r) => r.testSetTestCaseId),
+  );
+  return set.cards
+    .filter((card) => effectiveColumn(card, draft.decisions) === column && !done.has(card.testSetTestCaseId))
+    .map((card) => ({ testSetId: set.testSetId, testCaseId: card.testCaseId, testSetTestCaseId: card.testSetTestCaseId, status }));
+}
+
 export function Review({ id }: { id: string }) {
   const { draft, setDraft, error: loadError } = useDraft(id);
 
   const [mode, setMode] = useState<Mode>("dry");
+  const [autoPass, setAutoPass] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [confirmPass, setConfirmPass] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [runMode, setRunMode] = useState<Mode>("dry");
   const [progress, setProgress] = useState<Record<number, SetProgress>>({});
+  const [signProgress, setSignProgress] = useState<SignProgress[]>([]);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [stoppedAt, setStoppedAt] = useState<Phase | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [undo, setUndo] = useState<{ confirm: boolean; running: boolean; message: string | null; error: string | null }>({
+    confirm: false,
+    running: false,
+    message: null,
+    error: null,
+  });
 
   const plan = useMemo(() => {
     if (!draft) return [];
@@ -52,8 +96,15 @@ export function Review({ id }: { id: string }) {
       set,
       counts: countColumns(set.cards, draft.decisions),
       actions: removalActions(set, draft.decisions),
+      blocked: signOffActions(set, draft, "blocked"),
+      passed: signOffActions(set, draft, "passed"),
     }));
   }, [draft]);
+
+  const hits = useMemo(
+    () => (draft ? keywordHits(allCards(draft.testSets), draft.keywords ?? [], draft.stepText) : new Map<string, string[]>()),
+    [draft],
+  );
 
   if (loadError && !draft) {
     return <Notice tone="danger" title="This draft could not be opened">{loadError}</Notice>;
@@ -64,35 +115,61 @@ export function Review({ id }: { id: string }) {
   const complete = isComparisonComplete(draft);
   const moduleConfirm = draft.module.toUpperCase();
   const removalCount = plan.reduce((n, p) => n + p.actions.length, 0);
-  const running = phase === "preflight" || phase === "applying" || phase === "verifying";
+  const blockedCount = plan.reduce((n, p) => n + p.blocked.length, 0);
+  const passCount = plan.reduce((n, p) => n + p.passed.length, 0);
+  const planned = { remove: removalCount, blocked: blockedCount, passed: autoPass ? passCount : 0 };
+  const workCount = planned.remove + planned.blocked + planned.passed;
+  const running = phase === "preflight" || phase === "applying" || phase === "verifying" || phase === "signing";
+  const recordedRuns = draft.apply.signOffRuns ?? [];
+  const releaseText = draft.releaseLabel || draft.releaseId;
 
   const liveBlockers = [
     !complete && "Every test set must be compared first.",
-    totals.needsReview > 0 && `${totals.needsReview} card${totals.needsReview === 1 ? " is" : "s are"} still in Needs Review.`,
-    removalCount === 0 && "There is nothing to remove.",
+    totals.needsReview > 0 && `${plural(totals.needsReview, "card")} ${totals.needsReview === 1 ? "is" : "are"} still in Needs Review.`,
+    workCount === 0 && "There is nothing to apply.",
   ].filter(Boolean) as string[];
+
+  const cardFor = (testSetId: number, membershipId: number): Card | undefined =>
+    draft.testSets.find((s) => s.testSetId === testSetId)?.cards.find((c) => c.testSetTestCaseId === membershipId);
 
   const failedNow = Object.entries(progress).flatMap(([setId, p]) =>
     p.results.filter((r) => r.status === "failed").map((r) => ({ testSetId: Number(setId), action: r })),
   );
-  const savedFailures = Object.entries(draft.apply.failed).flatMap(([setId, ids]) => {
-    const set = draft.testSets.find((s) => s.testSetId === Number(setId));
-    return ids.flatMap((mid) => {
-      const card = set?.cards.find((c) => c.testSetTestCaseId === mid && effectiveColumn(c, draft.decisions) === "outOfScope");
-      return card ? [{ testSetId: Number(setId), action: { testCaseId: card.testCaseId, testSetTestCaseId: mid } }] : [];
-    });
-  });
+  const savedFailures = Object.entries(draft.apply.failed).flatMap(([setId, ids]) =>
+    ids.flatMap((mid) => {
+      const card = cardFor(Number(setId), mid);
+      return card && effectiveColumn(card, draft.decisions) === "outOfScope"
+        ? [{ testSetId: Number(setId), action: { testCaseId: card.testCaseId, testSetTestCaseId: mid } }]
+        : [];
+    }),
+  );
   const retryable = phase === "idle" ? savedFailures : runMode === "live" ? failedNow : [];
+  const signFailures = (draft.apply.signOffFailed ?? []).filter((a) => {
+    const card = cardFor(a.testSetId, a.testSetTestCaseId);
+    return card && effectiveColumn(card, draft.decisions) === (a.status === "blocked" ? "blocked" : "inScope");
+  });
+  const retrySignOff = phase === "idle" || runMode === "live" ? signFailures : [];
+  const retryCount = retryable.length + retrySignOff.length;
 
-  async function run(runAs: Mode, work: Map<number, ApplyAction[]>) {
+  async function run(runAs: Mode, work: Work) {
     if (!draft) return;
     setRunMode(runAs);
     setRunError(null);
+    setStoppedAt(null);
     setVerification(null);
-    setProgress(Object.fromEntries([...work].map(([setId, actions]) => [setId, { sent: 0, total: actions.length, results: [] }])));
+    let current: Phase = "preflight";
+    const enter = (next: Phase) => {
+      current = next;
+      setPhase(next);
+    };
+    setProgress(Object.fromEntries([...work.removals].map(([setId, actions]) => [setId, { sent: 0, total: actions.length, results: [] }])));
+    const groups = new Map<string, SignOffAction[]>();
+    for (const a of work.signOff) groups.set(`${a.status}:${a.testSetId}`, [...(groups.get(`${a.status}:${a.testSetId}`) ?? []), a]);
+    const ordered = [...groups.values()].sort((a, b) => (a[0].status === b[0].status ? 0 : a[0].status === "blocked" ? -1 : 1));
+    setSignProgress(ordered.map((g) => ({ testSetId: g[0].testSetId, status: g[0].status, sent: 0, total: g.length, results: [] })));
 
     try {
-      setPhase("preflight");
+      enter("preflight");
       const pre = await runPreflight(draft.id);
       setPreflight(pre.preflight);
       setDraft(pre.draft);
@@ -101,50 +178,117 @@ export function Review({ id }: { id: string }) {
         return;
       }
 
-      setPhase("applying");
       let latest = pre.draft;
-      for (const [testSetId, actions] of work) {
-        for (const batch of chunk(actions, MAX_APPLY_BATCH)) {
-          const out = await applyBatch(draft.id, {
-            testSetId,
-            dryRun: runAs === "dry",
-            confirmModule: runAs === "live" ? confirmText : undefined,
-            actions: batch,
-          });
-          latest = out.draft;
-          setProgress((p) => ({
-            ...p,
-            [testSetId]: { ...p[testSetId], sent: p[testSetId].sent + batch.length, results: [...p[testSetId].results, ...out.results] },
-          }));
+      if (work.removals.size > 0) {
+        enter("applying");
+        for (const [testSetId, actions] of work.removals) {
+          for (const batch of chunk(actions, MAX_APPLY_BATCH)) {
+            const out = await applyBatch(draft.id, {
+              testSetId,
+              dryRun: runAs === "dry",
+              confirmModule: runAs === "live" ? confirmText : undefined,
+              actions: batch,
+            });
+            latest = out.draft;
+            setProgress((p) => ({
+              ...p,
+              [testSetId]: { ...p[testSetId], sent: p[testSetId].sent + batch.length, results: [...p[testSetId].results, ...out.results] },
+            }));
+          }
+        }
+        setDraft(latest);
+
+        if (runAs === "live") {
+          enter("verifying");
+          const ver = await verifyApply(draft.id);
+          setVerification(ver.verification);
+          latest = ver.draft;
+          setDraft(latest);
         }
       }
-      setDraft(latest);
 
-      if (runAs === "live") {
-        setPhase("verifying");
-        const ver = await verifyApply(draft.id);
-        setVerification(ver.verification);
-        setDraft(ver.draft);
+      if (ordered.length > 0) {
+        enter("signing");
+        for (const [index, group] of ordered.entries()) {
+          const { testSetId, status } = group[0];
+          for (const batch of chunk(group, MAX_APPLY_BATCH)) {
+            const notes = Object.fromEntries(
+              batch.flatMap((a) => {
+                const found = hits.get(`${a.testSetId}:${a.testSetTestCaseId}`);
+                return status === "blocked" && found ? [[String(a.testSetTestCaseId), found.join(", ").slice(0, 300)]] : [];
+              }),
+            );
+            const out = await signOffBatch(
+              draft.id,
+              {
+                testSetId,
+                status,
+                dryRun: runAs === "dry",
+                confirmModule: runAs === "live" ? confirmText : undefined,
+                actions: batch.map(({ testCaseId, testSetTestCaseId }) => ({ testCaseId, testSetTestCaseId })),
+              },
+              notes,
+            );
+            latest = out.draft;
+            setSignProgress((all) =>
+              all.map((p, i) => (i === index ? { ...p, sent: p.sent + batch.length, results: [...p.results, ...out.results] } : p)),
+            );
+          }
+        }
+        setDraft(latest);
       }
       setPhase("done");
     } catch (err) {
       setRunError(errorMessage(err));
+      setStoppedAt(current);
       setPhase("done");
     }
   }
 
-  const runAll = () => run(mode, new Map(plan.filter((p) => p.actions.length).map((p) => [p.set.testSetId, p.actions])));
-
-  const retryFailed = () => {
-    const work = new Map<number, ApplyAction[]>();
-    for (const { testSetId, action } of retryable) {
-      work.set(testSetId, [...(work.get(testSetId) ?? []), { testCaseId: action.testCaseId, testSetTestCaseId: action.testSetTestCaseId }]);
-    }
-    void run("live", work);
+  const runAll = () => {
+    setConfirmPass(false);
+    void run(mode, {
+      removals: new Map(plan.filter((p) => p.actions.length).map((p) => [p.set.testSetId, p.actions])),
+      signOff: [...plan.flatMap((p) => p.blocked), ...(autoPass ? plan.flatMap((p) => p.passed) : [])],
+    });
   };
 
+  const start = () => (mode === "live" && planned.passed > 0 ? setConfirmPass(true) : runAll());
+
+  const retryFailed = () => {
+    const removals = new Map<number, ApplyAction[]>();
+    for (const { testSetId, action } of retryable) {
+      removals.set(testSetId, [...(removals.get(testSetId) ?? []), { testCaseId: action.testCaseId, testSetTestCaseId: action.testSetTestCaseId }]);
+    }
+    void run("live", { removals, signOff: retrySignOff });
+  };
+
+  async function runUndo() {
+    if (!draft) return;
+    setUndo({ confirm: false, running: true, message: null, error: null });
+    try {
+      const out = await undoSignOff(draft.id, recordedRuns);
+      setDraft(out.draft);
+      const deleted = recordedRuns.length - (out.draft.apply.signOffRuns?.length ?? 0);
+      setUndo({
+        confirm: false,
+        running: false,
+        message: `Deleted ${plural(deleted, "test run")} from Spira.`,
+        error: out.failed.length ? `${plural(out.failed.length, "run")} could not be deleted: ${out.failed[0].message ?? "unknown error"}` : null,
+      });
+    } catch (err) {
+      setUndo({ confirm: false, running: false, message: null, error: errorMessage(err) });
+    }
+  }
+
   const liveReady = liveBlockers.length === 0 && confirmText === moduleConfirm;
-  const canRun = !running && (mode === "dry" ? removalCount > 0 && complete : liveReady);
+  const canRun = !running && !undo.running && (mode === "dry" ? workCount > 0 && complete : liveReady);
+  const liveParts = [
+    planned.remove && `remove ${planned.remove}`,
+    planned.blocked && `mark ${planned.blocked} Blocked`,
+    planned.passed && `mark ${planned.passed} Passed`,
+  ].filter(Boolean) as string[];
+  const liveLabel = liveParts.length ? `Apply: ${liveParts.join(", ")}` : "Apply to Spira";
 
   return (
     <div className="flex flex-col gap-6">
@@ -156,16 +300,17 @@ export function Review({ id }: { id: string }) {
           </span>
         }
         title={`Review: ${draft.name}`}
-        description={`Removes Out of Scope cases from ${draft.module} test sets in project ${draft.projectId}${draft.releaseLabel || draft.releaseId ? `, release ${draft.releaseLabel || draft.releaseId}` : ""}. Only removals are made. Nothing is added or edited.`}
+        description={`Final approval for ${draft.module} in project ${draft.projectId}${releaseText ? `, release ${releaseText}` : ""}. Out of Scope cases are removed from their test sets. Blocked cases, and In Scope cases if you choose, get a test result recorded in Spira. Test cases and their steps are never edited or deleted.`}
       />
 
-      <Section title="What will change" description="Cards in Out of Scope are removed from their test set. In Scope cards stay.">
+      <Section title="What will change" description="Out of Scope cards are removed from their test set. Blocked cards stay in the test set and are recorded as Blocked. In Scope cards stay.">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[32rem] text-left text-sm">
+          <table className="w-full min-w-[36rem] text-left text-sm">
             <thead className="text-xs text-zinc-500">
               <tr>
                 <th className="py-2 pr-4 font-medium">Test set</th>
-                <th className="py-2 pr-4 text-right font-medium">Keep</th>
+                <th className="py-2 pr-4 text-right font-medium">In Scope</th>
+                <th className="py-2 pr-4 text-right font-medium">Blocked</th>
                 <th className="py-2 pr-4 text-right font-medium">Remove</th>
                 <th className="py-2 pr-4 text-right font-medium">Needs Review</th>
                 <th className="py-2" />
@@ -179,28 +324,22 @@ export function Review({ id }: { id: string }) {
                       <span className="font-medium">{set.testSetName}</span> <Badge className="ml-1">{set.platform}</Badge>
                     </td>
                     <td className="py-2.5 pr-4 text-right tabular-nums">{counts.inScope}</td>
+                    <td className="py-2.5 pr-4 text-right font-semibold text-orange-600 tabular-nums dark:text-orange-400">{counts.blocked}</td>
                     <td className="py-2.5 pr-4 text-right font-semibold text-red-600 tabular-nums dark:text-red-400">{actions.length}</td>
                     <td className={clsx("py-2.5 pr-4 text-right tabular-nums", counts.needsReview && "font-semibold text-amber-600 dark:text-amber-400")}>{counts.needsReview}</td>
                     <td className="py-2.5 text-right">
-                      {actions.length > 0 && (
+                      {(actions.length > 0 || counts.blocked > 0) && (
                         <Button size="sm" variant="ghost" aria-expanded={expanded === set.testSetId} onClick={() => setExpanded(expanded === set.testSetId ? null : set.testSetId)}>
-                          {expanded === set.testSetId ? "Hide" : "Show"} removals
+                          {expanded === set.testSetId ? "Hide" : "Show"} cases
                         </Button>
                       )}
                     </td>
                   </tr>
                   {expanded === set.testSetId && (
                     <tr>
-                      <td colSpan={5} className="pb-3">
-                        <ul className="max-h-72 divide-y divide-zinc-100 overflow-y-auto rounded-lg border border-zinc-200 text-xs dark:divide-zinc-800 dark:border-zinc-800">
-                          {set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope").map((c) => (
-                            <li key={c.key} className="flex items-center gap-3 px-3 py-2">
-                              <span className="w-20 shrink-0 font-mono text-zinc-500">TC{c.testCaseId}</span>
-                              <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                              {c.executed && <Badge tone="warning">{c.executionStatus}</Badge>}
-                            </li>
-                          ))}
-                        </ul>
+                      <td colSpan={6} className="pb-3">
+                        <CaseList title="Blocked" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "blocked")} hits={hits} />
+                        <CaseList title="Remove" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope")} hits={hits} />
                       </td>
                     </tr>
                   )}
@@ -212,14 +351,39 @@ export function Review({ id }: { id: string }) {
       </Section>
 
       <Section title="Apply">
+        <label className="mb-5 flex items-start gap-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4 accent-brand-600"
+            checked={autoPass}
+            disabled={running}
+            onChange={(e) => setAutoPass(e.target.checked)}
+          />
+          <span className="text-sm">
+            <span className="font-semibold">Also mark In Scope cases as Passed</span>
+            <span className="mt-0.5 block text-zinc-600 dark:text-zinc-400">
+              Records an automated Passed result for each of the {plural(passCount, "In Scope case")}; any that already have a result in Spira are skipped. Only use this when these cases really were tested and signed off.
+            </span>
+          </span>
+        </label>
+
         <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Apply mode">
           <ModeCard checked={mode === "dry"} onSelect={() => setMode("dry")} title="Dry run" disabled={running}>
-            Checks membership and confirms each case is still in its test set. Spira is not changed.
+            Checks membership and which results would be recorded. Spira is not changed.
           </ModeCard>
           <ModeCard checked={mode === "live"} onSelect={() => setMode("live")} title="Live apply" danger disabled={running}>
-            Removes {removalCount} case{removalCount === 1 ? "" : "s"} from Spira in batches of {MAX_APPLY_BATCH}.
+            {liveParts.length ? `Will ${liveParts.join(", ")} in Spira, in batches of ${MAX_APPLY_BATCH}.` : "Nothing to change yet."}
           </ModeCard>
         </div>
+
+        {(planned.blocked > 0 || planned.passed > 0) && (
+          <p className="mt-3 text-xs text-zinc-500">
+            {releaseText
+              ? `Results are recorded against release ${releaseText}.`
+              : "No release is set on this draft, so each result is recorded against the release its test set is planned for in Spira."}{" "}
+            Cases that already have a result in Spira are skipped and listed. Results recorded here can be undone below.
+          </p>
+        )}
 
         {mode === "live" && (
           <div className="mt-5 flex flex-col gap-4">
@@ -243,7 +407,7 @@ export function Review({ id }: { id: string }) {
                   aria-describedby="confirm-hint"
                 />
                 <p id="confirm-hint" className="text-xs text-zinc-500">
-                  Before removing anything, every test set is reconciled again. Apply stops if Spira changed since this board was compared.
+                  Before anything changes, every test set is reconciled again. Apply stops if Spira changed since this board was compared.
                 </p>
               </div>
             )}
@@ -251,20 +415,20 @@ export function Review({ id }: { id: string }) {
         )}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          <Button variant={mode === "live" ? "danger" : "primary"} onClick={runAll} disabled={!canRun} busy={running}>
-            {mode === "dry" ? "Start dry run" : `Remove ${removalCount} case${removalCount === 1 ? "" : "s"} from Spira`}
+          <Button variant={mode === "live" ? "danger" : "primary"} onClick={start} disabled={!canRun} busy={running}>
+            {mode === "dry" ? "Start dry run" : liveLabel}
           </Button>
-          {retryable.length > 0 && !running && (
+          {retryCount > 0 && !running && (
             <Button onClick={retryFailed} disabled={confirmText !== moduleConfirm || liveBlockers.length > 0} title={confirmText !== moduleConfirm ? `Type ${moduleConfirm} above to enable retry` : undefined}>
-              Retry {retryable.length} failed
+              Retry {retryCount} failed
             </Button>
           )}
           {draft.apply.lastLiveRunAt && phase === "idle" && (
             <span className="text-xs text-zinc-500">Last live run {formatDateTime(draft.apply.lastLiveRunAt)}</span>
           )}
         </div>
-        {retryable.length > 0 && !running && mode === "dry" && (
-          <p className="mt-2 text-xs text-zinc-500">Retrying failed removals is a live action. Switch to Live apply and confirm the module first.</p>
+        {retryCount > 0 && !running && mode === "dry" && (
+          <p className="mt-2 text-xs text-zinc-500">Retrying failed changes is a live action. Switch to Live apply and confirm the module first.</p>
         )}
       </Section>
 
@@ -274,11 +438,87 @@ export function Review({ id }: { id: string }) {
           phase={phase}
           runMode={runMode}
           progress={progress}
+          signProgress={signProgress}
           preflight={preflight}
           verification={verification}
           error={runError}
+          stoppedAt={stoppedAt}
         />
       )}
+
+      {(recordedRuns.length > 0 || undo.message || undo.error) && (
+        <Section
+          title="Recorded results"
+          description="Test runs this app recorded in Spira for this draft. Undo deletes only these runs; each one is checked to have been recorded by this app first."
+        >
+          {recordedRuns.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm">
+                {plural(recordedRuns.filter((r) => r.status === "blocked").length, "Blocked result")},{" "}
+                {plural(recordedRuns.filter((r) => r.status === "passed").length, "Passed result")}
+              </span>
+              <Button variant="danger" size="sm" onClick={() => setUndo((u) => ({ ...u, confirm: true }))} disabled={running || undo.running} busy={undo.running}>
+                Undo sign-off
+              </Button>
+            </div>
+          )}
+          {undo.message && <Notice tone="success" className="mt-4">{undo.message}</Notice>}
+          {undo.error && <Notice tone="danger" className="mt-4" title="Undo did not finish">{undo.error}</Notice>}
+        </Section>
+      )}
+
+      <Dialog
+        open={confirmPass}
+        onClose={() => setConfirmPass(false)}
+        title={`Mark ${plural(planned.passed, "case")} as Passed?`}
+        footer={
+          <>
+            <Button onClick={() => setConfirmPass(false)}>Cancel</Button>
+            <Button variant="danger" onClick={runAll}>Record Passed results</Button>
+          </>
+        }
+      >
+        <p>
+          Every In Scope case without a result gets an automated Passed test run in Spira, and shows as Passed in release and test set reports.
+          Only continue if these cases were tested and signed off.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={undo.confirm}
+        onClose={() => setUndo((u) => ({ ...u, confirm: false }))}
+        title={`Delete ${plural(recordedRuns.length, "test run")} from Spira?`}
+        footer={
+          <>
+            <Button onClick={() => setUndo((u) => ({ ...u, confirm: false }))}>Cancel</Button>
+            <Button variant="danger" onClick={() => void runUndo()}>Delete test runs</Button>
+          </>
+        }
+      >
+        <p>
+          The Blocked and Passed results this app recorded are deleted, and those cases go back to their previous status in Spira.
+          Removed test set memberships are not restored.
+        </p>
+      </Dialog>
+    </div>
+  );
+}
+
+function CaseList({ title, cards, hits }: { title: string; cards: Card[]; hits: Map<string, string[]> }) {
+  if (cards.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <p className="mb-1 text-xs font-medium text-zinc-500">{title} ({cards.length})</p>
+      <ul className="max-h-72 divide-y divide-zinc-100 overflow-y-auto rounded-lg border border-zinc-200 text-xs dark:divide-zinc-800 dark:border-zinc-800">
+        {cards.map((c) => (
+          <li key={c.key} className="flex items-center gap-3 px-3 py-2">
+            <span className="w-20 shrink-0 font-mono text-zinc-500">TC{c.testCaseId}</span>
+            <span className="min-w-0 flex-1 truncate">{c.name}</span>
+            {hits.get(c.key) && <Badge>{hits.get(c.key)!.join(", ")}</Badge>}
+            {c.executed && <Badge tone="warning">{c.executionStatus}</Badge>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -328,38 +568,55 @@ function RunPanel({
   phase,
   runMode,
   progress,
+  signProgress,
   preflight,
   verification,
   error,
+  stoppedAt,
 }: {
   draft: Draft;
   phase: Phase;
   runMode: Mode;
   progress: Record<number, SetProgress>;
+  signProgress: SignProgress[];
   preflight: PreflightResult | null;
   verification: VerificationResult | null;
   error: string | null;
+  stoppedAt: Phase | null;
 }) {
-  const order: Phase[] = ["preflight", "applying", "verifying", "done"];
-  const at = order.indexOf(phase);
+  const hasRemovals = Object.keys(progress).length > 0;
+  const hasSignOff = signProgress.length > 0;
+  const order: Phase[] = ["preflight", "applying", "verifying", "signing", "done"];
+  const at = order.indexOf(stoppedAt ?? phase);
   const stepState = (step: Phase) => {
     const i = order.indexOf(step);
     if (phase === "blocked") return step === "preflight" ? "error" : "todo";
-    if (error && i === at) return "error";
+    if (error && stoppedAt) return i < at ? "done" : i === at ? "error" : "todo";
     if (i < at || phase === "done") return "done";
     return i === at ? "active" : "todo";
   };
   const name = (id: number) => draft.testSets.find((s) => s.testSetId === id)?.testSetName ?? `Test set ${id}`;
+  const caseName = (setId: number, mid: number) =>
+    draft.testSets.find((s) => s.testSetId === setId)?.cards.find((c) => c.testSetTestCaseId === mid)?.name ?? `Membership ${mid}`;
+
   const results = Object.values(progress).flatMap((p) => p.results);
   const failed = Object.entries(progress).flatMap(([setId, p]) => p.results.filter((r) => r.status === "failed").map((r) => ({ setId: Number(setId), r })));
   const okCount = results.filter((r) => r.status !== "failed").length;
+
+  const signResults = signProgress.flatMap((p) => p.results);
+  const signCount = (outcome: SignOffResult["result"], status?: SignOffStatus) =>
+    signResults.filter((r) => r.result === outcome && (!status || r.status === status)).length;
+  const signIssues = signResults.filter((r) => r.result === "failed" || r.result === "skipped");
+  const signFailed = signCount("failed");
+  const removalsOk = !hasRemovals || (runMode === "dry" ? true : verification?.ok && failed.length === 0);
 
   return (
     <Section title={runMode === "dry" ? "Dry run" : "Live apply"}>
       <ol className="flex flex-col gap-2">
         <Step state={stepState("preflight")}>Check Spira membership matches the reviewed board</Step>
-        <Step state={stepState("applying")}>{runMode === "dry" ? "Confirm what would be removed" : "Remove cases in batches"}</Step>
-        {runMode === "live" && <Step state={stepState("verifying")}>Reconcile again and verify the result</Step>}
+        {hasRemovals && <Step state={stepState("applying")}>{runMode === "dry" ? "Confirm what would be removed" : "Remove cases in batches"}</Step>}
+        {hasRemovals && runMode === "live" && <Step state={stepState("verifying")}>Reconcile again and verify the result</Step>}
+        {hasSignOff && <Step state={stepState("signing")}>{runMode === "dry" ? "Check which results would be recorded" : "Record Blocked and Passed results"}</Step>}
       </ol>
 
       {preflight && !preflight.ok && (
@@ -371,24 +628,27 @@ function RunPanel({
               </li>
             ))}
           </ul>
-          <p className="mt-2">Recompare the board, review the differences, then try again. Nothing was removed.</p>
+          <p className="mt-2">Recompare the board, review the differences, then try again. Nothing was changed.</p>
         </Notice>
       )}
 
-      {Object.keys(progress).length > 0 && phase !== "blocked" && (
+      {phase !== "blocked" && (hasRemovals || hasSignOff) && (
         <div className="mt-5 flex flex-col gap-4">
           {Object.entries(progress).map(([setId, p]) => {
             const setFailed = p.results.filter((r) => r.status === "failed").length;
             return (
-              <div key={setId}>
-                <div className="mb-1.5 flex justify-between text-sm">
-                  <span className="font-medium">{name(Number(setId))}</span>
-                  <span className="text-zinc-500 tabular-nums">{p.sent} / {p.total}{setFailed ? <span className="text-red-600"> · {setFailed} failed</span> : null}</span>
-                </div>
-                <ProgressBar value={p.sent} max={p.total} tone={setFailed ? "danger" : p.sent === p.total ? "success" : "brand"} />
-              </div>
+              <ProgressRow key={`remove-${setId}`} label={`Remove · ${name(Number(setId))}`} sent={p.sent} total={p.total} failed={setFailed} />
             );
           })}
+          {signProgress.map((p) => (
+            <ProgressRow
+              key={`${p.status}-${p.testSetId}`}
+              label={`${STATUS_WORD[p.status]} · ${name(p.testSetId)}`}
+              sent={p.sent}
+              total={p.total}
+              failed={p.results.filter((r) => r.result === "failed").length}
+            />
+          ))}
         </div>
       )}
 
@@ -397,14 +657,28 @@ function RunPanel({
       {phase === "done" && !error && (
         <div className="mt-5 flex flex-col gap-4">
           {runMode === "dry" ? (
-            <Notice tone={failed.length ? "warning" : "success"} title="Dry run complete. Spira was not changed.">
-              {okCount} case{okCount === 1 ? "" : "s"} would be removed{failed.length ? `; ${failed.length} reported a problem` : ""}.
+            <Notice tone={failed.length || signFailed ? "warning" : "success"} title="Dry run complete. Spira was not changed.">
+              {[
+                hasRemovals && `${plural(okCount, "case")} would be removed${failed.length ? `; ${failed.length} reported a problem` : ""}.`,
+                hasSignOff &&
+                  `${signCount("wouldRecord", "blocked")} Blocked and ${signCount("wouldRecord", "passed")} Passed result(s) would be recorded; ${signCount("skipped")} skipped${signFailed ? `, ${signFailed} reported a problem` : ""}.`,
+              ]
+                .filter(Boolean)
+                .join(" ")}
             </Notice>
-          ) : verification?.ok ? (
-            <Notice tone="success" title="Applied and verified">Spira membership now matches the reviewed board.</Notice>
+          ) : removalsOk && signFailed === 0 ? (
+            <Notice tone="success" title="Applied">
+              {[
+                hasRemovals && "Spira membership now matches the reviewed board.",
+                hasSignOff &&
+                  `Recorded ${signCount("recorded", "blocked")} Blocked and ${signCount("recorded", "passed")} Passed result(s); ${signCount("skipped")} skipped.`,
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            </Notice>
           ) : (
-            <Notice tone="danger" title={failed.length ? `${failed.length} removal${failed.length === 1 ? "" : "s"} failed` : "Verification found differences"}>
-              {failed.length > 0 ? "Use “Retry failed” above. Only the failed removals are sent again." : "Recompare the board to see the current state."}
+            <Notice tone="danger" title={failed.length + signFailed ? `${failed.length + signFailed} change${failed.length + signFailed === 1 ? "" : "s"} failed` : "Verification found differences"}>
+              {failed.length + signFailed > 0 ? "Use “Retry failed” above. Only the failed changes are sent again." : "Recompare the board to see the current state."}
               {verification && verification.sets.some((s) => !s.ok) && (
                 <ul className="mt-1 list-disc pl-5">
                   {verification.sets.filter((s) => !s.ok).map((s) => (
@@ -414,16 +688,27 @@ function RunPanel({
               )}
             </Notice>
           )}
-          {failed.length > 0 && (
+          {(failed.length > 0 || signIssues.length > 0) && (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="text-xs text-zinc-500"><tr><th className="py-2 pr-4 font-medium">Test set</th><th className="py-2 pr-4 font-medium">Case</th><th className="py-2 font-medium">Error</th></tr></thead>
+                <thead className="text-xs text-zinc-500"><tr><th className="py-2 pr-4 font-medium">Test set</th><th className="py-2 pr-4 font-medium">Case</th><th className="py-2 pr-4 font-medium">Change</th><th className="py-2 font-medium">Outcome</th></tr></thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {failed.map(({ setId, r }) => (
-                    <tr key={`${setId}-${r.testSetTestCaseId}`}>
+                    <tr key={`remove-${setId}-${r.testSetTestCaseId}`}>
                       <td className="py-2 pr-4">{name(setId)}</td>
-                      <td className="py-2 pr-4 font-mono text-xs">TC{r.testCaseId}</td>
+                      <td className="py-2 pr-4"><span className="font-mono text-xs">TC{r.testCaseId}</span> {caseName(setId, r.testSetTestCaseId)}</td>
+                      <td className="py-2 pr-4">Remove</td>
                       <td className="py-2 text-red-700 dark:text-red-400">{r.message}</td>
+                    </tr>
+                  ))}
+                  {signIssues.map((r) => (
+                    <tr key={`${r.status}-${r.testSetId}-${r.testSetTestCaseId}`}>
+                      <td className="py-2 pr-4">{name(r.testSetId)}</td>
+                      <td className="py-2 pr-4"><span className="font-mono text-xs">TC{r.testCaseId}</span> {caseName(r.testSetId, r.testSetTestCaseId)}</td>
+                      <td className="py-2 pr-4">{STATUS_WORD[r.status]}</td>
+                      <td className={clsx("py-2", r.result === "failed" ? "text-red-700 dark:text-red-400" : "text-zinc-500")}>
+                        {r.result === "skipped" ? "Skipped: " : ""}{r.message}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -433,5 +718,17 @@ function RunPanel({
         </div>
       )}
     </Section>
+  );
+}
+
+function ProgressRow({ label, sent, total, failed }: { label: string; sent: number; total: number; failed: number }) {
+  return (
+    <div>
+      <div className="mb-1.5 flex justify-between text-sm">
+        <span className="font-medium">{label}</span>
+        <span className="text-zinc-500 tabular-nums">{sent} / {total}{failed ? <span className="text-red-600"> · {failed} failed</span> : null}</span>
+      </div>
+      <ProgressBar value={sent} max={total} tone={failed ? "danger" : sent === total ? "success" : "brand"} />
+    </div>
   );
 }

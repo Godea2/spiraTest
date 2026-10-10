@@ -33,8 +33,17 @@ Use a dedicated Spira service account with access to the project and permission 
 | Dry run | `GET …/test-case-mapping`; nothing is changed |
 | Live apply | `GET …/test-case-mapping`, then `DELETE projects/{p}/test-sets/{t}/test-cases/{test_set_test_case_id}` per case |
 | Verify | `GET …/test-case-mapping` |
+| Keyword check (board) | `GET projects/{p}/test-cases/{tc}/test-steps` per case that is not Out of Scope (read only) |
+| Record results | `GET …/test-sets/{t}` and `…/test-cases` (current status), then `POST projects/{p}/test-runs/record` per Blocked or Passed case |
+| Undo sign-off | `GET projects/{p}/test-runs/{id}/automated` (checks the runner name and test case), then `DELETE projects/{p}/test-runs/{id}` |
 
-Live apply removes a test case from a test set; the test case itself is never deleted. Before each batch the server re-reads the test set and only removes memberships that still point at the reviewed test case. Reads are retried on temporary errors; removals are never retried automatically, so a failed case is retried only when you choose to.
+Live apply removes a test case from a test set; the test case itself is never deleted. Before each batch the server re-reads the test set and only removes memberships that still point at the reviewed test case. Reads are retried on temporary errors; removals and recorded results are never retried automatically, so a failed case is retried only when you choose to.
+
+### Blocked cases and sign-off
+
+List features that are not built yet (for example `nin, bvn, google`) under **Settings → Not implemented yet**. Each new draft copies the list, and it can be changed on the board. When the board opens, the steps of every case that is not Out of Scope are read from Spira, and In Scope cases whose name, description or step text (description, expected result, sample data) mention a keyword as a whole word move to **Blocked**. The move is in the change history and can be undone.
+
+On **Review & apply**, a live apply removes Out of Scope cases, then records an automated test run with status **Blocked** for each Blocked case. Ticking **Also mark In Scope cases as Passed** (off by default, with its own confirmation) records **Passed** runs for In Scope cases too. Runs use the draft's release, or the test set's release when the draft has none. Cases that already have a result in Spira are skipped and listed. The IDs of recorded runs are kept in the draft so **Undo sign-off** can delete exactly those runs.
 
 ### Matching rules
 

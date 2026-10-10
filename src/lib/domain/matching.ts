@@ -12,6 +12,8 @@ export interface SetCase {
   executed: boolean;
   /** Custom property text values; a TC ID stored there counts as a match. */
   customText: string[];
+  /** Plain-text description, kept on the card for keyword matching. */
+  description?: string;
 }
 
 export interface ReconcileOutput {
@@ -152,6 +154,7 @@ export function reconcileTestSet(testSetId: number, rows: WorkbookRow[], cases: 
       executed: c.executed,
       suggestion: outcome.suggestion,
       reason: outcome.reason,
+      ...(c.description ? { description: c.description } : {}),
     };
   });
 

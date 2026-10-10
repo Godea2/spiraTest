@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { MAX_STEP_TEXT, plainText } from "@/lib/domain/keywords";
 import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary } from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
@@ -32,6 +33,8 @@ export class SpiraError extends Error {
   constructor(
     message: string,
     public readonly status = 502,
+    /** HTTP status Spira itself answered with, when it answered. */
+    public readonly upstream: number | null = null,
   ) {
     super(message);
   }
@@ -117,10 +120,11 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
     return new SpiraError(
       `Spira refused access while ${what} (HTTP ${response.status}). Check ${SPIRA_ENV.username} and ${SPIRA_ENV.apiKey}, and that this user can access the project.`,
       502,
+      response.status,
     );
   }
   if (response.status === 404) {
-    return new SpiraError(`Spira could not find what was requested while ${what} (HTTP 404). Check the project and test set IDs in Settings.`, 502);
+    return new SpiraError(`Spira could not find what was requested while ${what} (HTTP 404). Check the project and test set IDs in Settings.`, 502, 404);
   }
   const text = (await response.text().catch(() => "")).replace(/\s+/g, " ").trim();
   let detail: string;
@@ -131,7 +135,7 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
     detail = text;
   }
   detail = detail.slice(0, 300);
-  return new SpiraError(`Spira returned HTTP ${response.status} while ${what}${detail ? `: ${detail}` : "."}`, 502);
+  return new SpiraError(`Spira returned HTTP ${response.status} while ${what}${detail ? `: ${detail}` : "."}`, 502, response.status);
 }
 
 /**
@@ -139,21 +143,22 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
  * errors. Writes are never retried automatically: a lost response could hide a change
  * that already happened, so the caller re-reads membership instead.
  */
-async function call(method: "GET" | "SEARCH" | "DELETE", path: string, what: string): Promise<unknown> {
+async function call(method: "GET" | "SEARCH" | "POST" | "DELETE", path: string, what: string, body?: unknown): Promise<unknown> {
   const config = requireConfig();
   // SEARCH is Spira's read-only POST …/search with an empty filter list.
-  const attempts = method === "DELETE" ? 1 : READ_ATTEMPTS;
-  const search = method === "SEARCH";
+  const write = method === "POST" || method === "DELETE";
+  const attempts = write ? 1 : READ_ATTEMPTS;
+  const payload = method === "SEARCH" ? "[]" : method === "POST" ? JSON.stringify(body ?? {}) : undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const last = attempt === attempts - 1;
     let response: Response;
     try {
       response = await fetch(`${config.restBase}/${path}`, {
-        method: search ? "POST" : method,
-        body: search ? "[]" : undefined,
+        method: method === "SEARCH" ? "POST" : method,
+        body: payload,
         headers: {
           Accept: "application/json",
-          ...(search ? { "Content-Type": "application/json" } : {}),
+          ...(payload ? { "Content-Type": "application/json" } : {}),
           username: config.username,
           "api-key": config.apiKey,
         },
@@ -212,11 +217,28 @@ const testCaseSchema = z.array(
     TestCaseId: id,
     TestSetTestCaseId: id.nullish(),
     Name: z.string().nullish(),
+    Description: z.string().nullish(),
     ExecutionStatusId: z.number().int().nullish(),
     ExecutionStatusName: z.string().nullish(),
     CustomProperties: z.array(customPropertySchema).nullish(),
   }),
 );
+
+const testStepSchema = z.array(
+  z.object({
+    Description: z.string().nullish(),
+    ExpectedResult: z.string().nullish(),
+    SampleData: z.string().nullish(),
+  }),
+);
+
+const recordedRunSchema = z.object({ TestRunId: id });
+const automatedRunSchema = z.object({
+  TestRunId: id,
+  TestCaseId: id.nullish(),
+  TestSetId: z.number().int().nullish(),
+  RunnerName: z.string().nullish(),
+});
 
 const projectListSchema = z.array(z.object({ ProjectId: id, Name: z.string().nullish(), Active: z.boolean().nullish() }));
 const userSchema = z.object({ UserName: z.string().nullish(), FullName: z.string().nullish() });
@@ -254,10 +276,16 @@ export interface SpiraSetCase {
   testCaseId: number;
   name: string;
   executionStatus: string;
+  /** Null when Spira did not report a status, which Spira treats as Not Run. */
+  executionStatusId: number | null;
   executed: boolean;
   /** Text values of the test case's custom properties, searched for TC IDs. */
   customText: string[];
+  description: string;
 }
+
+/** Spira's execution status IDs. */
+export const EXECUTION_STATUS = { failed: 1, passed: 2, notRun: 3, notApplicable: 4, blocked: 5, caution: 6 } as const;
 
 export async function getTestSet(projectId: number, testSetId: number): Promise<SpiraTestSet> {
   const what = `reading test set ${testSetId}`;
@@ -290,10 +318,76 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
       testCaseId,
       name: details?.Name?.trim() || `Test case TC:${testCaseId}`,
       executionStatus: details?.ExecutionStatusName ?? (statusId ? EXECUTION_STATUS_NAMES[statusId] : null) ?? "Not Run",
+      executionStatusId: statusId,
       executed: statusId !== null && EXECUTED_STATUS_IDS.has(statusId),
       customText: (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean),
+      description: plainText(details?.Description).slice(0, MAX_STEP_TEXT),
     };
   });
+}
+
+/** Plain text of a test case's steps (description, expected result, sample data). Read-only. */
+export async function getTestStepText(projectId: number, testCaseId: number): Promise<string> {
+  const what = `reading the steps of test case ${testCaseId}`;
+  const steps = parse(testStepSchema, await call("GET", `projects/${projectId}/test-cases/${testCaseId}/test-steps`, what), what);
+  return steps
+    .flatMap((s) => [s.Description, s.ExpectedResult, s.SampleData].map(plainText))
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, MAX_STEP_TEXT);
+}
+
+/** Name the app records as the runner, and checks before deleting a run on undo. */
+export const RUNNER_NAME = "Spira Test Set Reconciler";
+
+export interface TestRunRecord {
+  testCaseId: number;
+  testSetId: number;
+  testSetTestCaseId: number;
+  releaseId: number | null;
+  executionStatusId: number;
+  testName: string;
+  message: string;
+  details: string;
+}
+
+/**
+ * Records one automated test run. This is a write: it is not retried, so a lost response
+ * cannot create a duplicate; the caller re-reads status before any retry.
+ */
+export async function recordTestRun(projectId: number, run: TestRunRecord): Promise<number> {
+  const now = `/Date(${Date.now()})/`;
+  const what = `recording a result for test case ${run.testCaseId}`;
+  const body = {
+    TestRunFormatId: 1,
+    TestRunTypeId: 2,
+    RunnerName: RUNNER_NAME,
+    RunnerTestName: run.testName.slice(0, 255),
+    RunnerMessage: run.message.slice(0, 255),
+    RunnerStackTrace: run.details,
+    TestCaseId: run.testCaseId,
+    TestSetId: run.testSetId,
+    TestSetTestCaseId: run.testSetTestCaseId,
+    ReleaseId: run.releaseId,
+    ExecutionStatusId: run.executionStatusId,
+    StartDate: now,
+    EndDate: now,
+  };
+  const raw = parse(recordedRunSchema, await call("POST", `projects/${projectId}/test-runs/record`, what, body), what);
+  return raw.TestRunId;
+}
+
+/**
+ * Deletes a test run, but only one this app recorded for the expected test case:
+ * the run is read first and its runner name and test case are checked.
+ */
+export async function deleteRecordedTestRun(projectId: number, testRunId: number, testCaseId: number): Promise<void> {
+  const what = `reading test run ${testRunId}`;
+  const run = parse(automatedRunSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/automated`, what), what);
+  if (run.RunnerName !== RUNNER_NAME || run.TestCaseId !== testCaseId) {
+    throw new SpiraError(`Test run ${testRunId} was not recorded by this app for TC${testCaseId}, so it was not deleted.`, 409);
+  }
+  await call("DELETE", `projects/${projectId}/test-runs/${testRunId}`, `deleting test run ${testRunId}`);
 }
 
 /** Removes one membership. The test case itself is not deleted. */

@@ -24,7 +24,7 @@ export function allCards(testSets: TestSetComparison[]): Card[] {
 }
 
 export function countColumns(cards: Card[], decisions: Record<string, Column>): ColumnCounts {
-  const counts: ColumnCounts = { inScope: 0, outOfScope: 0, needsReview: 0, total: 0 };
+  const counts: ColumnCounts = { inScope: 0, blocked: 0, outOfScope: 0, needsReview: 0, total: 0 };
   for (const card of cards) {
     counts[effectiveColumn(card, decisions)] += 1;
     counts.total += 1;

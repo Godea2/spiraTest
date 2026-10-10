@@ -1,3 +1,4 @@
+import { normalizeKeywords } from "@/lib/domain/keywords";
 import { applySettingsUpdate, defaultSettings, type SettingsUpdate } from "@/lib/domain/settings";
 import type { AppSettings } from "@/lib/domain/types";
 import { readItem, writeItem } from "./storage";
@@ -14,6 +15,7 @@ export function loadSettings(): AppSettings {
     releaseLabel: stored.releaseLabel ?? defaults.releaseLabel,
     mappings: stored.mappings ?? defaults.mappings,
     moduleAliases: stored.moduleAliases ?? {},
+    keywords: Array.isArray(stored.keywords) ? normalizeKeywords(stored.keywords.filter((k) => typeof k === "string")) : [],
     updatedAt: stored.updatedAt ?? null,
   };
 }

@@ -1,5 +1,8 @@
 import { allCards, effectiveColumn, MAX_APPLY_BATCH } from "./board";
-import type { ApplyAction, Column, PreflightResult, TestSetComparison } from "./types";
+import { COLUMN_LABELS, type ApplyAction, type Column, type PreflightResult, type SignOffStatus, type TestSetComparison } from "./types";
+
+/** Column a card must be in to record each result. */
+export const SIGN_OFF_COLUMN: Record<SignOffStatus, Column> = { blocked: "blocked", passed: "inScope" };
 
 export const PREFLIGHT_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -28,10 +31,16 @@ export interface ApplyBoard {
 }
 
 /**
- * Remove-only, batched apply. Every action must correspond to a card that is
- * currently Out of Scope on the board (manually moved or suggested).
+ * Batched apply. Every action must correspond to a card that is currently in `column`
+ * on the board (manually moved or suggested): Out of Scope for removals, Blocked or
+ * In Scope when recording results.
  */
-export function validateApplyBatch(board: ApplyBoard, input: ApplyBatchInput, now = Date.now()): void {
+export function validateApplyBatch(
+  board: ApplyBoard,
+  input: ApplyBatchInput,
+  now = Date.now(),
+  column: Column = "outOfScope",
+): void {
   if (input.actions.length === 0) throw new ApplyValidationError("No actions to apply.");
   if (input.actions.length > MAX_APPLY_BATCH) {
     throw new ApplyValidationError(`Send at most ${MAX_APPLY_BATCH} actions per batch.`);
@@ -39,9 +48,9 @@ export function validateApplyBatch(board: ApplyBoard, input: ApplyBatchInput, no
   const set = board.testSets.find((s) => s.testSetId === input.testSetId);
   if (!set) throw new ApplyValidationError(`Test set ${input.testSetId} is not part of this draft.`);
 
-  const outOfScope = new Map(
+  const inColumn = new Map(
     set.cards
-      .filter((card) => effectiveColumn(card, board.decisions) === "outOfScope")
+      .filter((card) => effectiveColumn(card, board.decisions) === column)
       .map((card) => [card.testSetTestCaseId, card]),
   );
   const seen = new Set<number>();
@@ -50,10 +59,10 @@ export function validateApplyBatch(board: ApplyBoard, input: ApplyBatchInput, no
       throw new ApplyValidationError(`Membership ${action.testSetTestCaseId} appears twice in this batch.`);
     }
     seen.add(action.testSetTestCaseId);
-    const card = outOfScope.get(action.testSetTestCaseId);
+    const card = inColumn.get(action.testSetTestCaseId);
     if (!card || card.testCaseId !== action.testCaseId) {
       throw new ApplyValidationError(
-        `Case ${action.testCaseId} (membership ${action.testSetTestCaseId}) is not an Out of Scope card in this draft. Only saved Out of Scope cards can be removed.`,
+        `Case ${action.testCaseId} (membership ${action.testSetTestCaseId}) is not a ${COLUMN_LABELS[column]} card in this draft. Only saved ${COLUMN_LABELS[column]} cards can be used here.`,
       );
     }
   }

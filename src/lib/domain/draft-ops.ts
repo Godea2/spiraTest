@@ -1,5 +1,6 @@
 import { allCards, normalizeDecisions, preserveDecisions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
+import { MAX_STEP_TEXT } from "./keywords";
 import type {
   ApplyActionResult,
   Column,
@@ -7,6 +8,8 @@ import type {
   DraftApplyState,
   HistoryEntry,
   PreflightResult,
+  SignOffAction,
+  SignOffResult,
   TestSetComparison,
   VerificationResult,
 } from "./types";
@@ -21,6 +24,8 @@ export function emptyApplyState(): DraftApplyState {
     verification: null,
     lastLiveRunAt: null,
     lastDryRunAt: null,
+    signOffRuns: [],
+    signOffFailed: [],
   };
 }
 
@@ -85,6 +90,39 @@ export function recordApplyResults(
   }
   draft.apply.removed[key] = [...removed].sort((a, b) => a - b);
   draft.apply.failed[key] = [...failed].sort((a, b) => a - b);
+}
+
+const actionKey = (a: SignOffAction) => `${a.testSetId}:${a.testSetTestCaseId}:${a.status}`;
+
+/** Keeps the IDs of recorded runs (for undo) and the failures (for retry). Dry runs change nothing. */
+export function recordSignOffResults(draft: Draft, dryRun: boolean, results: SignOffResult[], now = new Date()): void {
+  if (dryRun) return;
+  const at = now.toISOString();
+  const runs = [...(draft.apply.signOffRuns ?? [])];
+  const failed = new Map((draft.apply.signOffFailed ?? []).map((a) => [actionKey(a), a]));
+  for (const r of results) {
+    const action: SignOffAction = { testSetId: r.testSetId, testCaseId: r.testCaseId, testSetTestCaseId: r.testSetTestCaseId, status: r.status };
+    if (r.result === "failed") {
+      failed.set(actionKey(action), action);
+      continue;
+    }
+    failed.delete(actionKey(action));
+    if (r.result === "recorded" && r.testRunId !== null) runs.push({ ...action, testRunId: r.testRunId, at });
+  }
+  draft.apply.signOffRuns = runs;
+  draft.apply.signOffFailed = [...failed.values()];
+}
+
+export function recordSignOffUndo(draft: Draft, deletedRunIds: number[]): void {
+  const deleted = new Set(deletedRunIds);
+  draft.apply.signOffRuns = (draft.apply.signOffRuns ?? []).filter((run) => !deleted.has(run.testRunId));
+}
+
+/** Merges step text read from Spira; long text is cut to keep the draft small. */
+export function recordStepText(draft: Draft, steps: Record<string, string>): void {
+  const next = { ...(draft.stepText ?? {}) };
+  for (const [testCaseId, text] of Object.entries(steps)) next[testCaseId] = text.slice(0, MAX_STEP_TEXT);
+  draft.stepText = next;
 }
 
 export function recordVerification(draft: Draft, verification: VerificationResult): void {

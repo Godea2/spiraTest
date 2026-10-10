@@ -1,5 +1,6 @@
 import { effectiveColumn } from "@/lib/domain/board";
-import { COLUMN_LABELS, type ActivityEntry, type Column, type Draft } from "@/lib/domain/types";
+import { keywordHits } from "@/lib/domain/keywords";
+import { COLUMN_LABELS, COLUMNS, type ActivityEntry, type Column, type Draft } from "@/lib/domain/types";
 
 function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "export";
@@ -10,6 +11,7 @@ export async function exportBoard(draft: Draft): Promise<void> {
   const wb = XLSX.utils.book_new();
   const setName = new Map(draft.testSets.map((s) => [s.testSetId, s.testSetName]));
   const cardByKey = new Map(draft.testSets.flatMap((s) => s.cards).map((c) => [c.key, c]));
+  const hits = keywordHits([...cardByKey.values()], draft.keywords ?? [], draft.stepText);
 
   const sheetFor = (column: Column) =>
     draft.testSets.flatMap((set) =>
@@ -25,11 +27,12 @@ export async function exportBoard(draft: Draft): Promise<void> {
           "Execution status": card.executionStatus,
           Suggestion: COLUMN_LABELS[card.suggestion],
           "Manually moved": draft.decisions[card.key] ? "Yes" : "No",
+          "Not-implemented keywords": hits.get(card.key)?.join(", ") ?? "",
           Reason: card.reason,
         })),
     );
 
-  for (const column of ["inScope", "outOfScope", "needsReview"] as const) {
+  for (const column of COLUMNS) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetFor(column)), COLUMN_LABELS[column]);
   }
   XLSX.utils.book_append_sheet(

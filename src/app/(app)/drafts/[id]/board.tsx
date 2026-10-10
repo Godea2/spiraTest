@@ -39,12 +39,14 @@ import {
   type Draft,
   type HistoryEntry,
 } from "@/lib/domain/types";
+import { blockMatchingCards, keywordHits } from "@/lib/domain/keywords";
 import { BoardCard, BoardColumn } from "./board-parts";
+import { KeywordPanel } from "./keyword-panel";
 
 const AUTOSAVE_MS = 30_000;
-const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "outOfScope", "3": "needsReview" };
+const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "blocked", "3": "outOfScope", "4": "needsReview" };
 
-type StatusFilter = "all" | "executed" | "notExecuted" | "manual";
+type StatusFilter = "all" | "executed" | "notExecuted" | "manual" | "keyword";
 type Confirm = { title: string; body: React.ReactNode; confirmLabel: string; danger?: boolean; run: () => void } | null;
 
 function describeMove(changes: CardChange[], to?: Column) {
@@ -98,6 +100,11 @@ export function Board({ id }: { id: string }) {
   const setNames = useMemo(() => new Map(draft?.testSets.map((s) => [s.testSetId, s.testSetName]) ?? []), [draft]);
   const counts = useMemo(() => countColumns(cards, decisions), [cards, decisions]);
   const missingCount = draft?.testSets.reduce((n, s) => n + s.missingFromSpira.length, 0) ?? 0;
+  const hits = useMemo(() => keywordHits(cards, draft?.keywords ?? [], draft?.stepText), [cards, draft?.keywords, draft?.stepText]);
+  const pendingBlocks = useMemo(
+    () => cards.filter((c) => hits.has(c.key) && effectiveColumn(c, decisions) === "inScope").length,
+    [cards, hits, decisions],
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -106,13 +113,14 @@ export function Board({ id }: { id: string }) {
       if (statusFilter === "executed" && !card.executed) return false;
       if (statusFilter === "notExecuted" && card.executed) return false;
       if (statusFilter === "manual" && !decisions[card.key]) return false;
+      if (statusFilter === "keyword" && !hits.has(card.key)) return false;
       if (!q) return true;
       return `${card.name} ${card.tcId ?? ""} ${card.testCaseId} TC${card.testCaseId} ${card.testSetTestCaseId}`.toLowerCase().includes(q);
     });
-  }, [cards, setFilter, statusFilter, search, decisions]);
+  }, [cards, setFilter, statusFilter, search, decisions, hits]);
 
   const byColumn = useMemo(() => {
-    const grouped: Record<Column, Card[]> = { inScope: [], outOfScope: [], needsReview: [] };
+    const grouped: Record<Column, Card[]> = { inScope: [], blocked: [], outOfScope: [], needsReview: [] };
     for (const card of filtered) grouped[effectiveColumn(card, decisions)].push(card);
     return grouped;
   }, [filtered, decisions]);
@@ -240,6 +248,29 @@ export function Board({ id }: { id: string }) {
       record(`Redo: ${describeMove(changes)}`, changes);
     }, "redo");
   }, [redoStack, cards, record, withExecutedGuard]);
+
+  /** Adopts a draft written outside the board's own save (keywords, step text) so the next save does not conflict. */
+  const adoptDraft = useCallback(
+    (d: Draft) => {
+      stateRef.current = { ...stateRef.current, draft: d };
+      setDraft(d);
+    },
+    [setDraft],
+  );
+
+  const blockMatches = useCallback(
+    (d: Draft) => {
+      const keywords = d.keywords ?? [];
+      const { decisions: next, changes } = blockMatchingCards(cards, stateRef.current.decisions, keywords, d.stepText);
+      if (changes.length === 0) return 0;
+      setDecisions(next);
+      setUndoStack((s) => [...s, changes]);
+      setRedoStack([]);
+      record(`${describeMove(changes, "blocked")}: they mention ${keywords.join(", ")}`, changes);
+      return changes.length;
+    },
+    [cards, record],
+  );
 
   const reset = () => {
     const changes: CardChange[] = Object.entries(decisions).flatMap(([key, from]) => {
@@ -464,17 +495,29 @@ export function Board({ id }: { id: string }) {
       {recompare?.error && <Notice tone="danger" title="Recompare stopped" action={<Button size="sm" onClick={() => setRecompare(null)}>Dismiss</Button>}>{recompare.error}</Notice>}
       {counts.needsReview > 0 && complete && (
         <Notice tone="warning">
-          {counts.needsReview} card{counts.needsReview === 1 ? "" : "s"} in Needs Review. Move each to In Scope or Out of Scope before a live apply.
+          {counts.needsReview} card{counts.needsReview === 1 ? "" : "s"} in Needs Review. Move each to In Scope, Blocked or Out of Scope before a live apply.
         </Notice>
       )}
 
-      <dl className="surface grid grid-cols-2 gap-4 px-5 py-4 sm:grid-cols-5">
+      <dl className="surface grid grid-cols-2 gap-4 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Total cards" value={counts.total} />
         <Stat label="In Scope" value={counts.inScope} />
+        <Stat label="Blocked · not implemented" value={counts.blocked} />
         <Stat label="Out of Scope · to remove" value={counts.outOfScope} tone={counts.outOfScope ? "danger" : undefined} />
         <Stat label="Needs Review" value={counts.needsReview} tone={counts.needsReview ? "warning" : "success"} />
         <Stat label="Missing from Spira" value={missingCount} />
       </dl>
+
+      {complete && (
+        <KeywordPanel
+          draft={draft}
+          cards={cards}
+          decisions={decisions}
+          pending={pendingBlocks}
+          onDraft={adoptDraft}
+          onBlockMatches={blockMatches}
+        />
+      )}
 
       <div className="flex flex-col gap-3">
         {draft.testSets.length > 1 && (
@@ -503,6 +546,7 @@ export function Board({ id }: { id: string }) {
             <option value="executed">Executed</option>
             <option value="notExecuted">Not executed</option>
             <option value="manual">Moved manually</option>
+            <option value="keyword">Mentions a keyword</option>
           </select>
           <div className="flex items-center gap-1 sm:ml-auto">
             <Button size="sm" variant="ghost" onClick={undo} disabled={undoStack.length === 0} title="Undo (Ctrl+Z)">Undo</Button>
@@ -511,7 +555,7 @@ export function Board({ id }: { id: string }) {
           </div>
         </div>
         <p className="hidden text-xs text-zinc-500 lg:block">
-          Drag cards between columns, or focus a card and press <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
+          Drag cards between columns, or focus a card and press <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
         </p>
       </div>
 
@@ -527,7 +571,7 @@ export function Board({ id }: { id: string }) {
       )}
 
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDrag(null)}>
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {COLUMNS.map((column) => (
             <BoardColumn
               key={column}
@@ -543,6 +587,7 @@ export function Board({ id }: { id: string }) {
                   card={card}
                   column={column}
                   setName={setFilter === "all" && draft.testSets.length > 1 ? setNames.get(card.testSetId) ?? null : null}
+                  keywords={hits.get(card.key)}
                   moved={Boolean(decisions[card.key])}
                   selected={selection.has(card.key)}
                   onToggle={toggle}

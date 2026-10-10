@@ -117,6 +117,7 @@ export function DraftList() {
                 </div>
                 <dl className="flex gap-5 text-xs tabular-nums">
                   <div><dt className="text-zinc-500">In</dt><dd className="font-semibold">{d.counts.inScope}</dd></div>
+                  <div><dt className="text-zinc-500">Blocked</dt><dd className="font-semibold">{d.counts.blocked}</dd></div>
                   <div><dt className="text-zinc-500">Out</dt><dd className="font-semibold">{d.counts.outOfScope}</dd></div>
                   <div>
                     <dt className="text-zinc-500">Review</dt>

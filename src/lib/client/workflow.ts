@@ -1,15 +1,22 @@
 import type { ApplyBatchInput } from "@/lib/domain/apply-rules";
+import { chunk, MAX_APPLY_BATCH } from "@/lib/domain/board";
 import {
   recordApplyResults,
   recordCompareError,
   recordComparison,
   recordPreflight,
+  recordSignOffResults,
+  recordSignOffUndo,
+  recordStepText,
   recordVerification,
 } from "@/lib/domain/draft-ops";
 import type {
   ApplyActionResult,
   Draft,
   PreflightResult,
+  SignOffResult,
+  SignOffRun,
+  SignOffStatus,
   TestSetComparison,
   TestSetMapping,
   VerificationResult,
@@ -21,6 +28,10 @@ import { getDraft, mutateDraft } from "./drafts";
 
 // The server is stateless: each call carries the board it acts on and the draft
 // in this browser is updated with the result.
+
+export interface SignOffBatchInput extends ApplyBatchInput {
+  status: SignOffStatus;
+}
 
 const contextOf = (draft: Draft): WorkflowContext => ({
   projectId: draft.projectId,
@@ -139,6 +150,88 @@ export async function applyBatch(
     },
   });
   return { draft: updated, results };
+}
+
+/** Reads step text for some test cases and stores it in the draft. Returns cases that could not be read. */
+export async function readTestSteps(
+  draftId: string,
+  testCaseIds: number[],
+): Promise<{ draft: Draft; failed: Record<string, string> }> {
+  const draft = getDraft(draftId);
+  const { steps, failed } = await api<{ steps: Record<string, string>; failed: Record<string, string> }>("/api/spira/test-steps", {
+    method: "POST",
+    body: { projectId: draft.projectId, testCaseIds },
+  });
+  return { draft: mutateDraft(draftId, (d) => recordStepText(d, steps)), failed };
+}
+
+export async function signOffBatch(
+  draftId: string,
+  batch: SignOffBatchInput,
+  notes: Record<string, string>,
+): Promise<{ draft: Draft; results: SignOffResult[] }> {
+  const draft = getDraft(draftId);
+  const { results } = await api<{ results: SignOffResult[] }>("/api/workflow/sign-off", {
+    method: "POST",
+    body: {
+      context: contextOf(draft),
+      testSets: draft.testSets,
+      decisions: draft.decisions,
+      removed: draft.apply.removed,
+      preflight: draft.apply.preflight,
+      draftName: draft.name,
+      notes,
+      batch,
+    },
+  });
+  const updated = mutateDraft(draftId, (d) => recordSignOffResults(d, batch.dryRun, results));
+  const count = (outcome: SignOffResult["result"]) => results.filter((r) => r.result === outcome).length;
+  const label = batch.status === "blocked" ? "Blocked" : "Passed";
+  logActivity({
+    type: batch.dryRun ? "signOff.dryRun" : count("failed") ? "signOff.batchWithErrors" : "signOff.batch",
+    message: batch.dryRun
+      ? `Dry run: ${count("wouldRecord")} ${label} result(s) would be recorded for test set ${batch.testSetId}, ${count("skipped")} skipped.`
+      : `Recorded ${count("recorded")} ${label} result(s) for test set ${batch.testSetId}; ${count("skipped")} skipped, ${count("failed")} failed.`,
+    draftId,
+    module: draft.module,
+    details: {
+      testSetId: batch.testSetId,
+      status: batch.status,
+      dryRun: batch.dryRun,
+      testRunIds: results.flatMap((r) => (r.testRunId ? [r.testRunId] : [])),
+      failed: results.filter((r) => r.result === "failed").map((r) => r.testSetTestCaseId),
+    },
+  });
+  return { draft: updated, results };
+}
+
+/** Deletes runs this app recorded, in batches, and forgets the ones that are gone. */
+export async function undoSignOff(
+  draftId: string,
+  runs: SignOffRun[],
+): Promise<{ draft: Draft; failed: { testRunId: number; message: string | null }[] }> {
+  const draft = getDraft(draftId);
+  const deleted: number[] = [];
+  const failed: { testRunId: number; message: string | null }[] = [];
+  let updated = draft;
+  for (const batch of chunk(runs, MAX_APPLY_BATCH)) {
+    const { results } = await api<{ results: { testRunId: number; ok: boolean; message: string | null }[] }>(
+      "/api/workflow/undo-sign-off",
+      { method: "POST", body: { context: contextOf(draft), runs: batch.map(({ testRunId, testCaseId }) => ({ testRunId, testCaseId })) } },
+    );
+    const ok = results.filter((r) => r.ok).map((r) => r.testRunId);
+    deleted.push(...ok);
+    failed.push(...results.filter((r) => !r.ok));
+    updated = mutateDraft(draftId, (d) => recordSignOffUndo(d, ok));
+  }
+  logActivity({
+    type: failed.length ? "signOff.undoWithErrors" : "signOff.undo",
+    message: `Undo sign-off: deleted ${deleted.length} test run(s) from Spira${failed.length ? `, ${failed.length} could not be deleted` : ""}.`,
+    draftId,
+    module: draft.module,
+    details: { deleted, failed: failed.map((f) => f.testRunId) },
+  });
+  return { draft: updated, failed };
 }
 
 export async function verifyApply(draftId: string): Promise<{ draft: Draft; verification: VerificationResult }> {

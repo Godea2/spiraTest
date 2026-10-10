@@ -19,6 +19,7 @@ function update(overrides: Partial<SettingsUpdate> = {}) {
     releaseLabel: "",
     mappings: [mapping(10, "Onboarding")],
     moduleAliases: {},
+    keywords: [],
     ...overrides,
   });
 }
@@ -49,6 +50,16 @@ describe("settings saved in the browser", () => {
       expect.objectContaining({ fieldErrors: { "mappings.1.testSetId": expect.stringContaining("more than once") } }),
     );
     expect(loadSettings().mappings).toHaveLength(1);
+  });
+
+  it("saves not-implemented keywords without blanks or case-insensitive duplicates", () => {
+    update({ keywords: [" NIN ", "bvn", "nin", "", "Google  Sign-in"] });
+    expect(loadSettings().keywords).toEqual(["NIN", "bvn", "Google Sign-in"]);
+  });
+
+  it("loads older settings without keywords as an empty list", () => {
+    writeItem("settings", { projectId: 5, releaseId: 6, releaseLabel: "", mappings: [], moduleAliases: {} });
+    expect(loadSettings().keywords).toEqual([]);
   });
 
   it("drops aliases for modules that no longer have mappings", () => {

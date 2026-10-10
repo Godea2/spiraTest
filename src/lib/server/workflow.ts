@@ -1,5 +1,5 @@
 import "server-only";
-import { validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
+import { SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
 import { allCards, diffMembership, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
@@ -8,13 +8,27 @@ import type {
   Column,
   Platform,
   PreflightResult,
+  SignOffResult,
+  SignOffStatus,
   TestSetComparison,
   VerificationResult,
   WorkbookRow,
   WorkflowContext,
 } from "@/lib/domain/types";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
-import { getMembership, getTestSet, getTestSetCases, removeFromTestSet, SpiraError } from "./spira";
+import {
+  deleteRecordedTestRun,
+  EXECUTION_STATUS,
+  getMembership,
+  getTestSet,
+  getTestSetCases,
+  getTestStepText,
+  recordTestRun,
+  removeFromTestSet,
+  RUNNER_NAME,
+  SpiraError,
+  type SpiraSetCase,
+} from "./spira";
 
 // Stateless: every request carries the board it acts on. Anything that decides what
 // may be removed is checked against the server's own signatures before it is used.
@@ -186,4 +200,129 @@ export async function verifyApply(input: {
     }),
   );
   return { verification: { at: new Date().toISOString(), ok: sets.length > 0 && sets.every((s) => s.ok), sets } };
+}
+
+/** Plain text of each test case's steps, for keyword matching. Read-only. */
+export async function readStepText(input: {
+  projectId: number;
+  testCaseIds: number[];
+}): Promise<{ steps: Record<string, string>; failed: Record<string, string> }> {
+  const steps: Record<string, string> = {};
+  const failed: Record<string, string> = {};
+  await inPool([...new Set(input.testCaseIds)], REMOVE_CONCURRENCY, async (testCaseId) => {
+    try {
+      steps[String(testCaseId)] = await getTestStepText(input.projectId, testCaseId);
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      failed[String(testCaseId)] = error.message;
+    }
+  });
+  return { steps, failed };
+}
+
+export interface SignOffBatchInput extends ApplyBatchInput {
+  status: SignOffStatus;
+}
+
+/**
+ * Records a Blocked or Passed automated test run for each card, against a verified board.
+ * The test set is re-read first: a case is only recorded if it is still in the set, still
+ * the same test case, and has no result yet (Not Run). Dry runs make no changes.
+ */
+export async function signOffBatch(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+  removed: Record<string, number[]>;
+  preflight: PreflightResult | null;
+  draftName: string;
+  notes?: Record<string, string>;
+  batch: SignOffBatchInput;
+}): Promise<{ results: SignOffResult[] }> {
+  const ctx = input.context;
+  const { batch } = input;
+  const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
+  validateApplyBatch(
+    { module: ctx.module, testSets: sets, decisions, preflight: verifiedPreflight(ctx, input.preflight, sets, decisions) },
+    batch,
+    Date.now(),
+    SIGN_OFF_COLUMN[batch.status],
+  );
+
+  const result = (
+    action: ApplyAction,
+    outcome: SignOffResult["result"],
+    message: string | null = null,
+    testRunId: number | null = null,
+  ): SignOffResult => ({ ...action, testSetId: batch.testSetId, status: batch.status, result: outcome, testRunId, message });
+
+  let cases: Map<number, SpiraSetCase>;
+  let releaseId: number | null;
+  try {
+    const [spiraSet, list] = await Promise.all([
+      getTestSet(ctx.projectId, batch.testSetId),
+      getTestSetCases(ctx.projectId, batch.testSetId),
+    ]);
+    cases = new Map(list.map((c) => [c.testSetTestCaseId, c]));
+    releaseId = ctx.releaseId ?? spiraSet.releaseId;
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    return { results: batch.actions.map((action) => result(action, "failed", error.message)) };
+  }
+
+  const blocked = batch.status === "blocked";
+  const results = await inPool(batch.actions, REMOVE_CONCURRENCY, async (action): Promise<SignOffResult> => {
+    const current = cases.get(action.testSetTestCaseId);
+    if (!current) return result(action, "skipped", "No longer in this test set in Spira.");
+    if (current.testCaseId !== action.testCaseId) {
+      return result(action, "failed", `This membership now points at test case ${current.testCaseId}. Recompare first.`);
+    }
+    if (current.executionStatusId !== null && current.executionStatusId !== EXECUTION_STATUS.notRun) {
+      return result(action, "skipped", `Already has a result in Spira (${current.executionStatus}).`);
+    }
+    if (batch.dryRun) return result(action, "wouldRecord");
+    const note = input.notes?.[String(action.testSetTestCaseId)]?.trim();
+    try {
+      const testRunId = await recordTestRun(ctx.projectId, {
+        testCaseId: action.testCaseId,
+        testSetId: batch.testSetId,
+        testSetTestCaseId: action.testSetTestCaseId,
+        releaseId,
+        executionStatusId: blocked ? EXECUTION_STATUS.blocked : EXECUTION_STATUS.passed,
+        testName: current.name,
+        message: blocked ? `Blocked: feature not implemented${note ? ` (${note})` : ""}` : "Passed: signed off with the approved scope",
+        details: [
+          `Recorded by ${RUNNER_NAME} when the scope for module ${ctx.module} was approved (draft "${input.draftName}").`,
+          note ? `Matched not-implemented keywords: ${note}.` : null,
+          "No test steps were executed by this tool.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      });
+      return result(action, "recorded", null, testRunId);
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return result(action, "failed", error.message);
+    }
+  });
+  return { results };
+}
+
+/** Deletes test runs this app recorded. Each run is checked to be ours before it is deleted. */
+export async function undoSignOff(input: {
+  context: WorkflowContext;
+  runs: { testRunId: number; testCaseId: number }[];
+}): Promise<{ results: { testRunId: number; ok: boolean; message: string | null }[] }> {
+  const ctx = input.context;
+  const results = await inPool(input.runs, REMOVE_CONCURRENCY, async (run) => {
+    try {
+      await deleteRecordedTestRun(ctx.projectId, run.testRunId, run.testCaseId);
+      return { testRunId: run.testRunId, ok: true, message: null };
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      if (error.upstream === 404) return { testRunId: run.testRunId, ok: true, message: "Already deleted in Spira." };
+      return { testRunId: run.testRunId, ok: false, message: error.message };
+    }
+  });
+  return { results };
 }

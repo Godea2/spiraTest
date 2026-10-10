@@ -250,6 +250,7 @@ export function CompareWorkspace() {
         rows: matchedRows,
         testSetIds: ids,
         testSetRefs: refs,
+        keywords: settings.keywords,
       });
       setDraft(created);
       setStatuses(Object.fromEntries(ids.map((id) => [id, "pending" as SetStatus])));

@@ -1,11 +1,16 @@
-export const COLUMNS = ["inScope", "outOfScope", "needsReview"] as const;
+export const COLUMNS = ["inScope", "blocked", "outOfScope", "needsReview"] as const;
 export type Column = (typeof COLUMNS)[number];
 
 export const COLUMN_LABELS: Record<Column, string> = {
   inScope: "In Scope",
+  blocked: "Blocked",
   outOfScope: "Out of Scope",
   needsReview: "Needs Review",
 };
+
+/** Results the app records in Spira on sign-off. */
+export const SIGN_OFF_STATUSES = ["blocked", "passed"] as const;
+export type SignOffStatus = (typeof SIGN_OFF_STATUSES)[number];
 
 export const PLATFORMS = ["Android", "iOS", "Web", "Other"] as const;
 export type Platform = (typeof PLATFORMS)[number];
@@ -33,6 +38,8 @@ export interface Card {
   executed: boolean;
   suggestion: Column;
   reason: string;
+  /** Plain-text test case description, searched for not-implemented keywords. */
+  description?: string;
 }
 
 export interface MissingRow {
@@ -106,6 +113,31 @@ export interface DraftApplyState {
   verification: VerificationResult | null;
   lastLiveRunAt: string | null;
   lastDryRunAt: string | null;
+  /** Test runs this app recorded in Spira; kept so they can be undone. Missing on older drafts. */
+  signOffRuns?: SignOffRun[];
+  /** Cards whose result could not be recorded, so they can be retried. */
+  signOffFailed?: SignOffAction[];
+}
+
+/** One card to record a result for. */
+export interface SignOffAction {
+  testSetId: number;
+  testCaseId: number;
+  testSetTestCaseId: number;
+  status: SignOffStatus;
+}
+
+export interface SignOffRun extends SignOffAction {
+  testRunId: number;
+  at: string;
+}
+
+export type SignOffResultStatus = "recorded" | "wouldRecord" | "skipped" | "failed";
+
+export interface SignOffResult extends SignOffAction {
+  result: SignOffResultStatus;
+  testRunId: number | null;
+  message: string | null;
 }
 
 export interface DraftSource {
@@ -135,10 +167,17 @@ export interface Draft {
   decisions: Record<string, Column>;
   history: HistoryEntry[];
   apply: DraftApplyState;
+  /** Features not built yet; In Scope cards mentioning one are moved to Blocked. */
+  keywords?: string[];
+  /** Plain text of each test case's steps, keyed by test case ID, read from Spira for keyword matching. */
+  stepText?: Record<string, string>;
+  /** Set once keywords have been applied automatically, so they are not re-applied on every load. */
+  keywordsAppliedAt?: string | null;
 }
 
 export interface ColumnCounts {
   inScope: number;
+  blocked: number;
   outOfScope: number;
   needsReview: number;
   total: number;
@@ -178,6 +217,8 @@ export interface AppSettings {
   releaseLabel: string;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
+  /** Not-implemented keywords copied into each new draft, e.g. "nin", "bvn". */
+  keywords: string[];
   updatedAt: string | null;
 }
 

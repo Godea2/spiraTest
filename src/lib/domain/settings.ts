@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { keywordListSchema, normalizeKeywords } from "./keywords";
 import { PLATFORMS, type AppSettings, type Platform } from "./types";
 
 /** Nothing is preset: the project, release and test sets all come from Spira via Settings. */
@@ -9,6 +10,7 @@ export function defaultSettings(): AppSettings {
     releaseLabel: "",
     mappings: [],
     moduleAliases: {},
+    keywords: [],
     updatedAt: null,
   };
 }
@@ -45,6 +47,7 @@ export const settingsUpdateSchema = z.object({
     )
     .max(500),
   moduleAliases: z.record(z.string(), z.string().trim().max(120)),
+  keywords: keywordListSchema,
 });
 
 export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
@@ -86,6 +89,7 @@ export function applySettingsUpdate(update: SettingsUpdate, now = new Date()): A
     releaseLabel: value.releaseLabel,
     mappings: value.mappings,
     moduleAliases,
+    keywords: normalizeKeywords(value.keywords),
     updatedAt: now.toISOString(),
   };
 }

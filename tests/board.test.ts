@@ -80,7 +80,8 @@ describe("apply planning", () => {
   });
 
   it("counts follow decisions", () => {
-    expect(countColumns(cards, { "1:3": "inScope" })).toEqual({ inScope: 3, outOfScope: 1, needsReview: 0, total: 4 });
+    expect(countColumns(cards, { "1:3": "inScope" })).toEqual({ inScope: 3, blocked: 0, outOfScope: 1, needsReview: 0, total: 4 });
+    expect(countColumns(cards, { "1:1": "blocked" })).toMatchObject({ inScope: 1, blocked: 1, needsReview: 1 });
   });
 
   it("batches at most 25", () => {

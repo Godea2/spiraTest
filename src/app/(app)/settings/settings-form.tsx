@@ -7,6 +7,7 @@ import { logActivity } from "@/lib/client/activity";
 import { api, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
 import { saveSettings } from "@/lib/client/settings-store";
+import { parseKeywords } from "@/lib/domain/keywords";
 import { guessMapping, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
 import {
   PLATFORMS,
@@ -31,6 +32,8 @@ interface FormState {
   releaseLabel: string;
   mappings: MappingDraft[];
   moduleAliases: Record<string, string>;
+  /** Comma-separated in the form; saved as a list. */
+  keywords: string;
 }
 
 function toForm(s: AppSettings): FormState {
@@ -40,6 +43,7 @@ function toForm(s: AppSettings): FormState {
     releaseLabel: s.releaseLabel,
     mappings: s.mappings.map((m) => ({ ...m, testSetId: String(m.testSetId) })),
     moduleAliases: { ...s.moduleAliases },
+    keywords: s.keywords.join(", "),
   };
 }
 
@@ -221,6 +225,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         moduleAliases: Object.fromEntries(
           Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
         ),
+        keywords: parseKeywords(form.keywords),
       };
       const saved = saveSettings(update);
       replace(saved);
@@ -338,6 +343,28 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             {(p) => <input {...p} className="input" value={form.releaseLabel} maxLength={200} onChange={(e) => update({ releaseLabel: e.target.value })} />}
           </Field>
         </div>
+      </Section>
+
+      <Section
+        title="Not implemented yet"
+        description="Features that are not built. Each new draft starts with these keywords, and In Scope cases whose name, description or steps mention one move to Blocked. You can change them per draft on the board."
+      >
+        <Field
+          label="Keywords"
+          error={errors.keywords ?? Object.entries(errors).find(([k]) => k.startsWith("keywords."))?.[1]}
+          hint="Separate with commas, for example: nin, bvn, google. Whole words only, not case-sensitive."
+        >
+          {(p) => (
+            <input
+              {...p}
+              className="input"
+              value={form.keywords}
+              maxLength={3000}
+              placeholder="nin, bvn, google"
+              onChange={(e) => update({ keywords: e.target.value })}
+            />
+          )}
+        </Field>
       </Section>
 
       <Section

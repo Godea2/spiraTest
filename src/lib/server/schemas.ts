@@ -1,7 +1,8 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
-import { COLUMNS, PLATFORMS } from "@/lib/domain/types";
+import { MAX_STEP_TEXT } from "@/lib/domain/keywords";
+import { COLUMNS, PLATFORMS, SIGN_OFF_STATUSES } from "@/lib/domain/types";
 
 const id = z.number().int().positive();
 const column = z.enum(COLUMNS);
@@ -39,6 +40,7 @@ const cardSchema = z.object({
   executed: z.boolean(),
   suggestion: column,
   reason: z.string().max(2_000),
+  description: z.string().max(MAX_STEP_TEXT).optional(),
 });
 
 const comparisonSchema = testSetRef.extend({
@@ -100,6 +102,42 @@ export const applyRequestSchema = z.object({
       .min(1)
       .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} actions per batch.`),
   }),
+});
+
+const actions = z
+  .array(z.object({ testCaseId: id, testSetTestCaseId: id }))
+  .min(1)
+  .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} actions per batch.`);
+
+export const signOffRequestSchema = z.object({
+  context: contextSchema,
+  testSets,
+  decisions,
+  removed,
+  preflight: preflightSchema.nullable(),
+  draftName: z.string().trim().max(200),
+  /** Keywords each card matched, shown in the Spira run message. Keyed by test set test case ID. */
+  notes: z.record(z.string().max(20), z.string().max(300)).optional(),
+  batch: z.object({
+    testSetId: id,
+    status: z.enum(SIGN_OFF_STATUSES),
+    dryRun: z.boolean(),
+    confirmModule: z.string().max(200).optional(),
+    actions,
+  }),
+});
+
+export const undoSignOffRequestSchema = z.object({
+  context: contextSchema,
+  runs: z
+    .array(z.object({ testRunId: id, testCaseId: id }))
+    .min(1)
+    .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} runs per batch.`),
+});
+
+export const testStepsRequestSchema = z.object({
+  projectId: id,
+  testCaseIds: z.array(id).min(1).max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} test cases per request.`),
 });
 
 export const verifyRequestSchema = z.object({
