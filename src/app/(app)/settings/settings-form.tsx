@@ -1,14 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { logActivity } from "@/lib/client/activity";
 import { api, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
 import { saveSettings } from "@/lib/client/settings-store";
-import { SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
-import { PLATFORMS, type AppSettings, type Platform } from "@/lib/domain/types";
+import { guessMapping, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
+import {
+  PLATFORMS,
+  type AppSettings,
+  type Platform,
+  type SpiraProject,
+  type SpiraRelease,
+  type SpiraTestSetSummary,
+} from "@/lib/domain/types";
 
 interface MappingDraft {
   id: string;
@@ -28,8 +35,8 @@ interface FormState {
 
 function toForm(s: AppSettings): FormState {
   return {
-    projectId: String(s.projectId),
-    releaseId: String(s.releaseId),
+    projectId: s.projectId === null ? "" : String(s.projectId),
+    releaseId: s.releaseId === null ? "" : String(s.releaseId),
     releaseLabel: s.releaseLabel,
     mappings: s.mappings.map((m) => ({ ...m, testSetId: String(m.testSetId) })),
     moduleAliases: { ...s.moduleAliases },
@@ -38,6 +45,7 @@ function toForm(s: AppSettings): FormState {
 
 const newId = () => `m-${Math.random().toString(36).slice(2, 10)}`;
 const positiveInt = (v: string) => /^\d+$/.test(v.trim()) && Number(v) > 0;
+const optionalId = (v: string) => (v.trim() ? Number(v) : null);
 
 export function SettingsForm() {
   const { settings } = useSettings();
@@ -45,8 +53,47 @@ export function SettingsForm() {
   return <SettingsEditor settings={settings} />;
 }
 
+type Connection =
+  | { status: "idle" | "loading" }
+  | { status: "ok"; userName: string; projects: SpiraProject[] }
+  | { status: "error"; error: string };
+
+/** Signs in to Spira (through the server) once it is configured, and again on request. */
+function useSpiraConnection(configured: boolean) {
+  const [result, setResult] = useState<{ attempt: number; connection: Connection } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!configured) return;
+    let cancelled = false;
+    api<{ userName: string; projects: SpiraProject[] }>("/api/spira", { method: "POST", body: {} })
+      .then((c) => {
+        if (cancelled) return;
+        setResult({ attempt, connection: { status: "ok", ...c } });
+        if (attempt > 0) logActivity({ type: "spira.checked", message: `Spira connection checked as ${c.userName}.` });
+      })
+      .catch((err) => {
+        if (!cancelled) setResult({ attempt, connection: { status: "error", error: errorMessage(err) } });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configured, attempt]);
+
+  const connection: Connection = !configured
+    ? { status: "idle" }
+    : result && result.attempt === attempt
+      ? result.connection
+      : { status: "loading" };
+  return { connection, retest: () => setAttempt((a) => a + 1) };
+}
+
 function SettingsEditor({ settings }: { settings: AppSettings }) {
-  const { replace } = useSettings();
+  const { replace, spira } = useSettings();
+  const { connection, retest } = useSpiraConnection(spira?.configured === true);
+  const projects = connection.status === "ok" ? connection.projects : [];
+  const [releaseLookup, setReleaseLookup] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [form, setForm] = useState<FormState>(() => toForm(settings));
   const [initial, setInitial] = useState<string>(() => JSON.stringify(toForm(settings)));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -79,10 +126,40 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     update({ mappings: form!.mappings.map((m) => (m.module === from ? { ...m, module: to } : m)), moduleAliases: aliases });
   }
 
+  async function lookUpRelease() {
+    setReleaseLookup({ busy: true, error: null });
+    try {
+      const release = await api<SpiraRelease>("/api/spira/release", {
+        method: "POST",
+        body: { projectId: Number(form.projectId), releaseId: Number(form.releaseId) },
+      });
+      update({ releaseLabel: release.label });
+      setReleaseLookup({ busy: false, error: null });
+    } catch (err) {
+      setReleaseLookup({ busy: false, error: errorMessage(err) });
+    }
+  }
+
+  function addTestSets(picked: Array<{ testSet: SpiraTestSetSummary; module: string; platform: Platform }>) {
+    update({
+      mappings: [
+        ...form.mappings,
+        ...picked.map(({ testSet, module, platform }) => ({
+          id: newId(),
+          module: module.trim(),
+          testSetId: String(testSet.testSetId),
+          testSetName: testSet.name,
+          platform,
+        })),
+      ],
+    });
+    setPickerOpen(false);
+  }
+
   function validate(): Record<string, string> {
     const e: Record<string, string> = {};
-    if (!positiveInt(form!.projectId)) e.projectId = "Enter a positive whole number.";
-    if (!positiveInt(form!.releaseId)) e.releaseId = "Enter a positive whole number.";
+    if (form!.projectId.trim() && !positiveInt(form!.projectId)) e.projectId = "Enter a positive whole number.";
+    if (form!.releaseId.trim() && !positiveInt(form!.releaseId)) e.releaseId = "Enter a positive whole number.";
     const seen = new Map<string, number>();
     form!.mappings.forEach((m, i) => {
       if (!m.module.trim()) e[`mappings.${i}.module`] = "Module name is required.";
@@ -104,8 +181,8 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     setMessage(null);
     try {
       const update: SettingsUpdate = {
-        projectId: Number(form.projectId),
-        releaseId: Number(form.releaseId),
+        projectId: optionalId(form.projectId),
+        releaseId: optionalId(form.releaseId),
         releaseLabel: form.releaseLabel.trim(),
         mappings: form.mappings.map((m) => ({
           id: m.id,
@@ -146,26 +223,78 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         actions={settings.updatedAt && <span className="text-xs text-zinc-500">Last saved {formatDateTime(settings.updatedAt)}</span>}
       />
 
+      <SpiraConnection connection={connection} onRetest={retest} />
+
       <Section title="Spira project" description="Used for every new comparison. Existing drafts keep the values they were created with.">
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Project ID" error={errors.projectId}>
-            {(p) => <input {...p} className="input" inputMode="numeric" value={form.projectId} onChange={(e) => update({ projectId: e.target.value })} />}
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
+          <Field
+            label="Project"
+            error={errors.projectId}
+            hint={connection.status === "ok" ? "Projects your Spira user can open." : "Enter the project ID, or connect to Spira to pick from a list."}
+          >
+            {(p) =>
+              connection.status === "ok" ? (
+                <select {...p} className="input" value={form.projectId} onChange={(e) => update({ projectId: e.target.value })}>
+                  <option value="">Choose a project…</option>
+                  {form.projectId && !projects.some((x) => String(x.projectId) === form.projectId) && (
+                    <option value={form.projectId}>Project {form.projectId} (not available to this user)</option>
+                  )}
+                  {projects.map((x) => (
+                    <option key={x.projectId} value={x.projectId}>{x.name} (PR:{x.projectId})</option>
+                  ))}
+                </select>
+              ) : (
+                <input {...p} className="input" inputMode="numeric" value={form.projectId} onChange={(e) => update({ projectId: e.target.value })} />
+              )
+            }
           </Field>
-          <Field label="Release ID" error={errors.releaseId}>
-            {(p) => <input {...p} className="input" inputMode="numeric" value={form.releaseId} onChange={(e) => update({ releaseId: e.target.value })} />}
+          <Field label="Release ID" error={errors.releaseId ?? releaseLookup.error} hint="The release or sprint ID from Spira (RL:…).">
+            {(p) => (
+              <div className="flex gap-2">
+                <input
+                  {...p}
+                  className="input min-w-0 flex-1"
+                  inputMode="numeric"
+                  value={form.releaseId}
+                  onChange={(e) => {
+                    setReleaseLookup({ busy: false, error: null });
+                    update({ releaseId: e.target.value });
+                  }}
+                />
+                <Button
+                  onClick={lookUpRelease}
+                  busy={releaseLookup.busy}
+                  disabled={!spira?.configured || !positiveInt(form.projectId) || !positiveInt(form.releaseId)}
+                  title="Read the release name from Spira"
+                >
+                  Look up
+                </Button>
+              </div>
+            )}
           </Field>
-          <Field label="Release label" hint="Shown on boards and exports.">
+          <Field label="Release label" hint="Shown on boards and exports. Look up fills it from Spira.">
             {(p) => <input {...p} className="input" value={form.releaseLabel} maxLength={200} onChange={(e) => update({ releaseLabel: e.target.value })} />}
           </Field>
         </div>
       </Section>
 
-      <SpiraConnection projectId={settings.projectId} />
-
       <Section
         title="Modules and test sets"
         description="Each module compares against its test sets. If the workbook spells a module differently, set an Excel alias; it applies to every test set in that module."
-        actions={<Button size="sm" onClick={() => setNewModule("")}>Add module</Button>}
+        actions={
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => setPickerOpen(true)}
+              disabled={!spira?.configured || !positiveInt(form.projectId)}
+              title={!positiveInt(form.projectId) ? "Choose a project first." : undefined}
+            >
+              Load test sets from Spira
+            </Button>
+            <Button size="sm" onClick={() => setNewModule("")}>Add module</Button>
+          </div>
+        }
       >
         <div className="flex flex-col gap-5">
           {modules.map((module) => {
@@ -234,7 +363,9 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
               </div>
             );
           })}
-          {modules.length === 0 && <p className="text-sm text-zinc-500">No modules yet. Add one to start comparing.</p>}
+          {modules.length === 0 && (
+            <p className="text-sm text-zinc-500">No test sets yet. Choose a project, then load its test sets from Spira.</p>
+          )}
         </div>
       </Section>
 
@@ -308,37 +439,195 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       >
         Its test set mappings and Excel alias are removed when you save. Existing drafts are not affected.
       </Dialog>
+
+      {pickerOpen && (
+        <TestSetPicker
+          projectId={Number(form.projectId)}
+          releaseId={positiveInt(form.releaseId) ? Number(form.releaseId) : null}
+          mapped={new Map(form.mappings.map((m) => [m.testSetId.trim(), m.module]))}
+          onClose={() => setPickerOpen(false)}
+          onAdd={addTestSets}
+        />
+      )}
     </div>
   );
 }
 
-function SpiraConnection({ projectId }: { projectId: number }) {
-  const { spira, spiraError } = useSettings();
-  const [checking, setChecking] = useState(false);
-  const [result, setResult] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+interface PickRow {
+  module: string;
+  platform: Platform;
+  checked: boolean;
+}
 
-  async function check() {
-    setChecking(true);
-    setResult(null);
-    try {
-      const { userName, projectName } = await api<{ userName: string; projectName: string }>("/api/spira", {
-        method: "POST",
-        body: { projectId },
+/** Lists test sets straight from Spira; nothing is added until the form is saved. */
+function TestSetPicker({
+  projectId,
+  releaseId,
+  mapped,
+  onClose,
+  onAdd,
+}: {
+  projectId: number;
+  releaseId: number | null;
+  mapped: Map<string, string>;
+  onClose: () => void;
+  onAdd: (picked: Array<{ testSet: SpiraTestSetSummary; module: string; platform: Platform }>) => void;
+}) {
+  const [releaseOnly, setReleaseOnly] = useState(releaseId !== null);
+  const filter = releaseOnly ? releaseId : null;
+  const [loaded, setLoaded] = useState<{ filter: number | null; testSets: SpiraTestSetSummary[] | null; error: string | null } | null>(null);
+  const [picks, setPicks] = useState<Record<number, PickRow>>({});
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ testSets: SpiraTestSetSummary[] }>("/api/spira/test-sets", { method: "POST", body: { projectId, releaseId: filter } })
+      .then(({ testSets }) => {
+        if (!cancelled) setLoaded({ filter, testSets, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled) setLoaded({ filter, testSets: null, error: errorMessage(err) });
       });
-      setResult({ tone: "success", text: `Signed in as ${userName}. Project ${projectId} is "${projectName}".` });
-      logActivity({ type: "spira.checked", message: `Spira connection checked for project ${projectId}.` });
-    } catch (err) {
-      setResult({ tone: "danger", text: errorMessage(err) });
-    } finally {
-      setChecking(false);
-    }
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, filter]);
+
+  const current = loaded && loaded.filter === filter ? loaded : null;
+  const rowFor = (t: SpiraTestSetSummary): PickRow => picks[t.testSetId] ?? { ...guessMapping(t.name), checked: false };
+  const setRow = (t: SpiraTestSetSummary, patch: Partial<PickRow>) =>
+    setPicks((p) => ({ ...p, [t.testSetId]: { ...rowFor(t), ...patch } }));
+
+  const term = search.trim().toLowerCase();
+  const visible = (current?.testSets ?? []).filter(
+    (t) => !term || t.name.toLowerCase().includes(term) || String(t.testSetId).includes(term),
+  );
+  const chosen = (current?.testSets ?? [])
+    .filter((t) => !mapped.has(String(t.testSetId)) && rowFor(t).checked)
+    .map((t) => ({ testSet: t, module: rowFor(t).module, platform: rowFor(t).platform }));
+  const missingModule = chosen.some((c) => !c.module.trim());
+
+  return (
+    <Dialog
+      open
+      wide
+      onClose={onClose}
+      title={`Test sets in project ${projectId}`}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={chosen.length === 0 || missingModule} onClick={() => onAdd(chosen)}>
+            Add {chosen.length || ""} test set{chosen.length === 1 ? "" : "s"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p>Tick the test sets to compare. Module and platform are suggested from the Spira name; change them if needed. Nothing is saved until you click Save changes.</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <input
+            type="search"
+            className="input sm:max-w-xs"
+            placeholder="Filter by name or ID"
+            aria-label="Filter test sets"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {releaseId !== null && (
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="size-4 accent-brand-600" checked={releaseOnly} onChange={(e) => setReleaseOnly(e.target.checked)} />
+              Only test sets planned for release {releaseId}
+            </label>
+          )}
+        </div>
+
+        {!current ? (
+          <div className="flex items-center gap-2 text-zinc-500"><Spinner /> Reading test sets from Spira…</div>
+        ) : current.error ? (
+          <Notice tone="danger" title="Could not load test sets">{current.error}</Notice>
+        ) : current.testSets!.length === 0 ? (
+          <Notice tone="info">
+            {releaseOnly ? "No test sets are planned for this release in Spira. Untick the release filter to see all test sets." : "This project has no test sets."}
+          </Notice>
+        ) : (
+          <div className="max-h-[55vh] overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-0 bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900">
+                <tr>
+                  <th className="w-10 px-3 py-2"><span className="sr-only">Add</span></th>
+                  <th className="px-3 py-2 font-medium">Test set</th>
+                  <th className="px-3 py-2 font-medium">Release</th>
+                  <th className="px-3 py-2 font-medium">Module</th>
+                  <th className="px-3 py-2 font-medium">Platform</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {visible.map((t) => {
+                  const mappedTo = mapped.get(String(t.testSetId));
+                  const row = rowFor(t);
+                  return (
+                    <tr key={t.testSetId} className={mappedTo ? "opacity-60" : undefined}>
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-brand-600"
+                          aria-label={`Add ${t.name}`}
+                          disabled={!!mappedTo}
+                          checked={!!mappedTo || row.checked}
+                          onChange={(e) => setRow(t, { checked: e.target.checked })}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="font-medium">{t.name}</span>
+                        <span className="ml-2 font-mono text-xs text-zinc-500">TX{t.testSetId}</span>
+                        {mappedTo && <span className="block text-xs text-zinc-500">Already mapped to {mappedTo}</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-zinc-500">{t.releaseVersion ?? "—"}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          className="input py-1"
+                          aria-label={`Module for ${t.name}`}
+                          disabled={!!mappedTo}
+                          value={mappedTo ?? row.module}
+                          onChange={(e) => setRow(t, { module: e.target.value, checked: true })}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          className="input py-1"
+                          aria-label={`Platform for ${t.name}`}
+                          disabled={!!mappedTo}
+                          value={row.platform}
+                          onChange={(e) => setRow(t, { platform: e.target.value as Platform, checked: true })}
+                        >
+                          {PLATFORMS.map((pl) => <option key={pl}>{pl}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {missingModule && <p className="text-xs text-red-600 dark:text-red-400">Every ticked test set needs a module name.</p>}
+      </div>
+    </Dialog>
+  );
+}
+
+function SpiraConnection({ connection, onRetest }: { connection: Connection; onRetest: () => void }) {
+  const { spira, spiraError } = useSettings();
 
   return (
     <Section
       title="Spira connection"
       description="The server calls Spira with credentials set in its environment. The browser never contacts Spira and never sees the API key."
-      actions={spira?.configured && <Button size="sm" onClick={check} busy={checking}>Test connection</Button>}
+      actions={
+        spira?.configured && (
+          <Button size="sm" onClick={onRetest} busy={connection.status === "loading"}>Test connection</Button>
+        )
+      }
     >
       {!spira ? (
         spiraError ? (
@@ -369,7 +658,12 @@ function SpiraConnection({ projectId }: { projectId: number }) {
               {spira.problems.join(" ")} Set SPIRA_BASE_URL, SPIRA_USERNAME and SPIRA_API_KEY in the server environment, then redeploy.
             </Notice>
           )}
-          {result && <Notice tone={result.tone}>{result.text}</Notice>}
+          {connection.status === "ok" && (
+            <Notice tone="success">
+              Signed in as {connection.userName}. {connection.projects.length} project{connection.projects.length === 1 ? "" : "s"} available.
+            </Notice>
+          )}
+          {connection.status === "error" && <Notice tone="danger" title="Spira sign-in failed">{connection.error}</Notice>}
         </div>
       )}
     </Section>

@@ -9,8 +9,8 @@ export function loadSettings(): AppSettings {
   const defaults = defaultSettings();
   if (!stored) return defaults;
   return {
-    projectId: stored.projectId ?? defaults.projectId,
-    releaseId: stored.releaseId ?? defaults.releaseId,
+    projectId: typeof stored.projectId === "number" ? stored.projectId : defaults.projectId,
+    releaseId: typeof stored.releaseId === "number" ? stored.releaseId : defaults.releaseId,
     releaseLabel: stored.releaseLabel ?? defaults.releaseLabel,
     mappings: stored.mappings ?? defaults.mappings,
     moduleAliases: stored.moduleAliases ?? {},

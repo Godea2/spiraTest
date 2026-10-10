@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import type { SpiraStatus } from "@/lib/domain/types";
+import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary } from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
 // and are sent as headers, never in the URL, so they do not end up in proxy or server logs.
@@ -210,8 +210,21 @@ const testCaseSchema = z.array(
   }),
 );
 
-const projectSchema = z.object({ ProjectId: id, Name: z.string().nullish() });
+const projectListSchema = z.array(z.object({ ProjectId: id, Name: z.string().nullish(), Active: z.boolean().nullish() }));
 const userSchema = z.object({ UserName: z.string().nullish(), FullName: z.string().nullish() });
+const releaseSchema = z.object({ ReleaseId: id, Name: z.string().nullish(), VersionNumber: z.string().nullish() });
+const testSetListSchema = z.array(
+  z.object({
+    TestSetId: id,
+    Name: z.string().nullish(),
+    ReleaseId: z.number().int().nullish(),
+    ReleaseVersionNumber: z.string().nullish(),
+  }),
+);
+
+/** Page size for listing test sets, and a ceiling so a misbehaving server cannot loop us forever. */
+const TEST_SET_PAGE = 500;
+const TEST_SET_LIMIT = 5_000;
 
 export interface SpiraTestSet {
   testSetId: number;
@@ -276,13 +289,56 @@ export async function removeFromTestSet(projectId: number, testSetId: number, te
   );
 }
 
-/** Read-only check that the credentials work and the project is reachable. */
-export async function checkConnection(projectId: number): Promise<{ userName: string; projectName: string }> {
-  const [user, project] = await Promise.all([
+/** Read-only check that the credentials work. Returns the projects this user can open. */
+export async function checkConnection(): Promise<{ userName: string; projects: SpiraProject[] }> {
+  const [user, projects] = await Promise.all([
     call("GET", "users", "reading the signed-in Spira user"),
-    call("GET", `projects/${projectId}`, `reading project ${projectId}`),
+    call("GET", "projects", "listing projects"),
   ]);
   const u = parse(userSchema, user, "reading the signed-in Spira user");
-  const p = parse(projectSchema, project, `reading project ${projectId}`);
-  return { userName: u.FullName || u.UserName || "Unknown user", projectName: p.Name ?? `Project ${projectId}` };
+  const list = parse(projectListSchema, projects, "listing projects")
+    .filter((p) => p.Active !== false)
+    .map((p) => ({ projectId: p.ProjectId, name: p.Name?.trim() || `Project ${p.ProjectId}` }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { userName: u.FullName || u.UserName || "Unknown user", projects: list };
+}
+
+export async function getRelease(projectId: number, releaseId: number): Promise<SpiraRelease> {
+  const what = `reading release ${releaseId}`;
+  const raw = parse(releaseSchema, await call("GET", `projects/${projectId}/releases/${releaseId}`, what), what);
+  const name = raw.Name?.trim() ?? "";
+  const version = raw.VersionNumber?.trim() ?? "";
+  return {
+    releaseId: raw.ReleaseId,
+    name,
+    versionNumber: version,
+    label: [version, name].filter(Boolean).join(" - ") || `Release ${releaseId}`,
+  };
+}
+
+/** Every test set in the project, or only those planned for one release. Sorted by name. */
+export async function listTestSets(projectId: number, releaseId: number | null): Promise<SpiraTestSetSummary[]> {
+  const what = `listing test sets in project ${projectId}`;
+  const found: SpiraTestSetSummary[] = [];
+  for (let start = 1; start <= TEST_SET_LIMIT; start += TEST_SET_PAGE) {
+    const query = new URLSearchParams({
+      starting_row: String(start),
+      number_of_rows: String(TEST_SET_PAGE),
+      sort_field: "Name",
+      sort_direction: "ASC",
+    });
+    if (releaseId !== null) query.set("release_id", String(releaseId));
+    const page = parse(testSetListSchema, await call("GET", `projects/${projectId}/test-sets?${query}`, what), what);
+    for (const t of page) {
+      found.push({
+        testSetId: t.TestSetId,
+        name: t.Name?.trim() || `Test set ${t.TestSetId}`,
+        releaseId: t.ReleaseId ?? null,
+        releaseVersion: t.ReleaseVersionNumber?.trim() || null,
+      });
+    }
+    if (page.length < TEST_SET_PAGE) break;
+  }
+  const unique = new Map(found.map((t) => [t.testSetId, t]));
+  return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }

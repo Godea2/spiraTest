@@ -61,7 +61,7 @@ function SpiraPill() {
       className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-200"
       title={`Spira at ${spira.host}. Details in Settings.`}
     >
-      Spira · Project {settings.projectId}
+      {settings.projectId === null ? "Spira · Choose a project" : `Spira · Project ${settings.projectId}`}
     </Link>
   ) : (
     <Link

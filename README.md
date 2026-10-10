@@ -17,7 +17,7 @@ Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
    | `SPIRA_USERNAME` | Spira user the server acts as |
    | `SPIRA_API_KEY` | That user's API key (RSS token), including the `{ }` braces |
 
-   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set; **Settings → Test connection** checks them with read-only calls.
+   Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set. Nothing is preset: in **Settings**, pick the project (listed from Spira), enter the release ID and use **Look up** to read its name, then **Load test sets from Spira** and tick the ones each module compares against.
 
 3. `npm run dev` and open http://localhost:3004.
 
@@ -27,6 +27,7 @@ Use a dedicated Spira service account with access to the project and permission 
 
 | Step | Spira calls |
 | --- | --- |
+| Settings | `GET users` and `GET projects` (connection and project list), `GET projects/{p}/releases/{r}` (release label), `GET projects/{p}/test-sets?…&release_id=` (test set picker, paged) |
 | Compare | `GET projects/{p}/test-sets/{t}`, `…/test-case-mapping` and `…/test-cases` (read only) |
 | Membership check | `GET …/test-case-mapping` |
 | Dry run | `GET …/test-case-mapping`; nothing is changed |
@@ -60,5 +61,5 @@ Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SP
 
 | Command | What it does |
 | --- | --- |
-| `npm run check` | Typecheck, lint and unit tests (Spira is replaced by an in-memory fake; nothing real is called) |
+| `npm run check` | Typecheck, lint and unit tests (matching, board rules, workbook parsing, settings); none of them call Spira |
 | `npm run smoke` | HTTP checks against a running server; sends nothing that could change Spira |

@@ -1,40 +1,37 @@
 import { z } from "zod";
-import { PLATFORMS, type AppSettings, type TestSetMapping } from "./types";
+import { PLATFORMS, type AppSettings, type Platform } from "./types";
 
-const DEFAULT_MAPPINGS: Array<[string, number, string, TestSetMapping["platform"]]> = [
-  ["Accounts", 116, "Accounts-Android", "Android"],
-  ["Accounts", 117, "Accounts-iOS", "iOS"],
-  ["Cards", 118, "Cards - Android", "Android"],
-  ["Cards", 119, "Cards-iOS", "iOS"],
-  ["Home Screen", 120, "Home Screen- Android", "Android"],
-  ["Home Screen", 121, "Home Screen- iOS", "iOS"],
-  ["Notifications", 122, "Notifications- Android", "Android"],
-  ["Notifications", 123, "Notifications-iOS", "iOS"],
-  ["Onboarding", 124, "Onboarding-Android", "Android"],
-  ["Onboarding", 125, "Onboarding-IOS", "iOS"],
-  ["Payments", 126, "Payments - iOS", "iOS"],
-];
-
+/** Nothing is preset: the project, release and test sets all come from Spira via Settings. */
 export function defaultSettings(): AppSettings {
   return {
-    projectId: 24,
-    releaseId: 157,
-    releaseLabel: "1.0.0.0.0002 - Sprint3",
-    mappings: DEFAULT_MAPPINGS.map(([module, testSetId, testSetName, platform]) => ({
-      id: `ts-${testSetId}`,
-      module,
-      testSetId,
-      testSetName,
-      platform,
-    })),
+    projectId: null,
+    releaseId: null,
+    releaseLabel: "",
+    mappings: [],
     moduleAliases: {},
     updatedAt: null,
   };
 }
 
+const PLATFORM_SUFFIX = /^(.*?)[\s_()[\]-]*\b(android|ios|web)\b[\s)\]]*$/i;
+
+/**
+ * Suggests a module and platform from a Spira test set name, for example
+ * "Home Screen- Android" → Home Screen / Android. Names without a platform suffix
+ * keep the whole name as the module.
+ */
+export function guessMapping(testSetName: string): { module: string; platform: Platform } {
+  const name = testSetName.trim();
+  const match = PLATFORM_SUFFIX.exec(name);
+  if (!match || !match[1].trim()) return { module: name, platform: "Other" };
+  const suffix = match[2].toLowerCase();
+  const platform: Platform = suffix === "ios" ? "iOS" : suffix === "android" ? "Android" : "Web";
+  return { module: match[1].trim(), platform };
+}
+
 export const settingsUpdateSchema = z.object({
-  projectId: z.number().int().positive(),
-  releaseId: z.number().int().positive(),
+  projectId: z.number().int().positive().nullable(),
+  releaseId: z.number().int().positive().nullable(),
   releaseLabel: z.string().trim().max(200),
   mappings: z
     .array(

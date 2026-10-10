@@ -142,7 +142,7 @@ export function CompareWorkspace() {
   }
 
   async function startComparison() {
-    if (!loaded || !rows || !settings) return;
+    if (!loaded || !rows || !settings || settings.projectId === null || settings.releaseId === null) return;
     setStarting(true);
     setStartError(null);
     const ids = mappings.filter((m) => selected.has(m.testSetId)).map((m) => m.testSetId);
@@ -177,8 +177,9 @@ export function CompareWorkspace() {
   const ids = Object.keys(statuses).map(Number);
   const allOk = ids.length > 0 && ids.every((id) => statuses[id] === "ok");
   const anyRunning = ids.some((id) => statuses[id] === "running" || statuses[id] === "pending");
+  const projectChosen = settings !== null && settings.projectId !== null && settings.releaseId !== null;
   const canCompare =
-    !!rows && !!module && selected.size > 0 && matchedRows.length > 0 && !locked && spira?.configured === true;
+    !!rows && !!module && selected.size > 0 && matchedRows.length > 0 && !locked && spira?.configured === true && projectChosen;
 
   return (
     <div className="flex flex-col gap-6">
@@ -190,6 +191,12 @@ export function CompareWorkspace() {
       {spira && !spira.configured && (
         <Notice tone="warning" title="Spira is not connected">
           {spira.problems.join(" ")} Ask an admin to set these on the server, then reload.
+        </Notice>
+      )}
+
+      {settings && !projectChosen && (
+        <Notice tone="warning" title="Choose a Spira project and release" action={<ButtonLink href="/settings" size="sm">Open Settings</ButtonLink>}>
+          Pick the project and release in Settings, then load the module test sets from Spira.
         </Notice>
       )}
 

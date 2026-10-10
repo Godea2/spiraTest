@@ -166,8 +166,9 @@ export interface TestSetMapping {
 
 /** Saved in the browser. Holds nothing secret; Spira credentials live on the server. */
 export interface AppSettings {
-  projectId: number;
-  releaseId: number;
+  /** Null until chosen in Settings. */
+  projectId: number | null;
+  releaseId: number | null;
   releaseLabel: string;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
@@ -181,6 +182,26 @@ export interface SpiraStatus {
   username: string | null;
   apiKeyConfigured: boolean;
   problems: string[];
+}
+
+export interface SpiraProject {
+  projectId: number;
+  name: string;
+}
+
+export interface SpiraRelease {
+  releaseId: number;
+  name: string;
+  versionNumber: string;
+  /** "version - name", as shown on boards. */
+  label: string;
+}
+
+export interface SpiraTestSetSummary {
+  testSetId: number;
+  name: string;
+  releaseId: number | null;
+  releaseVersion: string | null;
 }
 
 /** Identifies what a comparison or membership check was run against. */
