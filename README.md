@@ -62,4 +62,3 @@ Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SP
 | --- | --- |
 | `npm run check` | Typecheck, lint and unit tests (Spira is replaced by an in-memory fake; nothing real is called) |
 | `npm run smoke` | HTTP checks against a running server; sends nothing that could change Spira |
-| `node scripts/make-sample-workbook.mjs` | Regenerates `tests/fixtures/sample-scope.xlsx` |
