@@ -186,7 +186,7 @@ describe("helpers", () => {
   });
 
   it("merges shortlists by relevance, taking each part in turn, without repeats", () => {
-    const c = (key: string, relevance: "high" | "medium" | "low") => ({ key, relevance, why: "" });
+    const c = (key: string, relevance: "high" | "medium" | "low") => ({ key, relevance });
     const merged = mergeCandidates(
       [
         [c("a1", "high"), c("a2", "high"), c("a3", "medium")],

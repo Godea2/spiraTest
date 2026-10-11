@@ -3,16 +3,23 @@ import { runSignature, type RunnableStep } from "./execution";
 import type { BlockedConfidence, Card, Column, DefectCandidate, DefectMatch, DefectRecord, DefectVerdict, Draft, ExecutionProgress, TestCaseStep } from "./types";
 
 export const MAX_DEFECT_TEXT = 4_000;
-/** Case names Gemini reads per request; a search sends several requests. Small enough to answer well inside the time limit. */
-export const MAX_DEFECT_SEARCH_CASES = 150;
-/** Case names read per search across every module; beyond this, cases are narrowed by wording first. */
-export const MAX_DEFECT_POOL = 2_400;
+/**
+ * Case names Gemini matches per request. The answer is only ids and a relevance, so a few hundred names
+ * fit well inside the time limit; most searches need one request.
+ */
+export const MAX_DEFECT_SEARCH_CASES = 500;
+/** Case names read per search across every module; beyond this, cases are narrowed by the feature's wording first. */
+export const MAX_DEFECT_POOL = 2_000;
 /** Cases one request may pick from names. */
-export const MAX_SHORTLIST = 30;
-/** Cases picked from names, across requests, for a closer look at their steps; also the most one defect links. */
+export const MAX_SHORTLIST = 24;
+/** Cases picked from names, across requests, whose steps are checked. */
+export const MAX_DEFECT_CHECKS = 24;
+/** The most runs one defect links (picked cases and a new test case in each of its test sets). */
 export const MAX_DEFECT_CANDIDATES = 40;
 /** Cases whose steps are checked per request. */
 export const MAX_DEFECT_VERIFY_BATCH = 8;
+/** Other names and related screens Gemini gives for a defect's feature. */
+export const MAX_RELATED_TERMS = 16;
 export const MAX_VERIFY_STEPS = 120;
 export const MAX_STEP_TEXT = 600;
 

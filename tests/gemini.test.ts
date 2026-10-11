@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { aiStatus, reviewBlockedCases, type BlockedReviewCase } from "@/lib/server/gemini";
+import { aiStatus, reviewBlockedCases, shortlistDefectCases, understandDefect, type BlockedReviewCase, type DefectSearchCase } from "@/lib/server/gemini";
 
 const KEY = "test-key-not-real";
 const cases: BlockedReviewCase[] = [
@@ -7,10 +7,18 @@ const cases: BlockedReviewCase[] = [
   { key: "1:2", testSetName: "Android", scenario: "Verify BVN is not logged in plain text", keywords: ["bvn"], allKeywords: ["bvn", "nin"] },
 ];
 
-function answer(verdicts: unknown[], status = 200) {
-  const body = { status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify({ verdicts }) }] }] };
+function reply(payload: unknown, status = 200) {
+  const body = { status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(payload) }] }] };
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+
+const answer = (verdicts: unknown[], status = 200) => reply({ verdicts }, status);
+
+const sentInput = (fetchMock: ReturnType<typeof vi.fn>) => {
+  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  const body = JSON.parse(String(init.body));
+  return { body, input: JSON.parse(String(body.input)) };
+};
 
 describe("Gemini blocked review", () => {
   beforeEach(() => vi.stubEnv("GEMINI_API_KEY", KEY));
@@ -97,5 +105,68 @@ describe("Gemini blocked review", () => {
   it("rejects answers in the wrong shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer([{ key: "1:1", blocked: "yes" }])));
     await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/expected format/);
+  });
+});
+
+describe("Gemini defect search", () => {
+  beforeEach(() => vi.stubEnv("GEMINI_API_KEY", KEY));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const reading = { feature: "Airtime purchase", related: ["top-up", "recharge"], area: "Airtime", symptom: "Purchase fails", expected: "" };
+
+  it("works out the feature once, with its other names deduplicated, and a title even when Gemini gives none", async () => {
+    const fetchMock = vi.fn(async () =>
+      reply({
+        feature: "Airtime purchase",
+        related: ["top-up", "Top-up", "recharge", ""],
+        title: "",
+        area: "Airtime",
+        symptom: "Buying airtime fails",
+        expected: "Airtime is bought",
+        severity: "high",
+        question: "",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const analysis = await understandDefect("unable to buy airtime", [{ module: "Payments", testSets: ["Payments iOS"] }]);
+    expect(analysis).toMatchObject({ feature: "Airtime purchase", related: ["top-up", "recharge"], title: "Buying airtime fails", question: null });
+    const { body, input } = sentInput(fetchMock);
+    expect(body.generation_config).toEqual({ thinking_level: "low" });
+    expect(input.modules).toEqual([{ module: "Payments", testSets: ["Payments iOS"] }]);
+  });
+
+  it("sends cases grouped by test set with short ids, and maps the picks back to keys", async () => {
+    const searchCases: DefectSearchCase[] = [
+      { key: "1:1", module: "Payments", testSetName: "Payments iOS", scenario: "Verify customer can recharge a phone line" },
+      { key: "1:2", module: "Payments", testSetName: "Payments iOS", scenario: "Verify session timeout" },
+      { key: "2:7", module: "Transactions", testSetName: "Transactions iOS", scenario: "Airtime entry in history", workbookScenario: "Airtime entry in history" },
+    ];
+    const fetchMock = vi.fn(async () =>
+      reply({
+        picks: [
+          { id: 0, relevance: "high" },
+          { id: 2, relevance: "medium" },
+          { id: 0, relevance: "low" },
+          { id: 9, relevance: "high" },
+          { id: 1.5, relevance: "high" },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const picks = await shortlistDefectCases("unable to buy airtime", reading, searchCases);
+    expect(picks).toEqual([
+      { key: "1:1", relevance: "high" },
+      { key: "2:7", relevance: "medium" },
+    ]);
+    const { body, input } = sentInput(fetchMock);
+    expect(body.generation_config).toEqual({ thinking_level: "low" });
+    expect(input.defect).toMatchObject({ description: "unable to buy airtime", feature: "Airtime purchase", related: ["top-up", "recharge"] });
+    expect(input.testSets).toEqual([
+      { module: "Payments", testSet: "Payments iOS", cases: [{ id: 0, name: "Verify customer can recharge a phone line" }, { id: 1, name: "Verify session timeout" }] },
+      { module: "Transactions", testSet: "Transactions iOS", cases: [{ id: 2, name: "Airtime entry in history" }] },
+    ]);
   });
 });

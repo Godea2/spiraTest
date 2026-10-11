@@ -4,8 +4,8 @@ import { defectSearchRequestSchema } from "@/lib/server/schemas";
 
 export const maxDuration = 60;
 
-/** Reads a defect description and picks, from case names, the cases it may make fail. Changes nothing. */
+/** Picks, from case names, the cases a defect is about, matched to the feature it is in. Changes nothing. */
 export const POST = handler(async (request: Request) => {
   const input = await parseBody(request, defectSearchRequestSchema);
-  return ok(await shortlistDefectCases(input.description, input.cases, input.broad ?? false));
+  return ok({ candidates: await shortlistDefectCases(input.description, input.analysis, input.cases) });
 });

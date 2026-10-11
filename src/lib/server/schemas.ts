@@ -9,6 +9,7 @@ import {
   MAX_NEW_CASE_CHOICES,
   MAX_NEW_CASE_SETS,
   MAX_NEW_CASE_STEPS,
+  MAX_RELATED_TERMS,
   MAX_STEP_TEXT,
   MAX_VERIFY_STEPS,
 } from "@/lib/domain/defects";
@@ -215,8 +216,24 @@ const stepText = z.string().max(MAX_STEP_TEXT);
 
 const moduleName = z.string().trim().min(1).max(200);
 
+export const defectUnderstandRequestSchema = z.object({
+  description: defectText,
+  modules: z
+    .array(z.object({ module: moduleName, testSets: z.array(z.string().max(200)).max(12) }))
+    .max(60, "Search at most 60 modules at a time."),
+});
+
+const analysisSchema = z.object({
+  area: z.string().max(200),
+  symptom: z.string().max(600),
+  expected: z.string().max(600),
+  feature: z.string().max(200).default(""),
+  related: z.array(z.string().max(80)).max(MAX_RELATED_TERMS).default([]),
+});
+
 export const defectSearchRequestSchema = z.object({
   description: defectText,
+  analysis: analysisSchema,
   cases: z
     .array(
       z.object({
@@ -225,16 +242,11 @@ export const defectSearchRequestSchema = z.object({
         testSetName: z.string().max(200),
         scenario: z.string().max(MAX_SCENARIO_TEXT),
         workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
-        status: z.string().max(40),
       }),
     )
     .min(1)
-    .max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per search.`),
-  /** A second, wider look when the first found nothing: cases on the same screen, feature or journey. */
-  broad: z.boolean().optional(),
+    .max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per request.`),
 });
-
-const analysisSchema = z.object({ area: z.string().max(200), symptom: z.string().max(600), expected: z.string().max(600) });
 
 export const defectNewCaseRequestSchema = z.object({
   description: defectText,

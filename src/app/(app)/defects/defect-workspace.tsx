@@ -16,7 +16,9 @@ import {
   newCaseTargets,
   raiseDefect,
   readIncidentOptions,
+  readLeftOutModules,
   searchDefect,
+  storeLeftOutModules,
   suggestNewCase,
   undoDefect,
   type DefectCase,
@@ -56,8 +58,8 @@ const EXAMPLE = 'For example: On the Login screen, "Continue with phone number" 
 type Pick = { on: boolean; stepLabel: string | null };
 
 function phaseText(phase: SearchPhase): string {
-  if (phase.stage === "reading") return `Gemini is reading ${plural(phase.total, "case name")} across ${plural(phase.modules, "module")} for the defect…`;
-  if (phase.stage === "widening") return "Nothing obvious yet. Gemini is looking again at the cases on the same screen, feature and journey…";
+  if (phase.stage === "understanding") return `Gemini is working out which feature the defect is in (${plural(phase.modules, "module")} to search)…`;
+  if (phase.stage === "reading") return `Gemini is matching ${plural(phase.total, "case")} in ${plural(phase.modules, "module")} to ${phase.feature ? `"${phase.feature}"` : "the defect"}…`;
   if (phase.stage === "steps") return `Reading the steps of ${plural(phase.total, "likely case")} from Spira (${phase.done} of ${phase.total})…`;
   return `Checking each case's steps against the defect (${phase.done} of ${phase.total})…`;
 }
@@ -127,13 +129,15 @@ export function DefectWorkspace({ from }: { from: string | null }) {
           if (!active) return;
           setDrafts(all);
           setTester(getTester());
+          // A module opened from its board is always searched.
+          setExcluded(new Set(readLeftOutModules().filter((id) => id !== from)));
         },
         (err) => active && setLoadError(errorMessage(err)),
       );
     return () => {
       active = false;
     };
-  }, []);
+  }, [from]);
 
   const projects = useMemo(() => [...new Set((drafts ?? []).filter((d) => d.testSets.length > 0).map((d) => d.projectId))], [drafts]);
   const settingsProject = settings?.projectId ?? null;
@@ -162,6 +166,11 @@ export function DefectWorkspace({ from }: { from: string | null }) {
     setTester(name);
     storeTester(name);
   };
+  const leaveOut = (next: Set<string>) => {
+    setExcluded(next);
+    storeLeftOutModules([...next]);
+  };
+  const scopedCases = scoped.reduce((n, d) => n + (caseCount.get(d.id) ?? 0), 0);
 
   if (loadError && !drafts) return <Notice tone="danger" title="Drafts could not be read">{loadError}</Notice>;
   if (!drafts) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading…</div>;
@@ -183,16 +192,34 @@ export function DefectWorkspace({ from }: { from: string | null }) {
           <Section
             icon={Layers}
             title="Where to look"
-            description="A defect can show up in more than one module. Every compared module is searched unless you leave it out."
+            description="Choose the modules the defect is likely in: fewer modules make a faster, sharper search. Your choice is remembered in this browser."
             actions={
-              projects.length > 1 && (
-                <select className="input w-auto" aria-label="Spira project" value={projectId ?? ""} onChange={(e) => { setProject(Number(e.target.value)); setExcluded(new Set()); }}>
-                  {projects.map((p) => <option key={p} value={p}>Project {p}</option>)}
-                </select>
-              )
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={scoped.length === inProject.length}
+                  onClick={() => leaveOut(new Set([...excluded].filter((id) => !inProject.some((d) => d.id === id))))}
+                >
+                  All
+                </Button>
+                <Button size="sm" variant="ghost" disabled={scoped.length === 0} onClick={() => leaveOut(new Set([...excluded, ...inProject.map((d) => d.id)]))}>
+                  None
+                </Button>
+                {projects.length > 1 && (
+                  <select className="input w-auto" aria-label="Spira project" value={projectId ?? ""} onChange={(e) => setProject(Number(e.target.value))}>
+                    {projects.map((p) => <option key={p} value={p}>Project {p}</option>)}
+                  </select>
+                )}
+              </div>
             }
           >
             <div className="flex flex-col gap-4">
+              <p className="text-sm text-slate-600 dark:text-zinc-400">
+                {scoped.length === 0
+                  ? "No module chosen. Tick the modules to search."
+                  : `Searching ${plural(scoped.length, "module")} of ${inProject.length}, ${plural(scopedCases, "case")}.`}
+              </p>
               <div className="flex flex-wrap gap-2">
                 {inProject.map((d) => {
                   const on = !excluded.has(d.id);
@@ -201,7 +228,12 @@ export function DefectWorkspace({ from }: { from: string | null }) {
                       key={d.id}
                       type="button"
                       aria-pressed={on}
-                      onClick={() => setExcluded((prev) => { const next = new Set(prev); if (on) next.add(d.id); else next.delete(d.id); return next; })}
+                      onClick={() => {
+                        const next = new Set(excluded);
+                        if (on) next.add(d.id);
+                        else next.delete(d.id);
+                        leaveOut(next);
+                      }}
                       className={clsx(
                         "flex cursor-pointer flex-col items-start rounded-xl px-3 py-2 text-left ring-1 ring-inset transition",
                         on ? "bg-brand-50 ring-brand-300 dark:bg-brand-500/10 dark:ring-brand-400/40" : "opacity-60 ring-slate-200 hover:opacity-100 dark:ring-white/10",
@@ -237,6 +269,7 @@ export function DefectWorkspace({ from }: { from: string | null }) {
               key={projectId}
               projectId={projectId}
               drafts={scoped}
+              allModules={inProject.length}
               draftsById={draftsById}
               tester={tester.trim()}
               aiOn={aiOn}
@@ -256,6 +289,7 @@ export function DefectWorkspace({ from }: { from: string | null }) {
 function Finder({
   projectId,
   drafts,
+  allModules,
   draftsById,
   tester,
   aiOn,
@@ -265,6 +299,7 @@ function Finder({
 }: {
   projectId: number;
   drafts: Draft[];
+  allModules: number;
   draftsById: Map<string, Draft>;
   tester: string;
   aiOn: boolean;
@@ -305,7 +340,7 @@ function Finder({
     setOutcome(null);
     setShowUnaffected(false);
     setNewCase(null);
-    setPhase({ stage: "reading", total: 0, modules: drafts.length });
+    setPhase({ stage: "understanding", modules: drafts.length });
     let result: DefectSearch | null = null;
     try {
       result = await searchDefect(drafts, description, setPhase);
@@ -451,7 +486,7 @@ function Finder({
     <Section
       icon={Bug}
       title="Find a defect"
-      description="Gemini picks the likely cases from their names, then checks each one against its steps in Spira, naming the failing step and quoting the case. You choose which to fail."
+      description="Gemini works out which feature the defect is in, picks the cases about that feature by context (whatever they call it), then checks each one against its steps in Spira, naming the failing step and quoting the case. You choose which to fail."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && aiKnown && (
@@ -491,8 +526,8 @@ function Finder({
           <div className="flex flex-col gap-1.5 rounded-xl bg-slate-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
             <span>{phaseText(phase)}</span>
             <ProgressBar
-              value={phase.stage === "reading" ? 1 : phase.stage === "widening" ? 2 : phase.done}
-              max={phase.stage === "reading" || phase.stage === "widening" ? 3 : Math.max(1, phase.total)}
+              value={phase.stage === "understanding" ? 1 : phase.stage === "reading" ? 2 : phase.done}
+              max={phase.stage === "understanding" || phase.stage === "reading" ? 3 : Math.max(1, phase.total)}
             />
           </div>
         )}
@@ -507,15 +542,20 @@ function Finder({
             <div className="rounded-xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
               <p className="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-zinc-400">Gemini reads this as</p>
               <p className="mt-1">
-                <span className="font-medium">{search.analysis.area || "Unknown area"}</span>
+                <span className="font-medium">{search.analysis.feature || search.analysis.area || "Unknown feature"}</span>
                 {search.analysis.symptom && <> · {search.analysis.symptom}</>}
               </p>
               {search.analysis.expected && <p className="mt-0.5 text-slate-600 dark:text-zinc-400">Expected: {search.analysis.expected}</p>}
+              {search.analysis.related.length > 0 && (
+                <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500 dark:text-zinc-400">
+                  <span>Also matched as</span>
+                  {search.analysis.related.map((r) => <Badge key={r}>{r}</Badge>)}
+                </p>
+              )}
               <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
-                Read {search.searched === search.total ? plural(search.total, "case name") : `${search.searched} of ${plural(search.total, "case name")}`} in{" "}
-                {plural(search.modules, "module")}
-                {search.widened ? ", looked again at the same screen, feature and journey," : ""} and checked the steps of {plural(search.cases.length, "likely case")}. Suggested
-                severity: {search.analysis.severity}.
+                Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
+                {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}. Suggested severity:{" "}
+                {search.analysis.severity}.
               </p>
             </div>
             {search.unreadError && (
@@ -536,7 +576,8 @@ function Finder({
 
             {search.cases.length === 0 ? (
               <p className="py-2 text-center text-sm text-slate-500">
-                No existing case meets this defect, including Out of Scope cases on drafts. Add it as a new test case below, so it can be failed and reported.
+                No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
+                {drafts.length < allModules ? " Include more modules above and search again, or add" : " Add"} it as a new test case below, so it can be failed and reported.
               </p>
             ) : (
               groups.map((g) =>

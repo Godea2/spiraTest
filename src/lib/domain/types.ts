@@ -267,6 +267,10 @@ export interface DefectAnalysis {
   /** A bug title: "<screen or feature>: <what goes wrong>". */
   title: string;
   area: string;
+  /** The feature or journey the defect is in, as a tester would name it ("Airtime purchase"). */
+  feature: string;
+  /** Other names for that feature and the screens, controls and journeys that use it ("top-up", "recharge"). */
+  related: string[];
   symptom: string;
   /** What should happen instead; empty when the description does not say. */
   expected: string;
@@ -279,7 +283,6 @@ export interface DefectAnalysis {
 export interface DefectCandidate {
   key: string;
   relevance: BlockedConfidence;
-  why: string;
 }
 
 export type DefectVerdict = "fails" | "possible" | "unaffected";

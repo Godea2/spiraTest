@@ -6,12 +6,11 @@ import {
   defectTargets,
   heldByOtherDefect,
   incidentDescription,
-  MAX_DEFECT_CANDIDATES,
+  MAX_DEFECT_CHECKS,
   MAX_DEFECT_POOL,
   MAX_DEFECT_SEARCH_CASES,
   MAX_DEFECT_VERIFY_BATCH,
   MAX_NEW_CASE_CHOICES,
-  MAX_SHORTLIST,
   MAX_STEP_TEXT,
   MAX_VERIFY_STEPS,
   mergeCandidates,
@@ -21,7 +20,7 @@ import {
   type VerifiedCase,
 } from "@/lib/domain/defects";
 import { recordDefectMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
-import { currentStatus, executedSteps, RUNNER_NAME, runnableSteps, STATUS_LABEL, type RunnableStep } from "@/lib/domain/execution";
+import { executedSteps, RUNNER_NAME, runnableSteps, type RunnableStep } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import type {
   Column,
@@ -114,6 +113,22 @@ export function adoptDraftDefects(): void {
 
 // ---- search -----------------------------------------------------------------
 
+const LEFT_OUT_KEY = "defect-search-left-out";
+
+/** Modules (draft ids) left out of defect searches last time, kept in this browser. */
+export function readLeftOutModules(): string[] {
+  const stored = readItem<unknown>(LEFT_OUT_KEY);
+  return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+}
+
+export function storeLeftOutModules(draftIds: string[]): void {
+  try {
+    writeItem(LEFT_OUT_KEY, draftIds);
+  } catch {
+    // Only a convenience: the choice still applies to this visit.
+  }
+}
+
 export interface DefectCase {
   target: DefectTarget;
   steps: RunnableStep[];
@@ -130,14 +145,12 @@ export interface DefectSearch {
   modules: number;
   /** Why some case names could not be read; null when every one was. */
   unreadError: string | null;
-  /** The first look found nothing, so Gemini looked again at the same screen, feature and journey. */
-  widened: boolean;
   cases: DefectCase[];
 }
 
 export type SearchPhase =
-  | { stage: "reading"; total: number; modules: number }
-  | { stage: "widening"; total: number }
+  | { stage: "understanding"; modules: number }
+  | { stage: "reading"; total: number; modules: number; feature: string }
   | { stage: "steps"; done: number; total: number }
   | { stage: "checking"; done: number; total: number };
 
@@ -157,79 +170,66 @@ async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-type Shortlist = { analysis: DefectAnalysis; candidates: DefectCandidate[] };
-
 /**
  * Finds the cases a defect makes fail, across the given drafts (any module, Draft or Completed, and
- * before live apply also Out of Scope and Needs Review cards). Gemini picks candidates from the case
- * names, the app reads their steps from Spira, and Gemini checks each against its steps, naming the
- * failing step and quoting the case. Read-only: nothing is written to Spira.
+ * before live apply also Out of Scope and Needs Review cards). Gemini first works out which feature
+ * the defect is in and what else that feature is called, then picks the cases about that feature from
+ * their names, by context rather than shared words; the app reads their steps from Spira, and Gemini
+ * checks each against its steps, naming the failing step and quoting the case. A handful of requests
+ * per search, none retried here (the server already retries a busy answer). Read-only.
  */
 export async function searchDefect(drafts: Draft[], description: string, onPhase: (phase: SearchPhase) => void): Promise<DefectSearch> {
   if (drafts.length === 0) throw new Error("Choose at least one module to search.");
   const projectId = drafts[0].projectId;
   if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Search the modules of one Spira project at a time.");
-  const byId = new Map(drafts.map((d) => [d.id, d]));
+  const targets = defectTargets(drafts);
+  if (targets.length === 0) throw new Error("The chosen modules have no cases left to search.");
+  const modules = new Set(targets.map((t) => t.module)).size;
+
+  onPhase({ stage: "understanding", modules });
+  const outline = new Map<string, Set<string>>();
+  for (const t of targets) outline.set(t.module, (outline.get(t.module) ?? new Set()).add(t.testSetName));
+  const analysis = await api<DefectAnalysis>("/api/ai/defect/understand", {
+    method: "POST",
+    body: { description, modules: [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })) },
+  });
+  const reading = { feature: analysis.feature, related: analysis.related, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected };
+
+  // Only a very large search is narrowed first, by the wording of the feature as Gemini read it.
   const entries = rankByWording(
-    description,
-    defectTargets(drafts).map((target) => ({ key: target.card.key, text: `${target.card.name} ${target.card.workbookScenario ?? ""}`, target })),
+    [description, analysis.feature, analysis.area, ...analysis.related].join(" "),
+    targets.map((target) => ({ key: target.card.key, text: `${target.card.name} ${target.card.workbookScenario ?? ""}`, target })),
     MAX_DEFECT_POOL,
   );
-  if (entries.length === 0) throw new Error("The chosen modules have no cases left to search.");
-  const modules = new Set(entries.map((e) => e.target.module)).size;
-  onPhase({ stage: "reading", total: entries.length, modules });
-
-  const shortlist = (part: typeof entries, broad: boolean) =>
-    api<Shortlist>("/api/ai/defect/search", {
-      method: "POST",
-      body: {
-        description,
-        ...(broad ? { broad: true } : {}),
-        cases: part.map(({ target }) => {
-          const status = currentStatus(target.card, byId.get(target.draftId)?.execution);
-          return {
+  onPhase({ stage: "reading", total: entries.length, modules, feature: analysis.feature || analysis.area });
+  const parts = await inPool(chunk(entries, MAX_DEFECT_SEARCH_CASES), 2, async (part) => {
+    try {
+      const out = await api<{ candidates: DefectCandidate[] }>("/api/ai/defect/search", {
+        method: "POST",
+        body: {
+          description,
+          analysis: reading,
+          cases: part.map(({ target }) => ({
             key: target.card.key,
             module: target.module,
             testSetName: target.testSetName,
             scenario: clip(target.card.name, MAX_SCENARIO_TEXT),
             ...(target.card.workbookScenario ? { workbookScenario: clip(target.card.workbookScenario, MAX_SCENARIO_TEXT) } : {}),
-            status: status ? STATUS_LABEL[status] : "Not Run",
-          };
-        }),
-      },
-    });
-  // Every part is read; a part that fails is tried once more in two halves, so one slow answer does not
-  // silently leave cases out.
-  const readAll = (broad: boolean) =>
-    inPool(chunk(entries, MAX_DEFECT_SEARCH_CASES), 3, async (part): Promise<{ size: number; list: Shortlist | null; error: unknown }> => {
-      try {
-        return { size: part.length, list: await shortlist(part, broad), error: null };
-      } catch {
-        try {
-          const halves = await Promise.all(chunk(part, Math.ceil(part.length / 2)).map((half) => shortlist(half, broad)));
-          return { size: part.length, list: { analysis: halves[0].analysis, candidates: mergeCandidates(halves.map((h) => h.candidates), MAX_SHORTLIST * 2) }, error: null };
-        } catch (err) {
-          return { size: part.length, list: null, error: err };
-        }
-      }
-    });
-
-  const first = await readAll(false);
-  const answered = first.flatMap((p) => (p.list ? [p.list] : []));
-  if (answered.length === 0) throw first[0].error;
-  const analysis = [...answered].sort((a, b) => b.candidates.length - a.candidates.length)[0].analysis;
-  const searched = first.reduce((n, p) => n + (p.list ? p.size : 0), 0);
-  const failedPart = first.find((p) => !p.list);
+          })),
+        },
+      });
+      return { size: part.length, candidates: out.candidates, error: null as unknown };
+    } catch (error) {
+      return { size: part.length, candidates: null, error };
+    }
+  });
+  const answered = parts.flatMap((p) => (p.candidates ? [p.candidates] : []));
+  if (answered.length === 0) throw parts[0].error;
+  const searched = parts.reduce((n, p) => n + (p.candidates ? p.size : 0), 0);
+  const failedPart = parts.find((p) => !p.candidates);
   const unreadError = failedPart ? errorMessage(failedPart.error) : null;
-  let candidates = mergeCandidates(answered.map((l) => l.candidates), MAX_DEFECT_CANDIDATES);
-  let widened = false;
-  if (candidates.length === 0) {
-    onPhase({ stage: "widening", total: entries.length });
-    const wide = (await readAll(true)).flatMap((p) => (p.list ? [p.list.candidates] : []));
-    candidates = mergeCandidates(wide, MAX_DEFECT_CANDIDATES);
-    widened = true;
-  }
-  const result = { description, analysis, searched, total: entries.length, modules, unreadError, widened };
+  const candidates = mergeCandidates(answered, MAX_DEFECT_CHECKS);
+  const result = { description, analysis, searched, total: entries.length, modules, unreadError };
 
   const byKey = new Map(entries.map((e) => [e.key, e.target]));
   const picked = candidates.flatMap((candidate) => {
@@ -272,11 +272,11 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   let checked = 0;
   onPhase({ stage: "checking", done: 0, total: toCheck.length });
   let lastError: unknown = null;
-  await inPool(chunk(toCheck, MAX_DEFECT_VERIFY_BATCH), 2, async (batch) => {
+  await inPool(chunk(toCheck, MAX_DEFECT_VERIFY_BATCH), 3, async (batch) => {
     try {
       const out = await api<{ matches: DefectMatch[] }>("/api/ai/defect/verify", {
         method: "POST",
-        body: { description, analysis: { area: analysis.area, symptom: analysis.symptom, expected: analysis.expected }, cases: batch },
+        body: { description, analysis: reading, cases: batch },
       });
       for (const m of out.matches) matches.set(m.key, m);
     } catch (err) {
@@ -329,7 +329,7 @@ export function newCaseTargets(drafts: Draft[]): NewCaseTarget[] {
  */
 export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch, "description" | "analysis">): Promise<NewDefectCaseSuggestion> {
   const byId = new Map(drafts.map((d) => [d.id, d]));
-  const wording = `${search.description} ${search.analysis.area}`;
+  const wording = [search.description, search.analysis.feature, search.analysis.area, ...search.analysis.related].join(" ");
   const testSets = newCaseTargets(drafts)
     .slice(0, MAX_NEW_CASE_CHOICES)
     .map((t) => {
@@ -340,7 +340,11 @@ export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch,
   if (testSets.length === 0) throw new Error("The chosen modules have no compared test sets.");
   return api<NewDefectCaseSuggestion>("/api/ai/defect/new-case", {
     method: "POST",
-    body: { description: search.description, analysis: { area: search.analysis.area, symptom: search.analysis.symptom, expected: search.analysis.expected }, testSets },
+    body: {
+      description: search.description,
+      analysis: { feature: search.analysis.feature, area: search.analysis.area, symptom: search.analysis.symptom, expected: search.analysis.expected },
+      testSets,
+    },
   });
 }
 
