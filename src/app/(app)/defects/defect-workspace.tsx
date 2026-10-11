@@ -410,7 +410,11 @@ function Finder({
       if (confirmFor !== null && form.targets.length > 0 && !newCaseProblem(form)) {
         // Spira's lists first, so the incident fields and the case's status are settled before confirming.
         await optionsLoad.current;
-        if (searchRun.current === confirmFor) setConfirming(true);
+        if (searchRun.current === confirmFor) {
+          // A failed new case is always reported: the confirmation is the final approval for all of it.
+          setLogInSpira(true);
+          setConfirming(true);
+        }
       }
     } catch (err) {
       setNewCase({ status: "error", error: errorMessage(err), reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
@@ -786,7 +790,11 @@ function Finder({
       <Dialog
         open={confirming}
         onClose={() => setConfirming(false)}
-        title={`Fail ${plural(total, "case")} for this defect?`}
+        title={
+          newTargets.length > 0 && chosen.length === 0
+            ? `Create the test case, fail it${logInSpira ? " and log the defect" : ""}?`
+            : `Fail ${plural(total, "case")} for this defect?`
+        }
         footer={
           <>
             <Button onClick={() => setConfirming(false)}>Cancel</Button>
@@ -806,10 +814,12 @@ function Finder({
           {newCase && newTargets.length > 0 && (
             <div className="rounded-lg border border-violet-200 px-3 py-2 text-sm dark:border-violet-400/20">
               <p className="font-medium">New: {newCase.testCase.name}</p>
-              <p className="text-xs text-slate-600 dark:text-zinc-400">
-                In {newTargets.map((t) => `${t.testSetName} (${t.module})`).join(", ")}; goes to the Defects column, counts as In Scope, and fails at step{" "}
-                {newCase.testCase.failingStep}.
-              </p>
+              <ol className="mt-1 list-decimal pl-5 text-xs text-slate-600 dark:text-zinc-400">
+                <li>Created in Spira with its {plural(newCase.testCase.steps.length, "step")} and added to {newTargets.map((t) => `${t.testSetName} (${t.module})`).join(", ")}.</li>
+                <li>Placed in the Defects column of its board, so it counts as In Scope.</li>
+                <li>Failed in Spira at step {newCase.testCase.failingStep}, with your description as the actual result.</li>
+                {logInSpira ? <li>Logged as an incident, linked to that failed step.</li> : <li>No incident: &quot;Log the defect in Spira&quot; is off.</li>}
+              </ol>
             </div>
           )}
           {moving.length > 0 && (
