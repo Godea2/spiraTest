@@ -50,7 +50,7 @@ Once a live apply is verified (Spira matches the reviewed board), the draft move
 
 ### Test execution
 
-From **Completed**, **Run execution** lists the draft's In Scope cases with their latest result, read from Spira when the page opens (and on **Check Spira again**), so results recorded by others show up too. Filter by result, search, and see how many are executed.
+From **Completed**, **Run execution** lists the draft's In Scope cases with their latest result, read from Spira when the page opens (and on **Check Spira again**), so results recorded by others show up too. Cases are grouped in buckets with counts: the page opens on **To run**, and a case leaves it as soon as it has a result and shows under Passed, Failed, Blocked or Caution (**All** shows everything). Next and previous in the runner follow the list as it was when the case was opened, so cases leaving the bucket do not shift the order.
 
 - **Run** opens a case step by step: its steps come from Spira (steps of linked test cases are listed in place), and each step is marked Passed, Failed, Blocked, Caution or N/A, with the actual result for anything that did not pass. Keys P, F, B, C and N mark the current step; Ctrl+Enter saves and opens the next case. The case result follows from the steps: the first Failed, Blocked or Caution step decides it, so a tester can stop at a failure. Marks are kept in the draft until saved.
 - **Run all** goes through every listed case (or **Run N selected**, the ticked ones) in the runner, one after another: **Save & next** moves on, and the last case offers **Save & finish**. It starts at the first case that has no result or is in progress, and the arrows move back and forth within the run.

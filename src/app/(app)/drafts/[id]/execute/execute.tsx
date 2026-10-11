@@ -20,14 +20,15 @@ import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
 type Filter = "all" | "notRun" | "inProgress" | ExecutionStatus;
 
+/** Buckets: a case leaves "To run" as soon as it has a result and shows under that result instead. */
 const FILTERS: Array<{ id: Filter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "notRun", label: "Not Run" },
+  { id: "notRun", label: "To run" },
   { id: "inProgress", label: "In progress" },
   { id: "passed", label: "Passed" },
   { id: "failed", label: "Failed" },
   { id: "blocked", label: "Blocked" },
   { id: "caution", label: "Caution" },
+  { id: "all", label: "All" },
 ];
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -49,7 +50,8 @@ export function Execute({ id }: { id: string }) {
   const { draft, setDraft, error: loadError } = useDraft(id);
   const { spira } = useSettings();
   const [tester, setTester] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
+  /** Null until the tester picks a bucket: then "To run" while anything is left, otherwise "All". */
+  const [pickedFilter, setFilter] = useState<Filter | null>(null);
   const [query, setQuery] = useState("");
   const [setTab, setSetTab] = useState<number | "all">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -85,18 +87,23 @@ export function Execute({ id }: { id: string }) {
   const cards = useMemo(() => (draft ? executionCards(draft) : []), [draft]);
   const counts = useMemo(() => executionCounts(cards, draft?.execution), [cards, draft]);
 
-  const visible = useMemo(() => {
-    if (!draft) return [];
+  const filter: Filter = pickedFilter ?? (counts.notRun > 0 ? "notRun" : "all");
+
+  /** Cases in the chosen test set that match the search, before the bucket is applied. */
+  const scoped = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return cards.filter((card) => {
-      if (setTab !== "all" && card.testSetId !== setTab) return false;
-      if (q && !`${card.name} TC${card.testCaseId} ${card.tcId ?? ""}`.toLowerCase().includes(q)) return false;
-      if (filter === "all") return true;
-      if (filter === "inProgress") return Boolean(draft.execution?.progress[card.key]);
-      const status = currentStatus(card, draft.execution);
-      return filter === "notRun" ? status === null : status === filter;
-    });
-  }, [cards, draft, filter, query, setTab]);
+    return cards.filter(
+      (card) => (setTab === "all" || card.testSetId === setTab) && (!q || `${card.name} TC${card.testCaseId} ${card.tcId ?? ""}`.toLowerCase().includes(q)),
+    );
+  }, [cards, query, setTab]);
+
+  const inBucket = (card: Card, bucket: Filter) => {
+    if (bucket === "all") return true;
+    if (bucket === "inProgress") return Boolean(draft?.execution?.progress[card.key]);
+    const status = currentStatus(card, draft?.execution);
+    return bucket === "notRun" ? status === null : status === bucket;
+  };
+  const visible = scoped.filter((card) => inBucket(card, filter));
 
   if (loadError && !draft) {
     return <Notice tone="danger" title="This draft could not be opened" action={<ButtonLink href="/completed" size="sm">Back to Completed</ButtonLink>}>{loadError}</Notice>;
@@ -262,6 +269,12 @@ export function Execute({ id }: { id: string }) {
     setQueue({ keys: targets.map((c) => c.key), runsBefore: draft!.execution?.runs.length ?? 0 });
     setSelected(new Set());
     setOpenKey(start.key);
+  }
+
+  /** Opens one case; the list as shown is kept as the run, so cases leaving the bucket do not shift next and previous. */
+  function openCase(card: Card) {
+    setQueue({ keys: visible.map((c) => c.key), runsBefore: draft!.execution?.runs.length ?? 0 });
+    setOpenKey(card.key);
   }
 
   function closeRunner() {
@@ -436,20 +449,25 @@ export function Execute({ id }: { id: string }) {
             )}
           </div>
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by result">
-            {FILTERS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                aria-pressed={filter === f.id}
-                onClick={() => setFilter(f.id)}
-                className={clsx(
-                  "cursor-pointer rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition",
-                  filter === f.id ? "bg-slate-900 text-white ring-slate-900 dark:bg-white dark:text-zinc-900 dark:ring-white" : "text-slate-600 ring-slate-200 hover:bg-slate-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/[0.04]",
-                )}
-              >
-                {f.label}
-              </button>
-            ))}
+            {FILTERS.map((f) => {
+              const count = scoped.filter((card) => inBucket(card, f.id)).length;
+              if (f.id === "inProgress" && count === 0 && filter !== f.id) return null;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-pressed={filter === f.id}
+                  onClick={() => setFilter(f.id)}
+                  className={clsx(
+                    "inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition",
+                    filter === f.id ? "bg-slate-900 text-white ring-slate-900 dark:bg-white dark:text-zinc-900 dark:ring-white" : "text-slate-600 ring-slate-200 hover:bg-slate-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/[0.04]",
+                  )}
+                >
+                  {f.label}
+                  <span className={clsx("tabular-nums", filter === f.id ? "opacity-70" : "text-slate-400 dark:text-zinc-500")}>{count}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -483,7 +501,13 @@ export function Execute({ id }: { id: string }) {
         )}
 
         {visible.length === 0 ? (
-          <p className="py-8 text-center text-sm text-slate-500">{cards.length === 0 ? "This draft has no In Scope cases." : "No cases match these filters."}</p>
+          <p className="py-8 text-center text-sm text-slate-500">
+            {cards.length === 0
+              ? "This draft has no In Scope cases."
+              : filter === "notRun" && scoped.length > 0
+                ? "Nothing left to run here. Every case has a result; open Failed, Blocked or Caution to re-test."
+                : "No cases in this bucket."}
+          </p>
         ) : (
           <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {visible.map((card) => {
@@ -494,7 +518,7 @@ export function Execute({ id }: { id: string }) {
               return (
                 <li key={card.key} className="flex items-center gap-3 py-2.5">
                   <input type="checkbox" className="size-4 shrink-0 accent-brand-600" aria-label={`Select TC${card.testCaseId}`} checked={selected.has(card.key)} onChange={() => toggle(card.key)} />
-                  <button type="button" className="flex min-w-0 flex-1 cursor-pointer flex-col items-start text-left" onClick={() => setOpenKey(card.key)}>
+                  <button type="button" className="flex min-w-0 flex-1 cursor-pointer flex-col items-start text-left" onClick={() => openCase(card)}>
                     <span className="flex w-full min-w-0 items-center gap-2">
                       <span className="shrink-0 font-mono text-xs text-slate-500">TC{card.testCaseId}</span>
                       <span className="truncate text-sm font-medium hover:text-brand-700 dark:hover:text-brand-300">{card.name}</span>
@@ -513,7 +537,7 @@ export function Execute({ id }: { id: string }) {
                     <Button size="sm" variant="ghost" icon={Check} title="Record Passed for the whole case" aria-label={`Pass TC${card.testCaseId}`} onClick={() => void quickPass(card)} busy={working} disabled={working || bulkRunning}>
                       <span className="hidden sm:inline">Pass</span>
                     </Button>
-                    <Button size="sm" variant="secondary" icon={Play} onClick={() => setOpenKey(card.key)} disabled={working}>
+                    <Button size="sm" variant="secondary" icon={Play} onClick={() => openCase(card)} disabled={working}>
                       Run
                     </Button>
                   </span>
