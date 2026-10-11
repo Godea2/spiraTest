@@ -15,10 +15,15 @@ import {
 // reaches the browser. Only test case names, steps, keywords and the tester's defect descriptions are
 // sent; nothing is stored by Google.
 
-export const GEMINI_ENV = { apiKey: "GEMINI_API_KEY", model: "GEMINI_MODEL" } as const;
+export const GEMINI_ENV = { apiKey: "GEMINI_API_KEY", model: "GEMINI_MODEL", fallbackModel: "GEMINI_FALLBACK_MODEL" } as const;
 
 const DEFAULT_MODEL = "gemini-3.8-flash";
-const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
+/** Asked as well when the main model is slow or fails; "off" turns it off. */
+const DEFAULT_FALLBACK_MODEL = "gemini-3.6-flash";
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const ENDPOINT = `${API_BASE}/interactions`;
+/** A request still unanswered after this long is also sent to the fallback model; the first good answer is used. */
+const DEFAULT_HEDGE_MS = 20_000;
 /**
  * The route may run for 60s; Gemini gets at most this long in total, so a slow answer ends in a clear
  * error. A timed-out attempt is not retried, so one attempt may use nearly all of it.
@@ -40,9 +45,12 @@ export class AiError extends Error {
 }
 
 function readConfig() {
+  const model = process.env[GEMINI_ENV.model]?.trim() || DEFAULT_MODEL;
+  const fallback = process.env[GEMINI_ENV.fallbackModel]?.trim() || DEFAULT_FALLBACK_MODEL;
   return {
     apiKey: process.env[GEMINI_ENV.apiKey]?.trim() ?? "",
-    model: process.env[GEMINI_ENV.model]?.trim() || DEFAULT_MODEL,
+    model,
+    fallbackModel: /^(off|none)$/i.test(fallback) || fallback === model ? null : fallback,
   };
 }
 
@@ -165,21 +173,21 @@ async function describeFailure(response: Response, model: string): Promise<AiErr
 
 const tooSlow = () => new AiError("Gemini is answering slowly right now. Try again in a moment.", 504);
 
-async function interact(body: unknown, apiKey: string, model: string): Promise<unknown> {
-  const deadline = Date.now() + BUDGET_MS;
+/** Posts to Gemini, retrying a busy answer until the shared deadline; stops at once when `signal` aborts. */
+async function post(url: string, body: unknown, apiKey: string, model: string, deadline: number, signal: AbortSignal): Promise<unknown> {
   for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
     const remaining = deadline - Date.now();
-    if (remaining < MIN_ATTEMPT_MS) throw tooSlow();
+    if (remaining < MIN_ATTEMPT_MS || signal.aborted) throw tooSlow();
     const last = attempt === ATTEMPTS - 1;
     let response: Response;
     try {
-      response = await fetch(ENDPOINT, {
+      response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify(body),
         cache: "no-store",
         redirect: "error",
-        signal: AbortSignal.timeout(Math.min(ATTEMPT_MS, remaining)),
+        signal: AbortSignal.any([AbortSignal.timeout(Math.min(ATTEMPT_MS, remaining)), signal]),
       });
     } catch (error) {
       const name = (error as Error).name;
@@ -205,49 +213,171 @@ async function interact(body: unknown, apiKey: string, model: string): Promise<u
   throw new AiError("Gemini could not be reached.");
 }
 
-/** One structured answer from Gemini: the system instruction and input in, JSON matching the schema out. */
-async function generate<T extends z.ZodType>(
-  request: { task: string; system: string; input: unknown; schema: object; thinking: "low" | "medium" | "high" },
-  parser: T,
-): Promise<z.infer<T>> {
-  const { apiKey, model } = readConfig();
-  if (!apiKey) throw new AiError(`AI review is not configured. Set ${GEMINI_ENV.apiKey} on the server.`, 503);
-  const input = JSON.stringify(request.input);
-  const started = Date.now();
-  let raw: unknown;
-  try {
-    raw = await interact(
+type Thinking = "low" | "medium" | "high";
+type Ask = (model: string, system: string, input: string, schema: object, thinking: Thinking, deadline: number, signal: AbortSignal) => Promise<string>;
+
+/** The main model, through the Interactions API. */
+const askInteractions =
+  (apiKey: string): Ask =>
+  async (model, system, input, schema, thinking, deadline, signal) => {
+    const raw = await post(
+      ENDPOINT,
       {
         model,
-        system_instruction: request.system,
+        system_instruction: system,
         input,
-        response_format: { type: "text", mime_type: "application/json", schema: request.schema },
-        generation_config: { thinking_level: request.thinking },
+        response_format: { type: "text", mime_type: "application/json", schema },
+        generation_config: { thinking_level: thinking },
         store: false,
       },
       apiKey,
       model,
+      deadline,
+      signal,
     );
-  } finally {
-    // Timings only, never content: shows in the server logs which step is slow.
-    console.info(`gemini ${request.task}: ${Date.now() - started} ms, ${input.length} chars in, thinking ${request.thinking}`);
-  }
+    const interaction = interactionSchema.safeParse(raw);
+    const text = interaction.success
+      ? (interaction.data.steps ?? [])
+          .filter((s) => s.type === "model_output")
+          .flatMap((s) => s.content ?? [])
+          .filter((c) => c.type === "text" && c.text)
+          .map((c) => c.text)
+          .join("")
+      : "";
+    if (!text) throw new AiError(`Gemini returned no answer${interaction.success && interaction.data.status ? ` (status ${interaction.data.status})` : ""}.`);
+    return text;
+  };
 
-  const interaction = interactionSchema.safeParse(raw);
-  const text = interaction.success
-    ? (interaction.data.steps ?? [])
-        .filter((s) => s.type === "model_output")
-        .flatMap((s) => s.content ?? [])
-        .filter((c) => c.type === "text" && c.text)
-        .map((c) => c.text)
-        .join("")
-    : "";
-  if (!text) throw new AiError(`Gemini returned no answer${interaction.success && interaction.data.status ? ` (status ${interaction.data.status})` : ""}.`);
-  try {
-    return parser.parse(JSON.parse(text));
-  } catch {
-    throw new AiError("Gemini's answer did not match the expected format. Try again.");
-  }
+const generateContentSchema = z.object({
+  candidates: z
+    .array(
+      z.object({
+        finishReason: z.string().nullish(),
+        content: z.object({ parts: z.array(z.object({ text: z.string().nullish(), thought: z.boolean().nullish() })).nullish() }).nullish(),
+      }),
+    )
+    .nullish(),
+});
+
+/** The fallback model, through generateContent: another model on another endpoint, so one busy service does not stop a search. */
+const askGenerateContent =
+  (apiKey: string): Ask =>
+  async (model, system, input, schema, thinking, deadline, signal) => {
+    const raw = await post(
+      `${API_BASE}/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: input }] }],
+        generationConfig: {
+          responseFormat: { text: { mimeType: "application/json", schema } },
+          thinkingConfig: { thinkingLevel: thinking },
+        },
+      },
+      apiKey,
+      model,
+      deadline,
+      signal,
+    );
+    const answer = generateContentSchema.safeParse(raw);
+    const candidate = answer.success ? answer.data.candidates?.[0] : undefined;
+    const text = (candidate?.content?.parts ?? [])
+      .filter((p) => !p.thought && p.text)
+      .map((p) => p.text)
+      .join("");
+    if (!text) throw new AiError(`Gemini returned no answer${candidate?.finishReason ? ` (${candidate.finishReason})` : ""}.`);
+    return text;
+  };
+
+/**
+ * Runs `main`, and `backup` too once `main` fails or has not answered after `hedgeMs`; resolves with the
+ * first success and cancels the other. When both fail, the main model's error is reported.
+ */
+export function hedge<T>(main: (signal: AbortSignal) => Promise<T>, backup: ((signal: AbortSignal) => Promise<T>) | null, hedgeMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const controllers: AbortController[] = [];
+    let running = 0;
+    let done = false;
+    let backupStarted = false;
+    let mainError: unknown = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      done = true;
+      clearTimeout(timer);
+      for (const c of controllers) c.abort();
+    };
+    const run = (task: (signal: AbortSignal) => Promise<T>, isMain: boolean) => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      running += 1;
+      task(controller.signal).then(
+        (value) => {
+          if (done) return;
+          finish();
+          resolve(value);
+        },
+        (error: unknown) => {
+          running -= 1;
+          if (done) return;
+          if (isMain) mainError = error;
+          if (isMain && startBackup()) return;
+          if (running === 0) {
+            finish();
+            reject(mainError ?? error);
+          }
+        },
+      );
+    };
+    const startBackup = () => {
+      if (!backup || backupStarted || done) return false;
+      backupStarted = true;
+      run(backup, false);
+      return true;
+    };
+    run(main, true);
+    if (backup) timer = setTimeout(startBackup, hedgeMs);
+  });
+}
+
+/**
+ * One structured answer from Gemini: the system instruction and input in, JSON matching the schema out.
+ * The main model answers; if it is slow (`hedgeMs`) or fails, the fallback model is asked the same and
+ * the first valid answer is used, all within the route's time limit.
+ */
+async function generate<T extends z.ZodType>(
+  request: { task: string; system: string; input: unknown; schema: object; thinking: Thinking; hedgeMs?: number },
+  parser: T,
+): Promise<z.infer<T>> {
+  const { apiKey, model, fallbackModel } = readConfig();
+  if (!apiKey) throw new AiError(`AI review is not configured. Set ${GEMINI_ENV.apiKey} on the server.`, 503);
+  const input = JSON.stringify(request.input);
+  const deadline = Date.now() + BUDGET_MS;
+  const started = Date.now();
+
+  const leg = (ask: Ask, legModel: string) => async (signal: AbortSignal) => {
+    let outcome = "failed";
+    try {
+      const text = await ask(legModel, request.system, input, request.schema, request.thinking, deadline, signal);
+      let parsed: z.infer<T>;
+      try {
+        parsed = parser.parse(JSON.parse(text));
+      } catch {
+        throw new AiError("Gemini's answer did not match the expected format. Try again.");
+      }
+      outcome = "ok";
+      return parsed;
+    } finally {
+      // Timings only, never content: shows in the server logs which step and model is slow.
+      if (!signal.aborted || outcome === "ok") {
+        console.info(`gemini ${request.task} [${legModel}]: ${outcome} after ${Date.now() - started} ms, ${input.length} chars in, thinking ${request.thinking}`);
+      }
+    }
+  };
+
+  return hedge(
+    leg(askInteractions(apiKey), model),
+    fallbackModel ? leg(askGenerateContent(apiKey), fallbackModel) : null,
+    request.hedgeMs ?? DEFAULT_HEDGE_MS,
+  );
 }
 
 /** Asks Gemini whether each case really depends on a not-implemented feature, judging from its test scenario only. */
@@ -343,7 +473,7 @@ export interface DefectModuleOutline {
 /** Works out which feature a defect is in, the other names it goes by, and a bug report reading of it. Changes nothing. */
 export async function understandDefect(description: string, modules: DefectModuleOutline[]): Promise<DefectAnalysis> {
   const parsed = await generate(
-    { task: "defect understand", system: UNDERSTAND_INSTRUCTION, schema: UNDERSTAND_SCHEMA, thinking: "low", input: { defect: description, modules } },
+    { task: "defect understand", system: UNDERSTAND_INSTRUCTION, schema: UNDERSTAND_SCHEMA, thinking: "low", hedgeMs: 10_000, input: { defect: description, modules } },
     understandSchema,
   );
   const seen = new Set<string>();
@@ -430,6 +560,7 @@ export async function shortlistDefectCases(description: string, analysis: Defect
       system: SHORTLIST_INSTRUCTION,
       schema: SHORTLIST_SCHEMA,
       thinking: "low",
+      hedgeMs: 18_000,
       input: { defect: { description, ...analysis }, testSets: [...groups.values()] },
     },
     shortlistSchema,

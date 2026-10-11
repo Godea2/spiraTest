@@ -99,12 +99,70 @@ describe("Gemini blocked review", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/answering slowly/);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Once on the main model and once on the fallback, neither retried after a timeout.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("rejects answers in the wrong shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer([{ key: "1:1", blocked: "yes" }])));
     await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/expected format/);
+  });
+});
+
+describe("Gemini fallback model", () => {
+  beforeEach(() => vi.stubEnv("GEMINI_API_KEY", KEY));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const contentReply = (payload: unknown) =>
+    new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "thinking…", thought: true }, { text: JSON.stringify(payload) }] } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  const verdicts = [{ key: "1:1", blocked: true, confidence: "high", reason: "Needs BVN." }];
+
+  it("asks the fallback model through generateContent when the main model fails, with the same thinking and schema", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => (String(url).endsWith("/interactions") ? new Response("{}", { status: 404 }) : contentReply({ verdicts })));
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await reviewBlockedCases("Onboarding", cases);
+    expect(out.map((v) => v.key)).toEqual(["1:1"]);
+
+    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent");
+    const body = JSON.parse(String(init.body));
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" });
+    expect(body.generationConfig.responseFormat.text.mimeType).toBe("application/json");
+    expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe(KEY);
+    expect(String(init.body)).not.toContain(KEY);
+  });
+
+  it("asks the fallback too when the main model is slow, uses the first answer and cancels the other", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let mainSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith("/interactions")) {
+        mainSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))));
+      }
+      return Promise.resolve(contentReply({ verdicts }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = reviewBlockedCases("Onboarding", cases);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(pending).resolves.toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mainSignal?.aborted).toBe(true);
+  });
+
+  it("can be turned off, and then reports the main model's error", async () => {
+    vi.stubEnv("GEMINI_FALLBACK_MODEL", "off");
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/does not know the model "gemini-3.8-flash"/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
