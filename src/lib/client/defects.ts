@@ -152,8 +152,24 @@ export interface DefectSearch {
 export type SearchPhase =
   | { stage: "understanding"; modules: number }
   | { stage: "reading"; total: number; modules: number; feature: string }
-  | { stage: "steps"; done: number; total: number }
-  | { stage: "checking"; done: number; total: number };
+  /** Steps of `read` cases are in from Spira and `done` are checked, of `total`; both run side by side. */
+  | { stage: "checking"; read: number; done: number; total: number };
+
+/** Test cases read from Spira at once while their steps are checked. */
+const STEP_READS_PARALLEL = 6;
+
+/** How each description was read, for this session: searching again (other modules, a retry) skips that step. */
+const understood = new Map<string, Promise<DefectAnalysis>>();
+
+function understand(description: string, modules: Array<{ module: string; testSets: string[] }>): Promise<DefectAnalysis> {
+  const key = JSON.stringify([description.trim().toLowerCase(), modules]);
+  const known = understood.get(key);
+  if (known) return known;
+  const request = api<DefectAnalysis>("/api/ai/defect/understand", { method: "POST", body: { description, modules } });
+  understood.set(key, request);
+  request.catch(() => understood.delete(key));
+  return request;
+}
 
 async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -179,7 +195,12 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * checks each against its steps, naming the failing step and quoting the case. A handful of requests
  * per search, none retried here (the server already retries a busy answer). Read-only.
  */
-export async function searchDefect(drafts: Draft[], description: string, onPhase: (phase: SearchPhase) => void): Promise<DefectSearch> {
+export async function searchDefect(
+  drafts: Draft[],
+  description: string,
+  onPhase: (phase: SearchPhase) => void,
+  onPartial?: (search: DefectSearch) => void,
+): Promise<DefectSearch> {
   if (drafts.length === 0) throw new Error("Choose at least one module to search.");
   const projectId = drafts[0].projectId;
   if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Search the modules of one Spira project at a time.");
@@ -190,10 +211,10 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   onPhase({ stage: "understanding", modules });
   const outline = new Map<string, Set<string>>();
   for (const t of targets) outline.set(t.module, (outline.get(t.module) ?? new Set()).add(t.testSetName));
-  const analysis = await api<DefectAnalysis>("/api/ai/defect/understand", {
-    method: "POST",
-    body: { description, modules: [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })) },
-  }).catch((err: unknown) => {
+  const analysis = await understand(
+    description,
+    [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })),
+  ).catch((err: unknown) => {
     throw new Error(`Working out the feature: ${errorMessage(err)}`);
   });
   const reading = { feature: analysis.feature, related: analysis.related, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected };
@@ -241,61 +262,108 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   });
   if (picked.length === 0) return { ...result, cases: [] };
 
-  let read = 0;
-  onPhase({ stage: "steps", done: 0, total: picked.length });
-  const loaded = await inPool(picked, 4, async ({ target, candidate }) => {
-    try {
-      const detail = await readTestCase(projectId, target.card.testCaseId);
-      return { target, candidate, steps: runnableSteps(detail.steps), error: null };
-    } catch (err) {
-      return { target, candidate, steps: [] as RunnableStep[], error: errorMessage(err) };
-    } finally {
-      onPhase({ stage: "steps", done: ++read, total: picked.length });
-    }
-  });
-
-  const unchecked = (key: string, reason: string): DefectMatch => ({ key, verdict: "possible", confidence: "low", stepLabel: null, evidence: "", grounded: false, reason });
+  // Reading steps from Spira and checking them overlap: a batch goes to Gemini as soon as its cases'
+  // steps are in, and the verdicts so far are shown as each batch answers.
+  type Loaded = { target: DefectTarget; candidate: DefectCandidate; steps: RunnableStep[] };
+  const total = picked.length;
+  const loaded = new Map<string, Loaded>();
   const matches = new Map<string, DefectMatch>();
-  for (const l of loaded) {
-    if (l.error) matches.set(l.target.card.key, unchecked(l.target.card.key, `Its steps could not be read from Spira (${l.error}); check it yourself.`));
-  }
-  const toCheck: VerifiedCase[] = loaded
-    .filter((l) => !l.error)
-    .map((l) => ({
-      key: l.target.card.key,
-      module: l.target.module,
-      name: clip(l.target.card.name, 2_000),
-      steps: l.steps.slice(0, MAX_VERIFY_STEPS).map((s) => ({
-        label: s.label,
-        description: clip(s.step.description || (s.step.linkedTestCaseId ? `Calls TC${s.step.linkedTestCaseId}` : ""), MAX_STEP_TEXT),
-        expectedResult: clip(s.step.expectedResult, MAX_STEP_TEXT),
-        sampleData: clip(s.step.sampleData, MAX_STEP_TEXT),
-      })),
-    }));
+  const unchecked = (key: string, reason: string): DefectMatch => ({ key, verdict: "possible", confidence: "low", stepLabel: null, evidence: "", grounded: false, reason });
+  const collect = () =>
+    picked
+      .flatMap(({ target }) => {
+        const l = loaded.get(target.card.key);
+        const match = matches.get(target.card.key);
+        return l && match ? [{ ...l, match }] : [];
+      })
+      .sort((a, b) => compareMatches(a.match, b.match));
+  let read = 0;
   let checked = 0;
-  onPhase({ stage: "checking", done: 0, total: toCheck.length });
+  const progress = () => onPhase({ stage: "checking", read, done: checked, total });
+  const report = () => {
+    progress();
+    onPartial?.({ ...result, cases: collect() });
+  };
+
+  const gate = limiter(DEFECT_VERIFY_PARALLEL);
+  const checks: Promise<void>[] = [];
+  let failedChecks = 0;
+  let sentChecks = 0;
   let lastError: unknown = null;
-  await inPool(chunk(toCheck, MAX_DEFECT_VERIFY_BATCH), DEFECT_VERIFY_PARALLEL, async (batch) => {
+  let pending: VerifiedCase[] = [];
+  const send = () => {
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    sentChecks += 1;
+    checks.push(
+      gate(async () => {
+        try {
+          const out = await api<{ matches: DefectMatch[] }>("/api/ai/defect/verify", {
+            method: "POST",
+            body: { description, analysis: reading, cases: batch },
+          });
+          for (const m of out.matches) matches.set(m.key, m);
+        } catch (err) {
+          lastError = err;
+          failedChecks += 1;
+          for (const c of batch) matches.set(c.key, unchecked(c.key, `Gemini could not check its steps (${errorMessage(err)}); check it yourself.`));
+        } finally {
+          checked += batch.length;
+          report();
+        }
+      }),
+    );
+  };
+
+  progress();
+  await inPool(picked, STEP_READS_PARALLEL, async ({ target, candidate }) => {
+    const key = target.card.key;
     try {
-      const out = await api<{ matches: DefectMatch[] }>("/api/ai/defect/verify", {
-        method: "POST",
-        body: { description, analysis: reading, cases: batch },
+      const steps = runnableSteps((await readTestCase(projectId, target.card.testCaseId)).steps);
+      loaded.set(key, { target, candidate, steps });
+      pending.push({
+        key,
+        module: target.module,
+        name: clip(target.card.name, 2_000),
+        steps: steps.slice(0, MAX_VERIFY_STEPS).map((s) => ({
+          label: s.label,
+          description: clip(s.step.description || (s.step.linkedTestCaseId ? `Calls TC${s.step.linkedTestCaseId}` : ""), MAX_STEP_TEXT),
+          expectedResult: clip(s.step.expectedResult, MAX_STEP_TEXT),
+          sampleData: clip(s.step.sampleData, MAX_STEP_TEXT),
+        })),
       });
-      for (const m of out.matches) matches.set(m.key, m);
+      if (pending.length >= MAX_DEFECT_VERIFY_BATCH) send();
     } catch (err) {
-      lastError = err;
-      for (const c of batch) matches.set(c.key, unchecked(c.key, `Gemini could not check its steps (${errorMessage(err)}); check it yourself.`));
+      loaded.set(key, { target, candidate, steps: [] });
+      matches.set(key, unchecked(key, `Its steps could not be read from Spira (${errorMessage(err)}); check it yourself.`));
+      checked += 1;
     } finally {
-      checked += batch.length;
-      onPhase({ stage: "checking", done: checked, total: toCheck.length });
+      read += 1;
+      progress();
     }
   });
-  if (lastError && toCheck.length > 0 && toCheck.every((c) => matches.get(c.key)?.reason.startsWith("Gemini could not"))) throw lastError;
+  send();
+  await Promise.all(checks);
+  if (sentChecks > 0 && failedChecks === sentChecks) throw lastError;
+  return { ...result, cases: collect() };
+}
 
-  const cases = loaded
-    .map((l) => ({ target: l.target, steps: l.steps, candidate: l.candidate, match: matches.get(l.target.card.key)! }))
-    .sort((a, b) => compareMatches(a.match, b.match));
-  return { ...result, cases };
+/** Runs at most `size` tasks at once; a finished task hands its slot straight to the next waiting one. */
+function limiter(size: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async (run: () => Promise<void>): Promise<void> => {
+    if (active < size) active += 1;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      await run();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  };
 }
 
 // ---- new test case ----------------------------------------------------------

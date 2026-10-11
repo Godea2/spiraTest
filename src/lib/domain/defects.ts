@@ -17,9 +17,9 @@ export const MAX_DEFECT_CHECKS = 24;
 /** The most runs one defect links (picked cases and a new test case in each of its test sets). */
 export const MAX_DEFECT_CANDIDATES = 40;
 /** Cases whose steps are checked per request: small, so each answer is quick and the requests run side by side. */
-export const MAX_DEFECT_VERIFY_BATCH = 6;
+export const MAX_DEFECT_VERIFY_BATCH = 4;
 /** Step-check requests sent at once. */
-export const DEFECT_VERIFY_PARALLEL = 4;
+export const DEFECT_VERIFY_PARALLEL = 6;
 /** Other names and related screens Gemini gives for a defect's feature. */
 export const MAX_RELATED_TERMS = 16;
 export const MAX_VERIFY_STEPS = 60;

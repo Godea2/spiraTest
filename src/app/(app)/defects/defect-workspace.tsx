@@ -69,8 +69,7 @@ function Elapsed({ since }: { since: number }) {
 function phaseText(phase: SearchPhase): string {
   if (phase.stage === "understanding") return `Gemini is working out which feature the defect is in (${plural(phase.modules, "module")} to search)…`;
   if (phase.stage === "reading") return `Gemini is matching ${plural(phase.total, "case")} in ${plural(phase.modules, "module")} to ${phase.feature ? `"${phase.feature}"` : "the defect"}…`;
-  if (phase.stage === "steps") return `Reading the steps of ${plural(phase.total, "likely case")} from Spira (${phase.done} of ${phase.total})…`;
-  return `Checking each case's steps against the defect (${phase.done} of ${phase.total})…`;
+  return `Checking the steps of ${plural(phase.total, "likely case")} against the defect: ${phase.read} read from Spira, ${phase.done} checked. Results show below as they come in…`;
 }
 
 /** The new test case being written for a defect no existing case covers. */
@@ -350,17 +349,31 @@ function Finder({
     setOutcome(null);
     setShowUnaffected(false);
     setNewCase(null);
+    setSearch(null);
+    setPicks({});
     setPhase({ stage: "understanding", modules: drafts.length });
     const startedAt = Date.now();
     setTiming({ startedAt, tookMs: null });
     let result: DefectSearch | null = null;
+    let shown = false;
+    // Verdicts arrive batch by batch; a case's verdict is final once shown, and ticks made meanwhile are kept.
+    const show = (s: DefectSearch) => {
+      setSearch(s);
+      setPicks((prev) => {
+        const next = { ...prev };
+        for (const c of s.cases) next[idOf(c)] ??= { on: c.match.verdict === "fails", stepLabel: c.match.stepLabel };
+        return next;
+      });
+      if (!shown) {
+        shown = true;
+        setTitle(s.analysis.title);
+        void loadOptions(s.analysis.severity);
+      }
+    };
     try {
-      result = await searchDefect(drafts, description, setPhase);
+      result = await searchDefect(drafts, description, setPhase, show);
       setTiming({ startedAt, tookMs: Date.now() - startedAt });
-      setSearch(result);
-      setPicks(Object.fromEntries(result.cases.map((c) => [idOf(c), { on: c.match.verdict === "fails", stepLabel: c.match.stepLabel }])));
-      setTitle(result.analysis.title);
-      void loadOptions(result.analysis.severity);
+      show(result);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -409,7 +422,7 @@ function Finder({
   const newTargets = newCase ? caseTargets.filter((t) => newCase.targets.includes(t.key)) : [];
   const newBlocker = newCase ? newCaseProblem(newCase) : null;
   const total = chosen.length + (newCase ? newTargets.length : 0);
-  const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && !job;
+  const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && !job && !searching;
   const chosenModules = [...new Set([...chosen.map((c) => c.target.module), ...newTargets.map((t) => t.module)])];
   const moving = chosen.filter((c) => columnOf(c) !== "defects");
   const recheck = [...new Set(moving.filter((c) => !draftsById.get(c.target.draftId) || !isCompleted(draftsById.get(c.target.draftId)!.status)).map((c) => c.target.module))];
@@ -542,8 +555,8 @@ function Finder({
               {timing && <Elapsed since={timing.startedAt} />}
             </span>
             <ProgressBar
-              value={phase.stage === "understanding" ? 1 : phase.stage === "reading" ? 2 : phase.done}
-              max={phase.stage === "understanding" || phase.stage === "reading" ? 3 : Math.max(1, phase.total)}
+              value={phase.stage === "understanding" ? 1 : phase.stage === "reading" ? 2 : phase.read + phase.done}
+              max={phase.stage === "understanding" || phase.stage === "reading" ? 3 : Math.max(1, phase.total * 2)}
             />
           </div>
         )}
@@ -553,7 +566,7 @@ function Finder({
           <OutcomeNotice outcome={outcome} notes={outcomeNotes} incidentUrl={incidentUrl} retrying={retrying} onRetry={(id) => void retryIncident(id)} onDismiss={() => setOutcome(null)} />
         )}
 
-        {search && !searching && (
+        {search && (
           <div className="flex flex-col gap-4">
             <div className="rounded-xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
               <p className="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-zinc-400">Gemini reads this as</p>
@@ -591,10 +604,12 @@ function Finder({
             )}
 
             {search.cases.length === 0 ? (
-              <p className="py-2 text-center text-sm text-slate-500">
-                No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
-                {drafts.length < allModules ? " Include more modules above and search again, or add" : " Add"} it as a new test case below, so it can be failed and reported.
-              </p>
+              searching ? null : (
+                <p className="py-2 text-center text-sm text-slate-500">
+                  No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
+                  {drafts.length < allModules ? " Include more modules above and search again, or add" : " Add"} it as a new test case below, so it can be failed and reported.
+                </p>
+              )
             ) : (
               groups.map((g) =>
                 g.cases.length === 0 ? null : (
@@ -648,7 +663,7 @@ function Finder({
                 onRetry={() => void draftNewCase(search)}
                 onRemove={() => setNewCase(null)}
               />
-            ) : (
+            ) : searching ? null : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
                 <span className="text-slate-600 dark:text-zinc-400">None of these covers the defect? Add it as a new test case and fail it.</span>
                 <Button size="sm" icon={Plus} disabled={!!job} onClick={() => void draftNewCase(search)}>Add a new test case</Button>
