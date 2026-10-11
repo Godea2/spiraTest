@@ -93,7 +93,7 @@ describe("searchDefect", () => {
     expect(partials).toEqual([4, 5]);
   });
 
-  it("offers a case whose steps could not be read as possibly affected, and fails only when every check fails", async () => {
+  it("offers a case whose steps could not be read or checked as possibly affected", async () => {
     calls.readTestCase.mockImplementation(async (_p: number, testCaseId: number) => {
       if (testCaseId === 1003) throw new Error("Spira did not answer.");
       return detail(testCaseId);
@@ -106,7 +106,24 @@ describe("searchDefect", () => {
       if (path.endsWith("/search")) return { candidates: [{ key: "1:1", relevance: "high" }] };
       throw new Error("Gemini is answering slowly right now.");
     });
-    await expect(searchDefect([draft], "unable to login again, not getting otp", () => {})).rejects.toThrow(/answering slowly/);
+    const unchecked = await searchDefect([draft], "unable to login again, not getting otp", () => {});
+    expect(unchecked).toMatchObject({ complete: false, cases: [{ match: { verdict: "possible", reason: expect.stringContaining("answering slowly") } }] });
+  });
+
+  it("ends without cases, saying why, when Gemini cannot work out the feature or match the cases", async () => {
+    calls.api.mockImplementation(async () => {
+      throw new Error("No Gemini model answered.");
+    });
+    const unread = await searchDefect([draft], "MTN missing from the Data network provider list", () => {});
+    expect(unread).toMatchObject({ understood: false, complete: false, searched: 0, total: 6, cases: [], unreadError: "Working out the feature: No Gemini model answered." });
+    expect(unread.analysis.title).toBe("MTN missing from the Data network provider list");
+
+    calls.api.mockImplementation(async (path: string) => {
+      if (path.endsWith("/understand")) return analysis;
+      throw new Error("No Gemini model answered.");
+    });
+    const unmatched = await searchDefect([draft], "MTN missing from the Data network provider list again", () => {});
+    expect(unmatched).toMatchObject({ understood: true, complete: false, searched: 0, cases: [], unreadError: 'Matching cases to "Sign-in": No Gemini model answered.' });
   });
 
   it("asks once more after a short wait when every Gemini model was busy, but not twice", async () => {
@@ -128,9 +145,9 @@ describe("searchDefect", () => {
       expect(calls.api.mock.calls.filter(([path]) => String(path).endsWith("/search"))).toHaveLength(2);
 
       busyMatches = 2;
-      const failing = expect(searchDefect([draft], "airtime purchase fails for Glo", () => {})).rejects.toThrow(/overloaded/);
+      const failing = searchDefect([draft], "airtime purchase fails for Glo", () => {});
       await vi.advanceTimersByTimeAsync(4_000);
-      await failing;
+      await expect(failing).resolves.toMatchObject({ searched: 0, cases: [], unreadError: expect.stringContaining("overloaded") });
     } finally {
       vi.useRealTimers();
     }

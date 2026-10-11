@@ -279,7 +279,8 @@ const askGenerateContent =
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts: [{ text: input }] }],
         generationConfig: {
-          responseFormat: { text: { mimeType: "application/json", schema } },
+          responseMimeType: "application/json",
+          responseJsonSchema: schema,
           thinkingConfig: { thinkingLevel: thinking },
         },
       },

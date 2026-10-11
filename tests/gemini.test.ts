@@ -134,7 +134,7 @@ describe("Gemini fallback model", () => {
     expect(url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent");
     const body = JSON.parse(String(init.body));
     expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" });
-    expect(body.generationConfig.responseFormat.text.mimeType).toBe("application/json");
+    expect(body.generationConfig).toMatchObject({ responseMimeType: "application/json", responseJsonSchema: { type: "object" } });
     expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe(KEY);
     expect(String(init.body)).not.toContain(KEY);
   });

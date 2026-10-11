@@ -144,9 +144,19 @@ export interface DefectSearch {
   searched: number;
   total: number;
   modules: number;
-  /** Why some case names could not be read; null when every one was. */
+  /** Why some case names could not be read (or the defect understood); null when every one was. */
   unreadError: string | null;
+  /** False when Gemini could not work out the feature, so `analysis` is only the description. */
+  understood: boolean;
+  /** Every case name was read and every likely case checked against its steps. */
+  complete: boolean;
   cases: DefectCase[];
+}
+
+/** Stands in for Gemini's reading when it could not answer, so the defect can still become a new test case. */
+function unreadAnalysis(description: string): DefectAnalysis {
+  const text = description.replace(/\s+/g, " ").trim();
+  return { title: clip(text, 120), area: "", feature: "", related: [], symptom: clip(text, 600), expected: "", severity: "medium", question: null };
 }
 
 export type SearchPhase =
@@ -208,7 +218,8 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * their names, by context rather than shared words; the app reads their steps from Spira, and Gemini
  * checks each against its steps, naming the failing step and quoting the case. A handful of requests
  * per search; the server falls back to other models, and a request is asked once more only when every model
- * was busy. Read-only.
+ * was busy. When Gemini still cannot answer, the search ends without cases and says why (`unreadError`), so
+ * the defect can be added as a new test case instead. Read-only.
  */
 export async function searchDefect(
   drafts: Draft[],
@@ -226,12 +237,16 @@ export async function searchDefect(
   onPhase({ stage: "understanding", modules });
   const outline = new Map<string, Set<string>>();
   for (const t of targets) outline.set(t.module, (outline.get(t.module) ?? new Set()).add(t.testSetName));
-  const analysis = await understand(
-    description,
-    [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })),
-  ).catch((err: unknown) => {
-    throw new Error(`Working out the feature: ${errorMessage(err)}`);
-  });
+  let analysis: DefectAnalysis;
+  try {
+    analysis = await understand(
+      description,
+      [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })),
+    );
+  } catch (err) {
+    const unread = { description, analysis: unreadAnalysis(description), searched: 0, total: targets.length, modules, understood: false, complete: false };
+    return { ...unread, unreadError: `Working out the feature: ${errorMessage(err)}`, cases: [] };
+  }
   const reading = { feature: analysis.feature, related: analysis.related, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected };
 
   // Only a very large search is narrowed first, by the wording of the feature as Gemini read it.
@@ -260,12 +275,15 @@ export async function searchDefect(
     }
   });
   const answered = parts.flatMap((p) => (p.candidates ? [p.candidates] : []));
-  if (answered.length === 0) throw new Error(`Matching cases to "${analysis.feature || analysis.area}": ${errorMessage(parts[0].error)}`);
   const searched = parts.reduce((n, p) => n + (p.candidates ? p.size : 0), 0);
   const failedPart = parts.find((p) => !p.candidates);
-  const unreadError = failedPart ? errorMessage(failedPart.error) : null;
+  const unreadError = !failedPart
+    ? null
+    : answered.length === 0
+      ? `Matching cases to "${analysis.feature || analysis.area}": ${errorMessage(failedPart.error)}`
+      : errorMessage(failedPart.error);
   const candidates = mergeCandidates(answered, MAX_DEFECT_CHECKS);
-  const result = { description, analysis, searched, total: entries.length, modules, unreadError };
+  const result = { description, analysis, searched, total: entries.length, modules, unreadError, understood: true, complete: !failedPart };
 
   const byKey = new Map(entries.map((e) => [e.key, e.target]));
   const picked = candidates.flatMap((candidate) => {
@@ -299,23 +317,20 @@ export async function searchDefect(
 
   const gate = limiter(DEFECT_VERIFY_PARALLEL);
   const checks: Promise<void>[] = [];
-  let failedChecks = 0;
-  let sentChecks = 0;
-  let lastError: unknown = null;
+  /** Cases whose steps could not be read or checked: offered as possibly affected, for a person to judge. */
+  let unverified = 0;
   let pending: VerifiedCase[] = [];
   const send = () => {
     if (pending.length === 0) return;
     const batch = pending;
     pending = [];
-    sentChecks += 1;
     checks.push(
       gate(async () => {
         try {
           const out = await askGemini<{ matches: DefectMatch[] }>("/api/ai/defect/verify", { description, analysis: reading, cases: batch });
           for (const m of out.matches) matches.set(m.key, m);
         } catch (err) {
-          lastError = err;
-          failedChecks += 1;
+          unverified += batch.length;
           for (const c of batch) matches.set(c.key, unchecked(c.key, `Gemini could not check its steps (${errorMessage(err)}); check it yourself.`));
         } finally {
           checked += batch.length;
@@ -346,6 +361,7 @@ export async function searchDefect(
     } catch (err) {
       loaded.set(key, { target, candidate, steps: [] });
       matches.set(key, unchecked(key, `Its steps could not be read from Spira (${errorMessage(err)}); check it yourself.`));
+      unverified += 1;
       checked += 1;
     } finally {
       read += 1;
@@ -354,8 +370,7 @@ export async function searchDefect(
   });
   send();
   await Promise.all(checks);
-  if (sentChecks > 0 && failedChecks === sentChecks) throw lastError;
-  return { ...result, cases: collect() };
+  return { ...result, complete: result.complete && unverified === 0, cases: collect() };
 }
 
 /** Runs at most `size` tasks at once; a finished task hands its slot straight to the next waiting one. */

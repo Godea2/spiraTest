@@ -388,9 +388,10 @@ function Finder({
     } finally {
       setPhase(null);
     }
-    // No existing case fails ("might be affected" ones are unconfirmed): the defect needs a test case of its own
-    // to be failed against, and with the option on its confirmation opens as soon as it is drafted.
-    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result, autoNewCase ? run : null);
+    // No existing case fails ("might be affected" ones are unconfirmed), or Gemini could not finish: the defect
+    // gets a test case of its own to be failed against. With the option on, its confirmation opens as soon as
+    // it is drafted, but only after a complete search, so a case Gemini could not check is not overlooked.
+    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result, autoNewCase && result.complete ? run : null);
   }
 
   async function draftNewCase(from: DefectSearch, confirmFor: number | null = null) {
@@ -596,30 +597,37 @@ function Finder({
 
         {search && (
           <div className="flex flex-col gap-4">
-            <div className="rounded-xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
-              <p className="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-zinc-400">Gemini reads this as</p>
-              <p className="mt-1">
-                <span className="font-medium">{search.analysis.feature || search.analysis.area || "Unknown feature"}</span>
-                {search.analysis.symptom && <> · {search.analysis.symptom}</>}
-              </p>
-              {search.analysis.expected && <p className="mt-0.5 text-slate-600 dark:text-zinc-400">Expected: {search.analysis.expected}</p>}
-              {search.analysis.related.length > 0 && (
-                <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500 dark:text-zinc-400">
-                  <span>Also matched as</span>
-                  {search.analysis.related.map((r) => <Badge key={r}>{r}</Badge>)}
+            {search.understood && (
+              <div className="rounded-xl border border-slate-200 px-4 py-3 text-sm dark:border-white/10">
+                <p className="text-xs font-medium tracking-wide text-slate-500 uppercase dark:text-zinc-400">Gemini reads this as</p>
+                <p className="mt-1">
+                  <span className="font-medium">{search.analysis.feature || search.analysis.area || "Unknown feature"}</span>
+                  {search.analysis.symptom && <> · {search.analysis.symptom}</>}
                 </p>
-              )}
-              <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
-                Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
-                {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
-                {timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}. Suggested severity: {search.analysis.severity}.
-              </p>
-            </div>
-            {search.unreadError && (
-              <Notice tone="warning" title={`${plural(search.total - search.searched, "case name")} could not be read`} action={<Button size="sm" icon={RefreshCw} onClick={() => void find()}>Search again</Button>}>
-                Gemini did not answer for part of the cases ({search.unreadError}), so a case there may be missing. Search again to read every case.
-              </Notice>
+                {search.analysis.expected && <p className="mt-0.5 text-slate-600 dark:text-zinc-400">Expected: {search.analysis.expected}</p>}
+                {search.analysis.related.length > 0 && (
+                  <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500 dark:text-zinc-400">
+                    <span>Also matched as</span>
+                    {search.analysis.related.map((r) => <Badge key={r}>{r}</Badge>)}
+                  </p>
+                )}
+                <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
+                  Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
+                  {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
+                  {timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}. Suggested severity: {search.analysis.severity}.
+                </p>
+              </div>
             )}
+            {search.unreadError &&
+              (search.searched === 0 ? (
+                <Notice tone="warning" title="Gemini could not finish the search" action={<Button size="sm" icon={RefreshCw} disabled={searching || !!job} onClick={() => void find()}>Search again</Button>}>
+                  {search.unreadError} The existing cases were not matched, so search again in a moment, or add the defect as a new test case below and fail it.
+                </Notice>
+              ) : (
+                <Notice tone="warning" title={`${plural(search.total - search.searched, "case name")} could not be read`} action={<Button size="sm" icon={RefreshCw} disabled={searching || !!job} onClick={() => void find()}>Search again</Button>}>
+                  Gemini did not answer for part of the cases ({search.unreadError}), so a case there may be missing. Search again to read every case.
+                </Notice>
+              ))}
             {search.analysis.question && (
               <Notice tone="warning" title="To sharpen the search">
                 {search.analysis.question} Add the answer to the description and search again.
@@ -632,7 +640,7 @@ function Finder({
             )}
 
             {search.cases.length === 0 ? (
-              searching ? null : (
+              searching || search.searched === 0 ? null : (
                 <p className="py-2 text-center text-sm text-slate-500">
                   No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
                   {drafts.length < allModules ? " Include more modules above and search again, or add" : " Add"} it as a new test case below, so it can be failed and reported.
