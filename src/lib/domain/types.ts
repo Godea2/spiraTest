@@ -206,6 +206,10 @@ export interface Draft {
 /** A step as executed: its text from Spira and what the tester found. Labels are "3", or "3.2" inside a linked test case. */
 export interface ExecutedStep {
   label: string;
+  /** Spira's test step ID, used to match the step in the run Spira creates. */
+  testStepId?: number | null;
+  /** Set when the step calls a test case whose steps were not loaded. */
+  linkedTestCaseId?: number | null;
   description: string;
   expectedResult: string;
   status: StepStatus | null;
@@ -374,6 +378,7 @@ export interface SpiraTestSetSummary {
 
 /** One step of a test case, as plain text. A step that calls another test case carries that case's steps. */
 export interface TestCaseStep {
+  testStepId: number | null;
   position: number;
   description: string;
   expectedResult: string;

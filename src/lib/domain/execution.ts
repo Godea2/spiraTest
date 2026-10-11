@@ -107,6 +107,8 @@ export function progressStatus(progress: ExecutionProgress | undefined, steps: R
 export function executedSteps(progress: ExecutionProgress | undefined, steps: RunnableStep[]): ExecutedStep[] {
   return steps.map(({ label, step }) => ({
     label,
+    testStepId: step.testStepId,
+    linkedTestCaseId: step.linkedTestCaseId,
     description: step.description || (step.linkedTestCaseId ? `Calls TC${step.linkedTestCaseId}` : ""),
     expectedResult: step.expectedResult,
     status: progress?.steps[label]?.status ?? null,
@@ -167,6 +169,77 @@ export function runReport(input: {
     if (s.actualResult.trim()) lines.push(`  Actual: ${s.actualResult.trim().replace(/\n/g, "\n          ")}`);
   }
   return { message: `${label}${by}: ${summary}`.slice(0, 255), details: lines.join("\n").slice(0, 100_000) };
+}
+
+/** One step of the manual run Spira creates for a test case, with linked cases already expanded. */
+export interface RunStepSlot {
+  testStepId: number | null;
+  /** The test case the step belongs to: the executed case, or a case it calls. */
+  testCaseId: number | null;
+}
+
+export interface FilledRunStep {
+  status: StepStatus | null;
+  actualResult: string;
+}
+
+/** Marks a manual run as made by this app; undo only deletes manual runs carrying it. */
+export function runSignature(runner: string): string {
+  return `with ${runner}.`;
+}
+
+/** Comment and tester, added to the actual result of the step that decided the run. */
+export function runNote(input: { runner: string; tester: string; comment: string }): string {
+  return [
+    input.comment.trim() ? `Comment: ${input.comment.trim()}` : null,
+    `Executed by ${input.tester.trim() || "an unnamed tester"} ${runSignature(input.runner)}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The tester's marks laid onto the steps of Spira's run. Steps are matched by test step ID (in order,
+ * so a case called twice matches twice); steps of a called case that was not loaded here take the
+ * status of the call; failing that, steps are matched by position when the counts agree. A Passed
+ * result without step marks passes every step; any other result without step marks goes on the first
+ * step. Returns null when the steps in Spira do not give the same result, so nothing is saved.
+ */
+export function fillRunSteps(slots: RunStepSlot[], result: ExecutionStatus, steps: ExecutedStep[], note: string): FilledRunStep[] | null {
+  if (slots.length === 0) return null;
+  let filled: FilledRunStep[];
+  if (steps.length === 0) {
+    filled = slots.map((_, i) => ({ status: result === "passed" || i === 0 ? result : null, actualResult: "" }));
+  } else {
+    const byStep = new Map<number, ExecutedStep[]>();
+    const byCall = new Map<number, ExecutedStep>();
+    for (const step of steps) {
+      if (step.linkedTestCaseId) byCall.set(step.linkedTestCaseId, step);
+      else if (step.testStepId) byStep.set(step.testStepId, [...(byStep.get(step.testStepId) ?? []), step]);
+    }
+    const used = new Set<ExecutedStep>();
+    const matched: Array<ExecutedStep | null> = slots.map((slot) => {
+      const next = slot.testStepId ? byStep.get(slot.testStepId)?.shift() : undefined;
+      if (next) return next;
+      return slot.testCaseId ? (byCall.get(slot.testCaseId) ?? null) : null;
+    });
+    if (matched.some((m) => !m) && slots.length === steps.length) {
+      matched.forEach((m, i) => {
+        if (!m) matched[i] = steps[i];
+      });
+    }
+    filled = matched.map((m) => {
+      if (!m) return { status: result === "passed" ? "passed" : null, actualResult: "" };
+      const first = !used.has(m);
+      used.add(m);
+      return { status: m.status, actualResult: first ? m.actualResult.trim() : "" };
+    });
+  }
+  if (caseStatus(filled.map((f) => f.status)) !== result) return null;
+  const decisive = result === "passed" ? filled.length - 1 : filled.findIndex((f) => f.status === result);
+  const target = filled[decisive];
+  target.actualResult = [target.actualResult, note].filter(Boolean).join("\n\n");
+  return filled;
 }
 
 export interface ExecutionCounts {

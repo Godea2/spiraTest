@@ -5,13 +5,17 @@ import {
   currentStatus,
   executionCards,
   executionCounts,
+  fillRunSteps,
   invalidResult,
   runnableSteps,
+  runNote,
   runReport,
+  runSignature,
 } from "@/lib/domain/execution";
 import type { Card, Draft, ExecutedStep, TestCaseStep } from "@/lib/domain/types";
 
 const step = (description: string, linked: TestCaseStep[] = [], linkedTestCaseId: number | null = null): TestCaseStep => ({
+  testStepId: null,
   position: 1,
   description,
   expectedResult: "",
@@ -22,8 +26,9 @@ const step = (description: string, linked: TestCaseStep[] = [], linkedTestCaseId
   linkedSteps: linked,
 });
 
-const executed = (label: string, status: ExecutedStep["status"], actualResult = ""): ExecutedStep => ({
+const executed = (label: string, status: ExecutedStep["status"], actualResult = "", testStepId: number | null = null): ExecutedStep => ({
   label,
+  testStepId,
   description: `Step ${label}`,
   expectedResult: "",
   status,
@@ -106,6 +111,53 @@ describe("run report", () => {
     const report = runReport({ runner: "R", tester: "", module: "M", draftName: "D", status: "passed", comment: "", steps: [] });
     expect(report.message).toBe("Passed: whole case");
     expect(report.details).toContain("without step results");
+  });
+});
+
+describe("manual run steps", () => {
+  const slots = (...ids: Array<[number, number]>) => ids.map(([testStepId, testCaseId]) => ({ testStepId, testCaseId }));
+  const note = "Executed by Ada with R.";
+
+  it("lays the marks onto Spira's steps by step ID and notes the deciding step", () => {
+    const filled = fillRunSteps(slots([11, 1], [12, 1], [13, 1]), "failed", [
+      executed("1", "passed", "", 11),
+      executed("2", "failed", "Spinner never stops", 12),
+      executed("3", null, "", 13),
+    ], note);
+    expect(filled?.map((f) => f.status)).toEqual(["passed", "failed", null]);
+    expect(filled?.[1].actualResult).toBe(`Spinner never stops\n\n${note}`);
+    expect(filled?.[0].actualResult).toBe("");
+  });
+
+  it("passes every step for a quick Pass and notes the last one", () => {
+    const filled = fillRunSteps(slots([11, 1], [12, 1]), "passed", [], note);
+    expect(filled?.map((f) => f.status)).toEqual(["passed", "passed"]);
+    expect(filled?.[1].actualResult).toBe(note);
+  });
+
+  it("gives the steps of a call that was not loaded here the call's status", () => {
+    const call: ExecutedStep = { ...executed("2", "passed", "", 20), linkedTestCaseId: 77 };
+    const filled = fillRunSteps(slots([11, 1], [71, 77], [72, 77]), "passed", [executed("1", "passed", "", 11), call], note);
+    expect(filled?.map((f) => f.status)).toEqual(["passed", "passed", "passed"]);
+  });
+
+  it("matches a step that appears twice once per occurrence", () => {
+    const filled = fillRunSteps(slots([71, 77], [71, 77]), "failed", [executed("1.1", "passed", "", 71), executed("2.1", "failed", "x", 71)], note);
+    expect(filled?.map((f) => f.status)).toEqual(["passed", "failed"]);
+  });
+
+  it("refuses to save when Spira's steps would give a different result", () => {
+    expect(fillRunSteps(slots([11, 1], [99, 1], [98, 1]), "failed", [executed("1", "passed", "", 11), executed("2", "failed", "x", 12)], note)).toBeNull();
+    expect(fillRunSteps([], "passed", [], note)).toBeNull();
+  });
+
+  it("falls back to position when step IDs are missing and the counts agree", () => {
+    const filled = fillRunSteps(slots([11, 1], [12, 1]), "blocked", [executed("1", "passed"), executed("2", "blocked", "No data")], note);
+    expect(filled?.map((f) => f.status)).toEqual(["passed", "blocked"]);
+  });
+
+  it("signs the note so undo can tell the run is ours", () => {
+    expect(runNote({ runner: "R", tester: "", comment: " Flaky " })).toBe(`Comment: Flaky\nExecuted by an unnamed tester ${runSignature("R")}`);
   });
 });
 

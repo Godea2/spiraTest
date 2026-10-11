@@ -1,7 +1,7 @@
 import "server-only";
 import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
 import { allCards, diffMembership, effectiveColumn, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
-import { invalidResult, runReport } from "@/lib/domain/execution";
+import { fillRunSteps, invalidResult, runNote, runReport } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
   ApplyAction,
@@ -21,6 +21,7 @@ import type {
 } from "@/lib/domain/types";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
 import {
+  createManualRunShell,
   deleteRecordedTestRun,
   EXECUTION_STATUS,
   getMembership,
@@ -29,6 +30,7 @@ import {
   recordTestRun,
   removeFromTestSet,
   RUNNER_NAME,
+  saveManualRun,
   SpiraError,
   type SpiraSetCase,
 } from "./spira";
@@ -332,7 +334,9 @@ export async function readExecutionStatus(input: { projectId: number; testSetIds
 }
 
 /**
- * Records a test run for each executed case, with the tester's step results in the run's details.
+ * Records a manual test run for each executed case, with the tester's status and actual result on
+ * each step, as Spira's own execution screen would. A case Spira gives no steps is recorded as an
+ * automated run with the report in its details.
  * Only In Scope cases of a verified board can be recorded, and the test set is re-read first so a
  * case is only recorded while it is still in the set and still the same test case. A case can be
  * executed again: Spira keeps every run and shows the latest result.
@@ -386,8 +390,24 @@ export async function recordExecutions(input: {
     const current = cases.get(c.testSetTestCaseId);
     if (!current) return result(c, "skipped", "No longer in this test set in Spira.");
     if (current.testCaseId !== c.testCaseId) return result(c, "failed", `This membership now points at test case ${current.testCaseId}. Recompare first.`);
-    const report = runReport({ runner: RUNNER_NAME, tester: input.tester, module: ctx.module, draftName: input.draftName, status: c.status, comment: c.comment, steps: c.steps });
     try {
+      const shell = await createManualRunShell(ctx.projectId, c.testCaseId, releaseId);
+      if (shell.steps.length > 0) {
+        const note = runNote({ runner: RUNNER_NAME, tester: input.tester, comment: c.comment });
+        const filled = fillRunSteps(shell.steps, c.status, c.steps, note);
+        if (!filled) {
+          return result(c, "failed", "The steps of this test case changed in Spira. Open it with Run and mark the steps again.");
+        }
+        const testRunId = await saveManualRun(ctx.projectId, shell, {
+          testSetId: batch.testSetId,
+          testSetTestCaseId: c.testSetTestCaseId,
+          releaseId,
+          executionStatusId: EXECUTION_STATUS[c.status],
+          steps: filled.map((f) => ({ executionStatusId: f.status ? EXECUTION_STATUS[f.status] : EXECUTION_STATUS.notRun, actualResult: f.actualResult })),
+        });
+        return result(c, "recorded", null, testRunId);
+      }
+      const report = runReport({ runner: RUNNER_NAME, tester: input.tester, module: ctx.module, draftName: input.draftName, status: c.status, comment: c.comment, steps: c.steps });
       const testRunId = await recordTestRun(ctx.projectId, {
         testCaseId: c.testCaseId,
         testSetId: batch.testSetId,

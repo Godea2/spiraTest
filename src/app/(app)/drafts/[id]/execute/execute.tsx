@@ -388,7 +388,7 @@ export function Execute({ id }: { id: string }) {
         }
       >
         <p>
-          Each selected case gets a Passed test run in Spira for the case as a whole, without step results{tester.trim() ? `, recorded as tested by ${tester.trim()}` : ""}.
+          Each selected case gets a Passed test run in Spira with every step marked Passed{tester.trim() ? `, recorded as tested by ${tester.trim()}` : ""}.
           Only do this for cases that were actually tested. Each run can be undone from the case.
         </p>
       </Dialog>

@@ -165,6 +165,8 @@ export const executionStatusRequestSchema = z.object({
 
 const executedStepSchema = z.object({
   label: z.string().max(20),
+  testStepId: id.nullish(),
+  linkedTestCaseId: id.nullish(),
   description: z.string().max(4_000),
   expectedResult: z.string().max(4_000),
   status: z.enum(STEP_STATUSES).nullable(),

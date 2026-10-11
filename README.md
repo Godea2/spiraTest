@@ -37,10 +37,10 @@ Use a dedicated Spira service account with access to the project and permission 
 | Live apply | `GET …/test-case-mapping`, then `DELETE projects/{p}/test-sets/{t}/test-cases/{test_set_test_case_id}` per case |
 | Verify | `GET …/test-case-mapping` |
 | Record results | `GET …/test-sets/{t}` and `…/test-cases` (current status), then `POST projects/{p}/test-runs/record` per Blocked or Passed case |
-| Undo sign-off | `GET projects/{p}/test-runs/{id}/automated` (checks the runner name and test case), then `DELETE projects/{p}/test-runs/{id}` |
+| Undo sign-off | `GET projects/{p}/test-runs/{id}` and `…/automated` (checks the test case and runner name), then `DELETE projects/{p}/test-runs/{id}` |
 | Execution status | `GET …/test-case-mapping` and `…/test-cases` per test set; read only |
-| Record execution | `GET …/test-sets/{t}` and `…/test-cases`, then `POST projects/{p}/test-runs/record` per executed case |
-| Undo an execution result | Same as Undo sign-off, for one run |
+| Record execution | `GET …/test-sets/{t}` and `…/test-cases`, then per executed case `POST projects/{p}/test-runs/create` (an unsaved run with Spira's steps) and `PUT projects/{p}/test-runs` to save it with the step results; `POST …/test-runs/record` when Spira gives the case no steps |
+| Undo an execution result | `GET projects/{p}/test-runs/{id}` (checks the test case), then `…/manual` (checks the app's signature in a step) or `…/automated` (checks the runner name), then `DELETE projects/{p}/test-runs/{id}` |
 
 Live apply removes a test case from a test set; the test case itself is never deleted. Before each batch the server re-reads the test set and only removes memberships that still point at the reviewed test case. Reads are retried on temporary errors; removals and recorded results are never retried automatically, so a failed case is retried only when you choose to.
 
@@ -53,10 +53,10 @@ Once a live apply is verified (Spira matches the reviewed board), the draft move
 From **Completed**, **Run execution** lists the draft's In Scope cases with their latest result, read from Spira when the page opens (and on **Check Spira again**), so results recorded by others show up too. Filter by result, search, and see how many are executed.
 
 - **Run** opens a case step by step: its steps come from Spira (steps of linked test cases are listed in place), and each step is marked Passed, Failed, Blocked, Caution or N/A, with the actual result for anything that did not pass. Keys P, F, B, C and N mark the current step; Ctrl+Enter saves and opens the next case. The case result follows from the steps: the first Failed, Blocked or Caution step decides it, so a tester can stop at a failure. Marks are kept in the draft until saved.
-- **Pass** records a Passed result for the whole case in one click, with an Undo in the notification. Select several cases to mark them Passed together, after a confirmation.
+- **Pass** records a Passed result with every step passed in one click, with an Undo in the notification. Select several cases to mark them Passed together, after a confirmation.
 - A result that is not Passed needs the actual result on that step, or a comment.
 
-Saving records an automated test run in Spira against the draft's release (or the test set's release), with the tester's name, the result and a step-by-step report in the run's details. The server only records In Scope cases of a verified board, and re-reads the test set first, so a case that left the test set or changed is not recorded. A case can be executed again; Spira keeps every run and shows the latest. Runs recorded here are listed on the case and can be undone, which deletes only runs this app recorded.
+Saving records a manual test run in Spira against the draft's release (or the test set's release), the same kind of run Spira's own execution screen saves: each step has its status and actual result, and steps not reached stay Not Run. The comment and the tester's name are added to the actual result of the step that decided the result (the last step for a pass). Spira lays out the run's steps itself; the marks are matched to them by test step, and if Spira's steps would give a different result (the test case changed since it was opened), nothing is saved and the case asks to be marked again. A case with no steps in Spira is recorded as an automated run with the report in its details. The server only records In Scope cases of a verified board, and re-reads the test set first, so a case that left the test set or changed is not recorded. A case can be executed again; Spira keeps every run and shows the latest. Runs recorded here are listed on the case and can be undone, which deletes only runs this app recorded.
 
 ### Blocked cases and sign-off
 

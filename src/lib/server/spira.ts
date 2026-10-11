@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES } from "@/lib/domain/execution";
+import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, runSignature, type RunStepSlot } from "@/lib/domain/execution";
 import { richText } from "@/lib/domain/text";
 import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
 
@@ -141,12 +141,12 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
  * errors. Writes are never retried automatically: a lost response could hide a change
  * that already happened, so the caller re-reads membership instead.
  */
-async function call(method: "GET" | "SEARCH" | "POST" | "DELETE", path: string, what: string, body?: unknown): Promise<unknown> {
+async function call(method: "GET" | "SEARCH" | "POST" | "PUT" | "DELETE", path: string, what: string, body?: unknown): Promise<unknown> {
   const config = requireConfig();
   // SEARCH is Spira's read-only POST …/search with an empty filter list.
-  const write = method === "POST" || method === "DELETE";
+  const write = method === "POST" || method === "PUT" || method === "DELETE";
   const attempts = write ? 1 : READ_ATTEMPTS;
-  const payload = method === "SEARCH" ? "[]" : method === "POST" ? JSON.stringify(body ?? {}) : undefined;
+  const payload = method === "SEARCH" ? "[]" : method === "POST" || method === "PUT" ? JSON.stringify(body ?? {}) : undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const last = attempt === attempts - 1;
     let response: Response;
@@ -228,6 +228,14 @@ const automatedRunSchema = z.object({
   TestSetId: z.number().int().nullish(),
   RunnerName: z.string().nullish(),
 });
+const testRunSchema = z.object({ TestRunId: id, TestCaseId: id.nullish(), TestRunTypeId: z.number().int().nullish() });
+const runStepSchema = z
+  .object({ TestStepId: z.number().int().nullish(), TestCaseId: z.number().int().nullish(), ActualResult: z.string().nullish() })
+  .passthrough();
+const manualRunSchema = z
+  .object({ TestCaseId: id, ReleaseId: z.number().int().nullish(), TestRunSteps: z.array(runStepSchema).nullish() })
+  .passthrough();
+const TEST_RUN_TYPE = { manual: 1, automated: 2 } as const;
 
 const projectListSchema = z.array(z.object({ ProjectId: id, Name: z.string().nullish(), Active: z.boolean().nullish() }));
 const userSchema = z.object({ UserName: z.string().nullish(), FullName: z.string().nullish() });
@@ -352,15 +360,78 @@ export async function recordTestRun(projectId: number, run: TestRunRecord): Prom
   return raw.TestRunId;
 }
 
+/** Spira's step fields are rich text: escape the tester's text and keep its line breaks. */
+function textToHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\r?\n/g, "<br />");
+}
+
+/** A manual run Spira prepared for a test case and has not saved yet, with its steps. */
+export interface ManualRunShell {
+  raw: z.infer<typeof manualRunSchema>;
+  steps: RunStepSlot[];
+}
+
 /**
- * Deletes a test run, but only one this app recorded for the expected test case:
- * the run is read first and its runner name and test case are checked.
+ * Asks Spira for a manual run of one test case. Spira lays out the steps, including those of
+ * called test cases, exactly as its own execution screen does. Nothing is saved until
+ * saveManualRun.
+ */
+export async function createManualRunShell(projectId: number, testCaseId: number, releaseId: number | null): Promise<ManualRunShell> {
+  const what = `preparing a test run for test case ${testCaseId}`;
+  const query = releaseId ? `?release_id=${releaseId}` : "";
+  const runs = parse(z.array(manualRunSchema), await call("POST", `projects/${projectId}/test-runs/create${query}`, what, [testCaseId]), what);
+  const raw = runs.find((r) => r.TestCaseId === testCaseId);
+  if (!raw) throw new SpiraError(`Spira did not prepare a test run for test case ${testCaseId}.`, 502);
+  return { raw, steps: (raw.TestRunSteps ?? []).map((s) => ({ testStepId: s.TestStepId ?? null, testCaseId: s.TestCaseId ?? null })) };
+}
+
+/** Saves a prepared manual run with a status and actual result on each step. A write: never retried. */
+export async function saveManualRun(
+  projectId: number,
+  shell: ManualRunShell,
+  run: { testSetId: number; testSetTestCaseId: number; releaseId: number | null; executionStatusId: number; steps: Array<{ executionStatusId: number; actualResult: string }> },
+): Promise<number> {
+  const now = `/Date(${Date.now()})/`;
+  const what = `saving a test run for test case ${shell.raw.TestCaseId}`;
+  const body = {
+    ...shell.raw,
+    TestSetId: run.testSetId,
+    TestSetTestCaseId: run.testSetTestCaseId,
+    ReleaseId: run.releaseId ?? shell.raw.ReleaseId ?? null,
+    ExecutionStatusId: run.executionStatusId,
+    StartDate: now,
+    EndDate: now,
+    TestRunSteps: (shell.raw.TestRunSteps ?? []).map((step, i) => ({
+      ...step,
+      ExecutionStatusId: run.steps[i]?.executionStatusId ?? EXECUTION_STATUS.notRun,
+      ActualResult: run.steps[i]?.actualResult ? textToHtml(run.steps[i].actualResult) : null,
+    })),
+  };
+  const saved = parse(z.array(recordedRunSchema).min(1), await call("PUT", `projects/${projectId}/test-runs`, what, [body]), what);
+  return saved[0].TestRunId;
+}
+
+/**
+ * Deletes a test run, but only one this app recorded for the expected test case: the run is read
+ * first, and an automated run must carry this app's runner name, a manual run this app's signature.
  */
 export async function deleteRecordedTestRun(projectId: number, testRunId: number, testCaseId: number): Promise<void> {
   const what = `reading test run ${testRunId}`;
-  const run = parse(automatedRunSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/automated`, what), what);
-  if (run.RunnerName !== RUNNER_NAME || run.TestCaseId !== testCaseId) {
-    throw new SpiraError(`Test run ${testRunId} was not recorded by this app for TC${testCaseId}, so it was not deleted.`, 409);
+  const notOurs = () => new SpiraError(`Test run ${testRunId} was not recorded by this app for TC${testCaseId}, so it was not deleted.`, 409);
+  const run = parse(testRunSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}`, what), what);
+  if (run.TestCaseId !== testCaseId) throw notOurs();
+  if (run.TestRunTypeId === TEST_RUN_TYPE.manual) {
+    const manual = parse(manualRunSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/manual`, what), what);
+    const signature = runSignature(RUNNER_NAME);
+    if (!(manual.TestRunSteps ?? []).some((s) => s.ActualResult?.includes(signature))) throw notOurs();
+  } else {
+    const automated = parse(automatedRunSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/automated`, what), what);
+    if (automated.RunnerName !== RUNNER_NAME) throw notOurs();
   }
   await call("DELETE", `projects/${projectId}/test-runs/${testRunId}`, `deleting test run ${testRunId}`);
 }
@@ -389,6 +460,7 @@ const testCaseDetailSchema = z.object({
 
 const testStepSchema = z.array(
   z.object({
+    TestStepId: z.number().int().nullish(),
     Position: z.number().int().nullish(),
     Description: z.string().nullish(),
     ExpectedResult: z.string().nullish(),
@@ -421,6 +493,7 @@ export async function getTestCaseDetail(projectId: number, testCaseId: number): 
       budget -= 1;
       const linkedId = s.LinkedTestCaseId && s.LinkedTestCaseId > 0 ? s.LinkedTestCaseId : null;
       const step: TestCaseStep = {
+        testStepId: s.TestStepId ?? null,
         position: s.Position ?? index + 1,
         description: richText(s.Description),
         expectedResult: richText(s.ExpectedResult),
