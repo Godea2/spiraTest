@@ -13,8 +13,8 @@ import { formatDateTime } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
 import { isCompleted } from "@/lib/domain/board";
 import { currentStatus, executionCards, executionCounts, STATUS_LABEL } from "@/lib/domain/execution";
-import type { Card, Draft, ExecutionStatus } from "@/lib/domain/types";
-import { Runner, StatusChip, STATUS_STYLE } from "./runner";
+import { EXECUTION_STATUSES, type Card, type Draft, type ExecutionStatus } from "@/lib/domain/types";
+import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
 type Filter = "all" | "notRun" | "inProgress" | ExecutionStatus;
 
@@ -42,7 +42,7 @@ export function Execute({ id }: { id: string }) {
   const [queue, setQueue] = useState<{ keys: string[]; runsBefore: number } | null>(null);
   const [sync, setSync] = useState<{ checking: boolean; errors: string[] }>({ checking: false, errors: [] });
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [bulk, setBulk] = useState<{ status: ExecutionStatus; comment: string } | null>(null);
   const [bulkRunning, setBulkRunning] = useState(false);
   const checkedOnOpen = useRef(false);
 
@@ -151,8 +151,9 @@ export function Execute({ id }: { id: string }) {
     }
   }
 
-  async function bulkPass() {
-    setConfirmBulk(false);
+  /** Records one result, with one reason, for every selected case. */
+  async function bulkRecord(status: ExecutionStatus, comment: string) {
+    setBulk(null);
     setBulkRunning(true);
     const targets = visibleSelected;
     markBusy(targets.map((c) => c.key), true);
@@ -166,7 +167,7 @@ export function Execute({ id }: { id: string }) {
         const out = await recordResults(
           id,
           testSetId,
-          group.map((c) => ({ testCaseId: c.testCaseId, testSetTestCaseId: c.testSetTestCaseId, status: "passed" as const, comment: "", steps: [] })),
+          group.map((c) => ({ testCaseId: c.testCaseId, testSetTestCaseId: c.testSetTestCaseId, status, comment: comment.trim(), steps: [] })),
           tester.trim(),
         );
         latest = out.draft;
@@ -181,7 +182,7 @@ export function Execute({ id }: { id: string }) {
       setBulkRunning(false);
       setSelected(new Set());
     }
-    if (recorded) toast.success(`Recorded ${plural(recorded, "Passed result")} in Spira`);
+    if (recorded) toast.success(`Recorded ${plural(recorded, `${STATUS_LABEL[status]} result`)} in Spira`);
     if (problems.length) toast.error(`${plural(problems.length, "case")} not recorded: ${problems[0]}`);
   }
 
@@ -350,8 +351,8 @@ export function Execute({ id }: { id: string }) {
               {visibleSelected.length ? `Run ${visibleSelected.length} selected` : `Run all ${visible.length}`}
             </Button>
             {visibleSelected.length > 0 && (
-              <Button size="sm" icon={Check} onClick={() => setConfirmBulk(true)} busy={bulkRunning} disabled={bulkRunning}>
-                Mark {visibleSelected.length} Passed
+              <Button size="sm" icon={Check} onClick={() => setBulk({ status: "passed", comment: "" })} busy={bulkRunning} disabled={bulkRunning}>
+                Mark {visibleSelected.length} as…
               </Button>
             )}
           </div>
@@ -412,20 +413,47 @@ export function Execute({ id }: { id: string }) {
       />
 
       <Dialog
-        open={confirmBulk}
-        onClose={() => setConfirmBulk(false)}
-        title={`Record Passed for ${plural(visibleSelected.length, "case")}?`}
+        open={bulk !== null}
+        onClose={() => setBulk(null)}
+        title={`Record a result for ${plural(visibleSelected.length, "case")}`}
         footer={
-          <>
-            <Button onClick={() => setConfirmBulk(false)}>Cancel</Button>
-            <Button variant="primary" onClick={() => void bulkPass()}>Record Passed</Button>
-          </>
+          bulk && (
+            <>
+              <Button onClick={() => setBulk(null)}>Cancel</Button>
+              <Button
+                variant="primary"
+                disabled={bulk.status !== "passed" && !bulk.comment.trim()}
+                onClick={() => void bulkRecord(bulk.status, bulk.comment)}
+              >
+                Record {visibleSelected.length} {STATUS_LABEL[bulk.status]}
+              </Button>
+            </>
+          )
         }
       >
-        <p>
-          Each selected case gets a Passed test run in Spira with every step marked Passed{tester.trim() ? `, recorded as tested by ${tester.trim()}` : ""}.
-          Only do this for cases that were actually tested. Each run can be undone from the case.
-        </p>
+        {bulk && (
+          <div className="flex flex-col gap-4">
+            <StatusButtons options={EXECUTION_STATUSES} value={bulk.status} onPick={(s) => setBulk({ ...bulk, status: s as ExecutionStatus })} />
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">
+                {bulk.status === "passed" ? "Comment (optional)" : `Why ${STATUS_LABEL[bulk.status].toLowerCase()}? (required)`}
+              </span>
+              <textarea
+                className="input min-h-20"
+                value={bulk.comment}
+                maxLength={4000}
+                placeholder={bulk.status === "blocked" ? "For example: feature not deployed to this build" : bulk.status === "passed" ? "" : "What happened"}
+                onChange={(e) => setBulk({ ...bulk, comment: e.target.value })}
+              />
+            </label>
+            <p className="text-sm text-slate-600 dark:text-zinc-400">
+              {bulk.status === "passed"
+                ? "Each selected case gets a Passed test run in Spira with every step marked Passed"
+                : `Each selected case gets a ${STATUS_LABEL[bulk.status]} test run in Spira: the first step is marked ${STATUS_LABEL[bulk.status]} with this reason, and the other steps stay Not Run`}
+              {tester.trim() ? `, recorded as tested by ${tester.trim()}` : ""}. Only do this for cases that were actually tested; to record which step failed, use Run instead. Each run can be undone from the case.
+            </p>
+          </div>
+        )}
       </Dialog>
     </div>
   );

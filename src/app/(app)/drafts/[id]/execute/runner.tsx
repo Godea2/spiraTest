@@ -509,7 +509,7 @@ function Content({
   );
 }
 
-function StatusButtons({
+export function StatusButtons({
   options,
   value,
   onPick,
