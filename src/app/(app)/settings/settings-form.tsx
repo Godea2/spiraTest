@@ -34,6 +34,7 @@ interface FormState {
   moduleAliases: Record<string, string>;
   /** Comma-separated in the form; saved as a list. */
   keywords: string;
+  testSetKeywords: Array<{ testSetId: number; testSetName: string; keywords: string }>;
 }
 
 function toForm(s: AppSettings): FormState {
@@ -44,6 +45,7 @@ function toForm(s: AppSettings): FormState {
     mappings: s.mappings.map((m) => ({ ...m, testSetId: String(m.testSetId) })),
     moduleAliases: { ...s.moduleAliases },
     keywords: s.keywords.join(", "),
+    testSetKeywords: s.testSetKeywords.map((k) => ({ ...k, keywords: k.keywords.join(", ") })),
   };
 }
 
@@ -123,6 +125,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
   const projects = connection.status === "ok" ? connection.projects : [];
   const [releaseLookup, setReleaseLookup] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [keywordPickerOpen, setKeywordPickerOpen] = useState(false);
   const [form, setForm] = useState<FormState>(() => toForm(settings));
   const [initial, setInitial] = useState<string>(() => JSON.stringify(toForm(settings)));
   const releases = useReleases(spira?.configured === true, positiveInt(form.projectId) ? Number(form.projectId) : null);
@@ -226,6 +229,11 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
           Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
         ),
         keywords: parseKeywords(form.keywords),
+        testSetKeywords: form.testSetKeywords.map((k) => ({
+          testSetId: k.testSetId,
+          testSetName: k.testSetName,
+          keywords: parseKeywords(k.keywords),
+        })),
       };
       const saved = saveSettings(update);
       replace(saved);
@@ -347,10 +355,20 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
 
       <Section
         title="Not implemented yet"
-        description="Features that are not built. Each new draft starts with these keywords, and In Scope cases whose name, description or steps mention one move to Blocked. You can change them per draft on the board."
+        description="Features that are not built. In Scope cases whose name, description or steps mention one of these words move to Blocked. Each new draft copies the keywords for every test set and for the test sets it compares; you can change them per draft on the board."
+        actions={
+          <Button
+            size="sm"
+            onClick={() => setKeywordPickerOpen(true)}
+            disabled={!spira?.configured || !positiveInt(form.projectId)}
+            title={!positiveInt(form.projectId) ? "Choose a project first." : undefined}
+          >
+            Link a test set
+          </Button>
+        }
       >
         <Field
-          label="Keywords"
+          label="Every test set"
           error={errors.keywords ?? Object.entries(errors).find(([k]) => k.startsWith("keywords."))?.[1]}
           hint="Separate with commas, for example: nin, bvn, google. Whole words only, not case-sensitive."
         >
@@ -365,6 +383,46 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             />
           )}
         </Field>
+        {form.testSetKeywords.length > 0 && (
+          <div className="mt-5 flex flex-col gap-3">
+            <h3 className="text-sm font-medium">Only for one test set</h3>
+            {form.testSetKeywords.map((entry, index) => (
+              <div key={entry.testSetId} className="grid gap-2 sm:grid-cols-[minmax(0,16rem)_minmax(0,1fr)_auto] sm:items-start">
+                <div className="pt-2 text-sm">
+                  <span className="font-medium">{entry.testSetName || `Test set ${entry.testSetId}`}</span>
+                  <span className="ml-2 font-mono text-xs text-zinc-500">TX{entry.testSetId}</span>
+                </div>
+                <Field
+                  label={`Keywords for ${entry.testSetName || `test set ${entry.testSetId}`}`}
+                  hideLabel
+                  error={Object.entries(errors).find(([k]) => k.startsWith(`testSetKeywords.${index}.`))?.[1]}
+                >
+                  {(p) => (
+                    <input
+                      {...p}
+                      className="input"
+                      value={entry.keywords}
+                      maxLength={3000}
+                      placeholder="e.g. google sign in"
+                      onChange={(e) =>
+                        update({
+                          testSetKeywords: form.testSetKeywords.map((k) => (k.testSetId === entry.testSetId ? { ...k, keywords: e.target.value } : k)),
+                        })
+                      }
+                    />
+                  )}
+                </Field>
+                <Button
+                  variant="ghost"
+                  onClick={() => update({ testSetKeywords: form.testSetKeywords.filter((k) => k.testSetId !== entry.testSetId) })}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+            <p className="text-xs text-zinc-500">Test sets with no keywords are dropped when you save.</p>
+          </div>
+        )}
       </Section>
 
       <Section
@@ -538,7 +596,105 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
           onAdd={addTestSets}
         />
       )}
+      {keywordPickerOpen && (
+        <KeywordTestSetPicker
+          projectId={Number(form.projectId)}
+          releaseId={positiveInt(form.releaseId) ? Number(form.releaseId) : null}
+          linked={new Set(form.testSetKeywords.map((k) => k.testSetId))}
+          onClose={() => setKeywordPickerOpen(false)}
+          onLink={(t) => {
+            update({ testSetKeywords: [...form.testSetKeywords, { testSetId: t.testSetId, testSetName: t.name, keywords: "" }] });
+            setKeywordPickerOpen(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Picks one Spira test set to give its own not-implemented keywords. */
+function KeywordTestSetPicker({
+  projectId,
+  releaseId,
+  linked,
+  onClose,
+  onLink,
+}: {
+  projectId: number;
+  releaseId: number | null;
+  linked: Set<number>;
+  onClose: () => void;
+  onLink: (testSet: SpiraTestSetSummary) => void;
+}) {
+  const [releaseOnly, setReleaseOnly] = useState(releaseId !== null);
+  const filter = releaseOnly ? releaseId : null;
+  const [loaded, setLoaded] = useState<{ filter: number | null; testSets: SpiraTestSetSummary[] | null; error: string | null } | null>(null);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ testSets: SpiraTestSetSummary[] }>("/api/spira/test-sets", { method: "POST", body: { projectId, releaseId: filter } })
+      .then(({ testSets }) => {
+        if (!cancelled) setLoaded({ filter, testSets, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled) setLoaded({ filter, testSets: null, error: errorMessage(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, filter]);
+
+  const current = loaded && loaded.filter === filter ? loaded : null;
+  const term = search.trim().toLowerCase();
+  const visible = (current?.testSets ?? []).filter(
+    (t) => !term || t.name.toLowerCase().includes(term) || String(t.testSetId).includes(term),
+  );
+
+  return (
+    <Dialog open wide onClose={onClose} title="Link keywords to a test set" footer={<Button onClick={onClose}>Cancel</Button>}>
+      <div className="flex flex-col gap-4">
+        <p>Choose the Spira test set. Its keywords apply only to cases in that test set, on top of the keywords for every test set.</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <input
+            type="search"
+            className="input sm:max-w-xs"
+            placeholder="Filter by name or ID"
+            aria-label="Filter test sets"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {releaseId !== null && (
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="size-4 accent-brand-600" checked={releaseOnly} onChange={(e) => setReleaseOnly(e.target.checked)} />
+              Only test sets planned for release {releaseId}
+            </label>
+          )}
+        </div>
+        {!current ? (
+          <div className="flex items-center gap-2 text-zinc-500"><Spinner /> Reading test sets from Spira…</div>
+        ) : current.error ? (
+          <Notice tone="danger" title="Could not load test sets">{current.error}</Notice>
+        ) : visible.length === 0 ? (
+          <Notice tone="info">No test sets match.</Notice>
+        ) : (
+          <ul className="max-h-[55vh] divide-y divide-zinc-100 overflow-y-auto rounded-lg border border-zinc-200 text-sm dark:divide-zinc-800 dark:border-zinc-800">
+            {visible.map((t) => (
+              <li key={t.testSetId} className="flex items-center gap-3 px-3 py-2">
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">{t.name}</span>
+                  <span className="ml-2 font-mono text-xs text-zinc-500">TX{t.testSetId}</span>
+                  {t.releaseVersion && <span className="ml-2 text-xs text-zinc-500">{t.releaseVersion}</span>}
+                </span>
+                <Button size="sm" onClick={() => onLink(t)} disabled={linked.has(t.testSetId)}>
+                  {linked.has(t.testSetId) ? "Linked" : "Link"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

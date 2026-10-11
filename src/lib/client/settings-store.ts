@@ -16,6 +16,9 @@ export function loadSettings(): AppSettings {
     mappings: stored.mappings ?? defaults.mappings,
     moduleAliases: stored.moduleAliases ?? {},
     keywords: Array.isArray(stored.keywords) ? normalizeKeywords(stored.keywords.filter((k) => typeof k === "string")) : [],
+    testSetKeywords: Array.isArray(stored.testSetKeywords)
+      ? stored.testSetKeywords.filter((e) => typeof e?.testSetId === "number" && Array.isArray(e.keywords))
+      : [],
     updatedAt: stored.updatedAt ?? null,
   };
 }

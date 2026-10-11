@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { keywordListSchema, normalizeKeywords } from "./keywords";
+import { keywordListSchema, normalizeKeywords, testSetKeywordsSchema } from "./keywords";
 import { PLATFORMS, type AppSettings, type Platform } from "./types";
 
 /** Nothing is preset: the project, release and test sets all come from Spira via Settings. */
@@ -11,6 +11,7 @@ export function defaultSettings(): AppSettings {
     mappings: [],
     moduleAliases: {},
     keywords: [],
+    testSetKeywords: [],
     updatedAt: null,
   };
 }
@@ -48,6 +49,7 @@ export const settingsUpdateSchema = z.object({
     .max(500),
   moduleAliases: z.record(z.string(), z.string().trim().max(120)),
   keywords: keywordListSchema,
+  testSetKeywords: testSetKeywordsSchema,
 });
 
 export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
@@ -75,6 +77,13 @@ export function applySettingsUpdate(update: SettingsUpdate, now = new Date()): A
     }
     seen.add(mapping.testSetId);
   });
+  const linked = new Set<number>();
+  value.testSetKeywords.forEach((entry, index) => {
+    if (linked.has(entry.testSetId)) {
+      errors[`testSetKeywords.${index}.testSetId`] = `Test set ${entry.testSetId} has more than one keyword list.`;
+    }
+    linked.add(entry.testSetId);
+  });
   if (Object.keys(errors).length > 0) throw new SettingsValidationError(errors);
 
   const modules = new Set(value.mappings.map((m) => m.module));
@@ -90,6 +99,9 @@ export function applySettingsUpdate(update: SettingsUpdate, now = new Date()): A
     mappings: value.mappings,
     moduleAliases,
     keywords: normalizeKeywords(value.keywords),
+    testSetKeywords: value.testSetKeywords
+      .map((entry) => ({ ...entry, keywords: normalizeKeywords(entry.keywords) }))
+      .filter((entry) => entry.keywords.length > 0),
     updatedAt: now.toISOString(),
   };
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { effectiveColumn, moveCards } from "./board";
-import type { Card, CardChange, Column } from "./types";
+import type { Card, CardChange, Column, Draft } from "./types";
 
 export const MAX_KEYWORDS = 50;
 export const MAX_STEP_TEXT = 6000;
@@ -60,16 +60,36 @@ export function cardSearchText(card: Card, stepText: Record<string, string> | un
   return [card.name, card.description ?? "", stepText?.[String(card.testCaseId)] ?? ""].join("\n");
 }
 
-/** Matching keywords for every card that mentions at least one. */
+/** Keywords for every test set, plus extra keywords for single test sets keyed by test set ID. */
+export interface KeywordScope {
+  all: string[];
+  byTestSet?: Record<string, string[]>;
+}
+
+export function draftKeywords(draft: Pick<Draft, "keywords" | "testSetKeywords">): KeywordScope {
+  return { all: draft.keywords ?? [], byTestSet: draft.testSetKeywords ?? {} };
+}
+
+export function keywordsFor(scope: KeywordScope, testSetId: number): string[] {
+  return normalizeKeywords([...scope.all, ...(scope.byTestSet?.[String(testSetId)] ?? [])]);
+}
+
+export function hasKeywords(scope: KeywordScope): boolean {
+  return scope.all.length > 0 || Object.values(scope.byTestSet ?? {}).some((list) => list.length > 0);
+}
+
+/** Matching keywords for every card that mentions at least one of the keywords for its test set. */
 export function keywordHits(
   cards: Card[],
-  keywords: string[],
+  scope: KeywordScope,
   stepText: Record<string, string> | undefined,
 ): Map<string, string[]> {
   const hits = new Map<string, string[]>();
-  if (keywords.length === 0) return hits;
+  if (!hasKeywords(scope)) return hits;
+  const perSet = new Map<number, string[]>();
   for (const card of cards) {
-    const found = matchKeywords(cardSearchText(card, stepText), keywords);
+    if (!perSet.has(card.testSetId)) perSet.set(card.testSetId, keywordsFor(scope, card.testSetId));
+    const found = matchKeywords(cardSearchText(card, stepText), perSet.get(card.testSetId)!);
     if (found.length) hits.set(card.key, found);
   }
   return hits;
@@ -79,12 +99,22 @@ export function keywordHits(
 export function blockMatchingCards(
   cards: Card[],
   decisions: Record<string, Column>,
-  keywords: string[],
+  scope: KeywordScope,
   stepText: Record<string, string> | undefined,
-): { decisions: Record<string, Column>; changes: CardChange[] } {
-  const hits = keywordHits(cards, keywords, stepText);
+): { decisions: Record<string, Column>; changes: CardChange[]; hits: Map<string, string[]> } {
+  const hits = keywordHits(cards, scope, stepText);
   const keys = cards
     .filter((card) => hits.has(card.key) && effectiveColumn(card, decisions) === "inScope")
     .map((card) => card.key);
-  return moveCards(cards, decisions, keys, "blocked");
+  return { ...moveCards(cards, decisions, keys, "blocked"), hits };
 }
+
+export const testSetKeywordsSchema = z
+  .array(
+    z.object({
+      testSetId: z.number().int().positive(),
+      testSetName: z.string().trim().max(200),
+      keywords: keywordListSchema,
+    }),
+  )
+  .max(200);

@@ -49,8 +49,15 @@ describe("keyword matching", () => {
 
   it("searches the name, description and step text", () => {
     const cards = [card(1, "inScope", "Login with BVN"), card(2, "inScope", "Plain", "Uses <b>NIN</b> check"), card(3, "inScope"), card(4, "inScope")];
-    const hits = keywordHits(cards, ["bvn", "nin", "google"], { "1003": "Step: tap Google button" });
+    const hits = keywordHits(cards, { all: ["bvn", "nin", "google"] }, { "1003": "Step: tap Google button" });
     expect(Object.fromEntries(hits)).toEqual({ "1:1": ["bvn"], "1:2": ["nin"], "1:3": ["google"] });
+  });
+
+  it("applies a test set's own keywords only to that test set, on top of the shared ones", () => {
+    const android = card(1, "inScope", "Google sign in with BVN");
+    const ios = { ...card(2, "inScope", "Google sign in with BVN"), key: "2:2", testSetId: 2 };
+    const hits = keywordHits([android, ios], { all: ["bvn"], byTestSet: { "2": ["google"] } }, {});
+    expect(Object.fromEntries(hits)).toEqual({ "1:1": ["bvn"], "2:2": ["bvn", "google"] });
   });
 });
 
@@ -58,14 +65,21 @@ describe("moving matching cards to Blocked", () => {
   const cards = [card(1, "inScope", "BVN check"), card(2, "outOfScope", "BVN legacy"), card(3, "needsReview", "BVN maybe"), card(4, "inScope", "Other")];
 
   it("moves only In Scope cards and records each change", () => {
-    const { decisions, changes } = blockMatchingCards(cards, {}, ["bvn"], {});
+    const { decisions, changes } = blockMatchingCards(cards, {}, { all: ["bvn"] }, {});
     expect(changes).toEqual([{ key: "1:1", from: "inScope", to: "blocked" }]);
     expect(decisions).toEqual({ "1:1": "blocked" });
   });
 
   it("does nothing without keywords or when already blocked", () => {
-    expect(blockMatchingCards(cards, {}, [], {}).changes).toEqual([]);
-    expect(blockMatchingCards(cards, { "1:1": "blocked" }, ["bvn"], {}).changes).toEqual([]);
+    expect(blockMatchingCards(cards, {}, { all: [] }, {}).changes).toEqual([]);
+    expect(blockMatchingCards(cards, { "1:1": "blocked" }, { all: ["bvn"] }, {}).changes).toEqual([]);
+  });
+
+  it("uses keywords linked to the card's test set", () => {
+    expect(blockMatchingCards(cards, {}, { all: [], byTestSet: { "1": ["other"] } }, {}).changes).toEqual([
+      { key: "1:4", from: "inScope", to: "blocked" },
+    ]);
+    expect(blockMatchingCards(cards, {}, { all: [], byTestSet: { "9": ["other"] } }, {}).changes).toEqual([]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { effectiveColumn } from "@/lib/domain/board";
-import { keywordHits } from "@/lib/domain/keywords";
+import { draftKeywords, keywordHits } from "@/lib/domain/keywords";
 import { COLUMN_LABELS, COLUMNS, type ActivityEntry, type Column, type Draft } from "@/lib/domain/types";
 
 function safeFileName(name: string): string {
@@ -11,7 +11,7 @@ export async function exportBoard(draft: Draft): Promise<void> {
   const wb = XLSX.utils.book_new();
   const setName = new Map(draft.testSets.map((s) => [s.testSetId, s.testSetName]));
   const cardByKey = new Map(draft.testSets.flatMap((s) => s.cards).map((c) => [c.key, c]));
-  const hits = keywordHits([...cardByKey.values()], draft.keywords ?? [], draft.stepText);
+  const hits = keywordHits([...cardByKey.values()], draftKeywords(draft), draft.stepText);
 
   const sheetFor = (column: Column) =>
     draft.testSets.flatMap((set) =>

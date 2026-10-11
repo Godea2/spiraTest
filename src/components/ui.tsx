@@ -186,18 +186,21 @@ export function Field({
   error,
   children,
   className,
+  hideLabel,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   error?: string | null;
   children: (props: { id: string; "aria-invalid"?: boolean; "aria-describedby"?: string }) => ReactNode;
   className?: string;
+  /** Keeps the label for screen readers only. */
+  hideLabel?: boolean;
 }) {
   const id = useId();
   const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined;
   return (
     <div className={clsx("flex flex-col gap-1.5", className)}>
-      <label htmlFor={id} className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+      <label htmlFor={id} className={clsx("text-sm font-medium text-zinc-800 dark:text-zinc-200", hideLabel && "sr-only")}>
         {label}
       </label>
       {children({ id, "aria-invalid": error ? true : undefined, "aria-describedby": describedBy })}

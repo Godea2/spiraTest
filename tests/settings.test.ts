@@ -20,6 +20,7 @@ function update(overrides: Partial<SettingsUpdate> = {}) {
     mappings: [mapping(10, "Onboarding")],
     moduleAliases: {},
     keywords: [],
+    testSetKeywords: [],
     ...overrides,
   });
 }
@@ -57,9 +58,26 @@ describe("settings saved in the browser", () => {
     expect(loadSettings().keywords).toEqual(["NIN", "bvn", "Google Sign-in"]);
   });
 
-  it("loads older settings without keywords as an empty list", () => {
+  it("loads older settings without keywords as empty lists", () => {
     writeItem("settings", { projectId: 5, releaseId: 6, releaseLabel: "", mappings: [], moduleAliases: {} });
-    expect(loadSettings().keywords).toEqual([]);
+    expect(loadSettings()).toMatchObject({ keywords: [], testSetKeywords: [] });
+  });
+
+  it("saves keywords linked to a test set and drops test sets left without keywords", () => {
+    update({
+      testSetKeywords: [
+        { testSetId: 125, testSetName: "Onboarding-IOS", keywords: ["Google", "google"] },
+        { testSetId: 124, testSetName: "Onboarding-Android", keywords: [] },
+      ],
+    });
+    expect(loadSettings().testSetKeywords).toEqual([{ testSetId: 125, testSetName: "Onboarding-IOS", keywords: ["Google"] }]);
+  });
+
+  it("rejects two keyword lists for the same test set", () => {
+    const entry = { testSetId: 125, testSetName: "Onboarding-IOS", keywords: ["google"] };
+    expect(() => update({ testSetKeywords: [entry, entry] })).toThrow(
+      expect.objectContaining({ fieldErrors: { "testSetKeywords.1.testSetId": expect.stringContaining("more than one") } }),
+    );
   });
 
   it("drops aliases for modules that no longer have mappings", () => {

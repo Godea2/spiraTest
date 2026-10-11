@@ -39,7 +39,7 @@ import {
   type Draft,
   type HistoryEntry,
 } from "@/lib/domain/types";
-import { blockMatchingCards, keywordHits } from "@/lib/domain/keywords";
+import { blockMatchingCards, draftKeywords, keywordHits } from "@/lib/domain/keywords";
 import { BoardCard, BoardColumn } from "./board-parts";
 import { KeywordPanel } from "./keyword-panel";
 
@@ -100,7 +100,10 @@ export function Board({ id }: { id: string }) {
   const setNames = useMemo(() => new Map(draft?.testSets.map((s) => [s.testSetId, s.testSetName]) ?? []), [draft]);
   const counts = useMemo(() => countColumns(cards, decisions), [cards, decisions]);
   const missingCount = draft?.testSets.reduce((n, s) => n + s.missingFromSpira.length, 0) ?? 0;
-  const hits = useMemo(() => keywordHits(cards, draft?.keywords ?? [], draft?.stepText), [cards, draft?.keywords, draft?.stepText]);
+  const hits = useMemo(
+    () => keywordHits(cards, { all: draft?.keywords ?? [], byTestSet: draft?.testSetKeywords }, draft?.stepText),
+    [cards, draft?.keywords, draft?.testSetKeywords, draft?.stepText],
+  );
   const pendingBlocks = useMemo(
     () => cards.filter((c) => hits.has(c.key) && effectiveColumn(c, decisions) === "inScope").length,
     [cards, hits, decisions],
@@ -260,13 +263,13 @@ export function Board({ id }: { id: string }) {
 
   const blockMatches = useCallback(
     (d: Draft) => {
-      const keywords = d.keywords ?? [];
-      const { decisions: next, changes } = blockMatchingCards(cards, stateRef.current.decisions, keywords, d.stepText);
+      const { decisions: next, changes, hits: found } = blockMatchingCards(cards, stateRef.current.decisions, draftKeywords(d), d.stepText);
       if (changes.length === 0) return 0;
+      const mentioned = [...new Set(changes.flatMap((c) => found.get(c.key) ?? []))];
       setDecisions(next);
       setUndoStack((s) => [...s, changes]);
       setRedoStack([]);
-      record(`${describeMove(changes, "blocked")}: they mention ${keywords.join(", ")}`, changes);
+      record(`${describeMove(changes, "blocked")}: they mention ${mentioned.join(", ")}`, changes);
       return changes.length;
     },
     [cards, record],
