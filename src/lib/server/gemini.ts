@@ -18,11 +18,14 @@ import {
 export const GEMINI_ENV = { apiKey: "GEMINI_API_KEY", model: "GEMINI_MODEL", fallbackModel: "GEMINI_FALLBACK_MODEL" } as const;
 
 const DEFAULT_MODEL = "gemini-3.8-flash";
-/** Asked as well when the main model is slow or fails; "off" turns it off. */
-const DEFAULT_FALLBACK_MODEL = "gemini-3.6-flash";
+/**
+ * Asked in turn when the model before is slow or fails (comma-separated; "off" turns them off). Each model has
+ * its own capacity, so a demand spike on one does not stop a search.
+ */
+const DEFAULT_FALLBACK_MODELS = "gemini-3.6-flash,gemini-3.5-flash-lite";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const ENDPOINT = `${API_BASE}/interactions`;
-/** A request still unanswered after this long is also sent to the fallback model; the first good answer is used. */
+/** A request still unanswered after this long is also sent to the next model; the first good answer is used. */
 const DEFAULT_HEDGE_MS = 20_000;
 /**
  * The route may run for 60s; Gemini gets at most this long in total, so a slow answer ends in a clear
@@ -46,12 +49,11 @@ export class AiError extends Error {
 
 function readConfig() {
   const model = process.env[GEMINI_ENV.model]?.trim() || DEFAULT_MODEL;
-  const fallback = process.env[GEMINI_ENV.fallbackModel]?.trim() || DEFAULT_FALLBACK_MODEL;
-  return {
-    apiKey: process.env[GEMINI_ENV.apiKey]?.trim() ?? "",
-    model,
-    fallbackModel: /^(off|none)$/i.test(fallback) || fallback === model ? null : fallback,
-  };
+  const fallback = process.env[GEMINI_ENV.fallbackModel]?.trim() || DEFAULT_FALLBACK_MODELS;
+  const fallbackModels = /^(off|none)$/i.test(fallback)
+    ? []
+    : [...new Set(fallback.split(",").map((m) => m.trim()))].filter((m) => m && m !== model).slice(0, 3);
+  return { apiKey: process.env[GEMINI_ENV.apiKey]?.trim() ?? "", model, fallbackModels };
 }
 
 /** Configuration summary for the UI. Never includes the API key. */
@@ -165,16 +167,23 @@ async function describeFailure(response: Response, model: string): Promise<AiErr
     return new AiError(`Gemini refused the API key (HTTP ${response.status}). Check ${GEMINI_ENV.apiKey} on the server.`);
   }
   if (response.status === 404) {
-    return new AiError(`Gemini does not know the model "${model}". Set ${GEMINI_ENV.model} to an available model.`);
+    return new AiError(`Gemini does not know the model "${model}". Set ${GEMINI_ENV.model} or ${GEMINI_ENV.fallbackModel} to available models.`);
   }
   if (response.status === 429) return new AiError("Gemini is rate limiting requests. Wait a minute and try again.", 503);
+  if (RETRYABLE_STATUS.has(response.status)) return new AiError(`Gemini returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`, 503);
   return new AiError(`Gemini returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`);
 }
 
+/** Busy or too slow: worth asking another model, or again in a minute. */
+const isBusy = (error: unknown) => error instanceof AiError && (error.status === 503 || error.status === 504);
+
 const tooSlow = () => new AiError("Gemini is answering slowly right now. Try again in a moment.", 504);
 
-/** Posts to Gemini, retrying a busy answer until the shared deadline; stops at once when `signal` aborts. */
-async function post(url: string, body: unknown, apiKey: string, model: string, deadline: number, signal: AbortSignal): Promise<unknown> {
+/**
+ * Posts to Gemini; stops at once when `signal` aborts. A busy answer is retried until the shared deadline only
+ * when `retryBusy` (the last model to ask); otherwise it fails at once so the next model is asked.
+ */
+async function post(url: string, body: unknown, apiKey: string, model: string, deadline: number, signal: AbortSignal, retryBusy: boolean): Promise<unknown> {
   for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
     const remaining = deadline - Date.now();
     if (remaining < MIN_ATTEMPT_MS || signal.aborted) throw tooSlow();
@@ -199,7 +208,7 @@ async function post(url: string, body: unknown, apiKey: string, model: string, d
       if (timedOut) throw tooSlow();
       throw new AiError("Could not reach Gemini from the server.");
     }
-    if (RETRYABLE_STATUS.has(response.status) && !last && deadline - Date.now() > MIN_ATTEMPT_MS + 2_000) {
+    if (retryBusy && RETRYABLE_STATUS.has(response.status) && !last && deadline - Date.now() > MIN_ATTEMPT_MS + 2_000) {
       await sleep(800 * 2 ** attempt);
       continue;
     }
@@ -214,12 +223,12 @@ async function post(url: string, body: unknown, apiKey: string, model: string, d
 }
 
 type Thinking = "low" | "medium" | "high";
-type Ask = (model: string, system: string, input: string, schema: object, thinking: Thinking, deadline: number, signal: AbortSignal) => Promise<string>;
+type Ask = (model: string, system: string, input: string, schema: object, thinking: Thinking, deadline: number, signal: AbortSignal, retryBusy: boolean) => Promise<string>;
 
 /** The main model, through the Interactions API. */
 const askInteractions =
   (apiKey: string): Ask =>
-  async (model, system, input, schema, thinking, deadline, signal) => {
+  async (model, system, input, schema, thinking, deadline, signal, retryBusy) => {
     const raw = await post(
       ENDPOINT,
       {
@@ -234,6 +243,7 @@ const askInteractions =
       model,
       deadline,
       signal,
+      retryBusy,
     );
     const interaction = interactionSchema.safeParse(raw);
     const text = interaction.success
@@ -262,7 +272,7 @@ const generateContentSchema = z.object({
 /** The fallback model, through generateContent: another model on another endpoint, so one busy service does not stop a search. */
 const askGenerateContent =
   (apiKey: string): Ask =>
-  async (model, system, input, schema, thinking, deadline, signal) => {
+  async (model, system, input, schema, thinking, deadline, signal, retryBusy) => {
     const raw = await post(
       `${API_BASE}/models/${encodeURIComponent(model)}:generateContent`,
       {
@@ -277,6 +287,7 @@ const askGenerateContent =
       model,
       deadline,
       signal,
+      retryBusy,
     );
     const answer = generateContentSchema.safeParse(raw);
     const candidate = answer.success ? answer.data.candidates?.[0] : undefined;
@@ -289,53 +300,61 @@ const askGenerateContent =
   };
 
 /**
- * Runs `main`, and `backup` too once `main` fails or has not answered after `hedgeMs`; resolves with the
- * first success and cancels the other. When both fail, the main model's error is reported.
+ * Runs the tasks in turn: the next one starts when the last one started fails or has not answered after
+ * `hedgeMs`, while the earlier ones keep going. Resolves with the first success and cancels the rest; when
+ * every task fails, rejects with all their errors, in task order.
  */
-export function hedge<T>(main: (signal: AbortSignal) => Promise<T>, backup: ((signal: AbortSignal) => Promise<T>) | null, hedgeMs: number): Promise<T> {
+export function hedge<T>(tasks: Array<(signal: AbortSignal) => Promise<T>>, hedgeMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const controllers: AbortController[] = [];
-    let running = 0;
+    const errors: unknown[] = new Array(tasks.length);
+    let started = 0;
+    let failed = 0;
     let done = false;
-    let backupStarted = false;
-    let mainError: unknown = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => {
       done = true;
       clearTimeout(timer);
       for (const c of controllers) c.abort();
     };
-    const run = (task: (signal: AbortSignal) => Promise<T>, isMain: boolean) => {
+    const startNext = () => {
+      clearTimeout(timer);
+      if (done || started >= tasks.length) return;
+      const index = started++;
       const controller = new AbortController();
       controllers.push(controller);
-      running += 1;
-      task(controller.signal).then(
+      if (started < tasks.length) timer = setTimeout(startNext, hedgeMs);
+      tasks[index](controller.signal).then(
         (value) => {
           if (done) return;
           finish();
           resolve(value);
         },
         (error: unknown) => {
-          running -= 1;
+          errors[index] = error;
+          failed += 1;
           if (done) return;
-          if (isMain) mainError = error;
-          if (isMain && startBackup()) return;
-          if (running === 0) {
+          if (failed === tasks.length) {
             finish();
-            reject(mainError ?? error);
+            reject(errors);
+          } else if (index === started - 1) {
+            startNext();
           }
         },
       );
     };
-    const startBackup = () => {
-      if (!backup || backupStarted || done) return false;
-      backupStarted = true;
-      run(backup, false);
-      return true;
-    };
-    run(main, true);
-    if (backup) timer = setTimeout(startBackup, hedgeMs);
+    startNext();
   });
+}
+
+/** One error for a request every model failed: why each failed, or that all were busy. */
+function chainFailure(models: string[], errors: unknown[]): unknown {
+  if (errors.length === 1) return errors[0];
+  if (errors.every(isBusy)) {
+    return new AiError(`Gemini is overloaded right now: ${models.join(", ")} were all busy or too slow to answer. Try again in a minute.`, 503);
+  }
+  const reasons = models.map((m, i) => `${m}: ${errors[i] instanceof Error ? (errors[i] as Error).message : "failed"}`);
+  return new AiError(`No Gemini model answered. ${reasons.join(" · ")}`, errors.some(isBusy) ? 503 : 502);
 }
 
 /**
@@ -347,16 +366,17 @@ async function generate<T extends z.ZodType>(
   request: { task: string; system: string; input: unknown; schema: object; thinking: Thinking; hedgeMs?: number },
   parser: T,
 ): Promise<z.infer<T>> {
-  const { apiKey, model, fallbackModel } = readConfig();
+  const { apiKey, model, fallbackModels } = readConfig();
   if (!apiKey) throw new AiError(`AI review is not configured. Set ${GEMINI_ENV.apiKey} on the server.`, 503);
   const input = JSON.stringify(request.input);
   const deadline = Date.now() + BUDGET_MS;
   const started = Date.now();
+  const models = [model, ...fallbackModels];
 
-  const leg = (ask: Ask, legModel: string) => async (signal: AbortSignal) => {
+  const leg = (ask: Ask, legModel: string, retryBusy: boolean) => async (signal: AbortSignal) => {
     let outcome = "failed";
     try {
-      const text = await ask(legModel, request.system, input, request.schema, request.thinking, deadline, signal);
+      const text = await ask(legModel, request.system, input, request.schema, request.thinking, deadline, signal, retryBusy);
       let parsed: z.infer<T>;
       try {
         parsed = parser.parse(JSON.parse(text));
@@ -365,19 +385,21 @@ async function generate<T extends z.ZodType>(
       }
       outcome = "ok";
       return parsed;
+    } catch (error) {
+      if (error instanceof AiError) outcome = `failed (${error.message.slice(0, 160)})`;
+      throw error;
     } finally {
-      // Timings only, never content: shows in the server logs which step and model is slow.
+      // Timings and Gemini's error only, never content: shows in the server logs which step and model is slow.
       if (!signal.aborted || outcome === "ok") {
         console.info(`gemini ${request.task} [${legModel}]: ${outcome} after ${Date.now() - started} ms, ${input.length} chars in, thinking ${request.thinking}`);
       }
     }
   };
 
-  return hedge(
-    leg(askInteractions(apiKey), model),
-    fallbackModel ? leg(askGenerateContent(apiKey), fallbackModel) : null,
-    request.hedgeMs ?? DEFAULT_HEDGE_MS,
-  );
+  const legs = models.map((m, i) => leg(i === 0 ? askInteractions(apiKey) : askGenerateContent(apiKey), m, i === models.length - 1));
+  return hedge(legs, request.hedgeMs ?? DEFAULT_HEDGE_MS).catch((errors: unknown[]) => {
+    throw chainFailure(models, errors);
+  });
 }
 
 /** Asks Gemini whether each case really depends on a not-implemented feature, judging from its test scenario only. */

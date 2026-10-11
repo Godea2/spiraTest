@@ -98,9 +98,9 @@ describe("Gemini blocked review", () => {
       throw new DOMException("The operation timed out.", "TimeoutError");
     });
     vi.stubGlobal("fetch", fetchMock);
-    await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/answering slowly/);
-    // Once on the main model and once on the fallback, neither retried after a timeout.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/overloaded right now: gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite/);
+    // Once on each model, none retried after a timeout.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects answers in the wrong shape", async () => {
@@ -155,6 +155,38 @@ describe("Gemini fallback model", () => {
     await expect(pending).resolves.toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(mainSignal?.aborted).toBe(true);
+  });
+
+  it("moves on at once when a model is overloaded, and only the last model retries a busy answer", async () => {
+    const busy = () => new Response(JSON.stringify({ error: { message: "This model is currently experiencing high demand." } }), { status: 503 });
+    const fetchMock = vi.fn(async (url: string | URL) => (String(url).includes("gemini-3.5-flash-lite") ? contentReply({ verdicts }) : busy()));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reviewBlockedCases("Onboarding", cases)).resolves.toHaveLength(1);
+    expect(fetchMock.mock.calls.map(([url]) => String(url).split("/").pop())).toEqual([
+      "interactions",
+      "gemini-3.6-flash:generateContent",
+      "gemini-3.5-flash-lite:generateContent",
+    ]);
+  });
+
+  it("says every model was busy when none could answer, after retrying the last one", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { message: "high demand" } }), { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = reviewBlockedCases("Onboarding", cases);
+    const outcome = expect(pending).rejects.toThrow(/overloaded right now: gemini-3.8-flash, gemini-3.6-flash, gemini-3.5-flash-lite were all busy/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await outcome;
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("names each model's reason when they fail for different reasons", async () => {
+    vi.stubEnv("GEMINI_FALLBACK_MODEL", "gemini-typo");
+    const fetchMock = vi.fn(async (url: string | URL) =>
+      String(url).endsWith("/interactions") ? new Response(JSON.stringify({ error: { message: "high demand" } }), { status: 503 }) : new Response("{}", { status: 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/^No Gemini model answered\. gemini-3\.8-flash: Gemini returned HTTP 503: high demand · gemini-typo: Gemini does not know the model "gemini-typo"/);
   });
 
   it("can be turned off, and then reports the main model's error", async () => {

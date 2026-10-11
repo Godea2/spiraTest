@@ -15,10 +15,12 @@ import {
   logIncident,
   newCaseTargets,
   raiseDefect,
+  readAutoNewCase,
   readIncidentOptions,
   readLeftOutModules,
   readNewCaseStatus,
   searchDefect,
+  storeAutoNewCase,
   storeLeftOutModules,
   storeNewCaseStatus,
   suggestNewCase,
@@ -336,7 +338,11 @@ function Finder({
   const [outcomeNotes, setOutcomeNotes] = useState<string[]>([]);
   const [retrying, setRetrying] = useState(false);
   const [newCase, setNewCase] = useState<NewCaseForm | null>(null);
+  const [autoNewCase, setAutoNewCase] = useState(readAutoNewCase);
   const stopRef = useRef(false);
+  /** Changes with each search and each edit of the new case: the confirmation opens on its own only for the case as drafted. */
+  const searchRun = useRef(0);
+  const optionsLoad = useRef<Promise<void> | null>(null);
   const { settings } = useSettings();
   const caseTargets = useMemo(() => newCaseTargets(drafts), [drafts]);
 
@@ -347,6 +353,7 @@ function Finder({
   async function find() {
     const description = text.trim();
     if (description.length < 10 || !aiOn || drafts.length === 0) return;
+    const run = ++searchRun.current;
     setError(null);
     setOutcome(null);
     setShowUnaffected(false);
@@ -369,7 +376,7 @@ function Finder({
       if (!shown) {
         shown = true;
         setTitle(s.analysis.title);
-        void loadOptions(s.analysis.severity);
+        optionsLoad.current = loadOptions(s.analysis.severity);
       }
     };
     try {
@@ -381,22 +388,29 @@ function Finder({
     } finally {
       setPhase(null);
     }
-    // No existing case fails: the defect needs a test case of its own to be failed against.
-    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result);
+    // No existing case fails ("might be affected" ones are unconfirmed): the defect needs a test case of its own
+    // to be failed against, and with the option on its confirmation opens as soon as it is drafted.
+    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result, autoNewCase ? run : null);
   }
 
-  async function draftNewCase(from: DefectSearch) {
+  async function draftNewCase(from: DefectSearch, confirmFor: number | null = null) {
     const statusId = readNewCaseStatus(projectId);
     setNewCase({ status: "drafting", error: null, reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
     try {
       const s = await suggestNewCase(drafts, from);
-      setNewCase({
+      const form: NewCaseForm = {
         status: "ready",
         error: null,
         reason: s.reason,
         testCase: { name: s.name, description: s.description, steps: s.steps, failingStep: s.failingStep, statusId },
         targets: s.testSetKeys.filter((k) => caseTargets.some((t) => t.key === k)),
-      });
+      };
+      setNewCase(form);
+      if (confirmFor !== null && form.targets.length > 0 && !newCaseProblem(form)) {
+        // Spira's lists first, so the incident fields and the case's status are settled before confirming.
+        await optionsLoad.current;
+        if (searchRun.current === confirmFor) setConfirming(true);
+      }
     } catch (err) {
       setNewCase({ status: "error", error: errorMessage(err), reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
     }
@@ -551,6 +565,15 @@ function Finder({
               {search ? "Search again" : "Find affected cases"}
             </Button>
           </div>
+          <Switch
+            checked={autoNewCase}
+            onChange={(on) => {
+              setAutoNewCase(on);
+              storeAutoNewCase(on);
+            }}
+            label="When no case fails, add the defect as a new test case"
+            description="Gemini drafts the test case, and the confirmation to create it in Spira, add it to its test sets and fail it opens on its own. Nothing is written until you confirm; cases that only might be affected are left for you to check."
+          />
         </div>
 
         {phase && (
@@ -666,9 +689,15 @@ function Finder({
                 statuses={options?.testCaseStatuses ?? (optionsError ? [] : undefined)}
                 onStatusChosen={(statusId) => storeNewCaseStatus(projectId, statusId)}
                 disabled={!!job}
-                onChange={(change) => setNewCase((f) => (f ? { ...f, ...change } : f))}
+                onChange={(change) => {
+                  searchRun.current += 1;
+                  setNewCase((f) => (f ? { ...f, ...change } : f));
+                }}
                 onRetry={() => void draftNewCase(search)}
-                onRemove={() => setNewCase(null)}
+                onRemove={() => {
+                  searchRun.current += 1;
+                  setNewCase(null);
+                }}
               />
             ) : searching ? null : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
@@ -753,7 +782,7 @@ function Finder({
         footer={
           <>
             <Button onClick={() => setConfirming(false)}>Cancel</Button>
-            <Button variant="danger" icon={Bug} onClick={() => void raise()}>
+            <Button variant="danger" icon={Bug} disabled={!canRaise} onClick={() => void raise()}>
               {newTargets.length ? "Create & fail" : "Fail"} {total}
               {logInSpira ? " & log defect" : ""}
             </Button>

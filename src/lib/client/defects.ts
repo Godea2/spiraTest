@@ -43,7 +43,7 @@ import type {
   TestSetMapping,
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
-import { api, errorMessage } from "./api";
+import { api, ApiError, errorMessage } from "./api";
 import { allDrafts, getDraft, mutateDraft } from "./drafts";
 import { recordResults, refreshExecution } from "./execution";
 import { readItem, writeItem } from "./storage";
@@ -158,6 +158,20 @@ export type SearchPhase =
 /** Test cases read from Spira at once while their steps are checked. */
 const STEP_READS_PARALLEL = 6;
 
+/** Wait before asking again when every Gemini model was busy: demand spikes usually pass within seconds. */
+const BUSY_RETRY_MS = 4_000;
+
+/** A Gemini request through the server, asked once more after a short wait when every model was busy. */
+async function askGemini<T>(path: string, body: unknown): Promise<T> {
+  try {
+    return await api<T>(path, { method: "POST", body });
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 503) throw error;
+    await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS));
+    return api<T>(path, { method: "POST", body });
+  }
+}
+
 /** How each description was read, for this session: searching again (other modules, a retry) skips that step. */
 const understood = new Map<string, Promise<DefectAnalysis>>();
 
@@ -165,7 +179,7 @@ function understand(description: string, modules: Array<{ module: string; testSe
   const key = JSON.stringify([description.trim().toLowerCase(), modules]);
   const known = understood.get(key);
   if (known) return known;
-  const request = api<DefectAnalysis>("/api/ai/defect/understand", { method: "POST", body: { description, modules } });
+  const request = askGemini<DefectAnalysis>("/api/ai/defect/understand", { description, modules });
   understood.set(key, request);
   request.catch(() => understood.delete(key));
   return request;
@@ -193,7 +207,8 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * the defect is in and what else that feature is called, then picks the cases about that feature from
  * their names, by context rather than shared words; the app reads their steps from Spira, and Gemini
  * checks each against its steps, naming the failing step and quoting the case. A handful of requests
- * per search, none retried here (the server already retries a busy answer). Read-only.
+ * per search; the server falls back to other models, and a request is asked once more only when every model
+ * was busy. Read-only.
  */
 export async function searchDefect(
   drafts: Draft[],
@@ -228,19 +243,16 @@ export async function searchDefect(
   onPhase({ stage: "reading", total: entries.length, modules, feature: analysis.feature || analysis.area });
   const parts = await inPool(chunk(entries, MAX_DEFECT_SEARCH_CASES), 2, async (part) => {
     try {
-      const out = await api<{ candidates: DefectCandidate[] }>("/api/ai/defect/search", {
-        method: "POST",
-        body: {
-          description,
-          analysis: reading,
-          cases: part.map(({ target }) => ({
-            key: target.card.key,
-            module: target.module,
-            testSetName: target.testSetName,
-            scenario: clip(target.card.name, MAX_SCENARIO_TEXT),
-            ...(target.card.workbookScenario ? { workbookScenario: clip(target.card.workbookScenario, MAX_SCENARIO_TEXT) } : {}),
-          })),
-        },
+      const out = await askGemini<{ candidates: DefectCandidate[] }>("/api/ai/defect/search", {
+        description,
+        analysis: reading,
+        cases: part.map(({ target }) => ({
+          key: target.card.key,
+          module: target.module,
+          testSetName: target.testSetName,
+          scenario: clip(target.card.name, MAX_SCENARIO_TEXT),
+          ...(target.card.workbookScenario ? { workbookScenario: clip(target.card.workbookScenario, MAX_SCENARIO_TEXT) } : {}),
+        })),
       });
       return { size: part.length, candidates: out.candidates, error: null as unknown };
     } catch (error) {
@@ -299,10 +311,7 @@ export async function searchDefect(
     checks.push(
       gate(async () => {
         try {
-          const out = await api<{ matches: DefectMatch[] }>("/api/ai/defect/verify", {
-            method: "POST",
-            body: { description, analysis: reading, cases: batch },
-          });
+          const out = await askGemini<{ matches: DefectMatch[] }>("/api/ai/defect/verify", { description, analysis: reading, cases: batch });
           for (const m of out.matches) matches.set(m.key, m);
         } catch (err) {
           lastError = err;
@@ -369,6 +378,20 @@ function limiter(size: number) {
 // ---- new test case ----------------------------------------------------------
 
 const NEW_CASE_STATUS_KEY = "defect-new-case-status";
+const AUTO_NEW_CASE_KEY = "defect-auto-new-case";
+
+/** Whether a search where no case fails goes straight on to the new test case's confirmation; on unless turned off. */
+export function readAutoNewCase(): boolean {
+  return readItem<unknown>(AUTO_NEW_CASE_KEY) !== false;
+}
+
+export function storeAutoNewCase(on: boolean): void {
+  try {
+    writeItem(AUTO_NEW_CASE_KEY, on);
+  } catch {
+    // Only a convenience: the choice still applies to this visit.
+  }
+}
 
 /** The test case status last chosen for a new defect case in this project; null for the project's default. */
 export function readNewCaseStatus(projectId: number): number | null {
@@ -426,13 +449,10 @@ export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch,
       return { key: t.key, module: t.module, testSetName: t.testSetName, platform: t.platform, examples };
     });
   if (testSets.length === 0) throw new Error("The chosen modules have no compared test sets.");
-  return api<NewDefectCaseSuggestion>("/api/ai/defect/new-case", {
-    method: "POST",
-    body: {
-      description: search.description,
-      analysis: { feature: search.analysis.feature, area: search.analysis.area, symptom: search.analysis.symptom, expected: search.analysis.expected },
-      testSets,
-    },
+  return askGemini<NewDefectCaseSuggestion>("/api/ai/defect/new-case", {
+    description: search.description,
+    analysis: { feature: search.analysis.feature, area: search.analysis.area, symptom: search.analysis.symptom, expected: search.analysis.expected },
+    testSets,
   });
 }
 

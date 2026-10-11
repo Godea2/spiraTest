@@ -108,4 +108,31 @@ describe("searchDefect", () => {
     });
     await expect(searchDefect([draft], "unable to login again, not getting otp", () => {})).rejects.toThrow(/answering slowly/);
   });
+
+  it("asks once more after a short wait when every Gemini model was busy, but not twice", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const { ApiError } = await import("@/lib/client/api");
+      let busyMatches = 1;
+      calls.api.mockImplementation(async (path: string, init: { body: { cases: Array<{ key: string }> } }) => {
+        if (path.endsWith("/understand")) return analysis;
+        if (path.endsWith("/search")) {
+          if (busyMatches-- > 0) throw new ApiError(503, "Gemini is overloaded right now.");
+          return { candidates: [{ key: "1:1", relevance: "high" }] };
+        }
+        return { matches: init.body.cases.map((c) => verdict(c.key, true)) };
+      });
+      const pending = searchDefect([draft], "airtime purchase fails for MTN", () => {});
+      await vi.advanceTimersByTimeAsync(4_000);
+      await expect(pending).resolves.toMatchObject({ cases: [{ match: { verdict: "fails" } }] });
+      expect(calls.api.mock.calls.filter(([path]) => String(path).endsWith("/search"))).toHaveLength(2);
+
+      busyMatches = 2;
+      const failing = expect(searchDefect([draft], "airtime purchase fails for Glo", () => {})).rejects.toThrow(/overloaded/);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await failing;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
