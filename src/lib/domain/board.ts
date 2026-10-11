@@ -9,7 +9,7 @@ import type {
   TestSetComparison,
 } from "./types";
 
-export const MAX_APPLY_BATCH = 25;
+export const MAX_APPLY_BATCH = 10;
 
 export function cardKey(testSetId: number, testSetTestCaseId: number): string {
   return `${testSetId}:${testSetTestCaseId}`;

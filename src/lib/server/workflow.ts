@@ -32,8 +32,12 @@ import {
 // Stateless: every request carries the board it acts on. Anything that decides what
 // may be removed is checked against the server's own signatures before it is used.
 
-/** Parallel Spira removals per batch; keeps a 25-case batch well inside the function time limit. */
-const REMOVE_CONCURRENCY = 5;
+/**
+ * Spira writes run one at a time: parallel removals from the same test set made Spira answer HTTP 400
+ * for a whole batch (some of which it had applied anyway). Batches are small enough to stay inside
+ * the function time limit when sent one by one.
+ */
+const WRITE_CONCURRENCY = 1;
 
 export interface TestSetRef {
   testSetId: number;
@@ -152,7 +156,8 @@ export async function applyBatch(input: {
     return { results: batch.actions.map((action) => result(action, "failed", error.message)) };
   }
 
-  const results = await inPool(batch.actions, REMOVE_CONCURRENCY, async (action): Promise<ApplyActionResult> => {
+  const writeFailed = new Set<number>();
+  const results = await inPool(batch.actions, WRITE_CONCURRENCY, async (action): Promise<ApplyActionResult> => {
     if (!batch.dryRun && alreadyRemoved.has(action.testSetTestCaseId)) {
       return result(action, "skipped", "Already removed in an earlier run.");
     }
@@ -167,9 +172,25 @@ export async function applyBatch(input: {
       return result(action, "removed");
     } catch (error) {
       if (!(error instanceof SpiraError)) throw error;
+      writeFailed.add(action.testSetTestCaseId);
       return result(action, "failed", error.message);
     }
   });
+
+  // Spira sometimes reports an error for a removal it did apply; count those as removed so the
+  // next membership check does not see them as changed in Spira.
+  if (writeFailed.size > 0) {
+    try {
+      const after = await getMembership(ctx.projectId, batch.testSetId);
+      for (const [i, r] of results.entries()) {
+        if (writeFailed.has(r.testSetTestCaseId) && !after.has(r.testSetTestCaseId)) {
+          results[i] = result(r, "removed", "Spira reported an error, but the case is no longer in the test set.");
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+    }
+  }
   return { results };
 }
 
@@ -252,7 +273,7 @@ export async function signOffBatch(input: {
   }
 
   const blocked = batch.status === "blocked";
-  const results = await inPool(batch.actions, REMOVE_CONCURRENCY, async (action): Promise<SignOffResult> => {
+  const results = await inPool(batch.actions, WRITE_CONCURRENCY, async (action): Promise<SignOffResult> => {
     const current = cases.get(action.testSetTestCaseId);
     if (!current) return result(action, "skipped", "No longer in this test set in Spira.");
     if (current.testCaseId !== action.testCaseId) {
@@ -295,7 +316,7 @@ export async function undoSignOff(input: {
   runs: { testRunId: number; testCaseId: number }[];
 }): Promise<{ results: { testRunId: number; ok: boolean; message: string | null }[] }> {
   const ctx = input.context;
-  const results = await inPool(input.runs, REMOVE_CONCURRENCY, async (run) => {
+  const results = await inPool(input.runs, WRITE_CONCURRENCY, async (run) => {
     try {
       await deleteRecordedTestRun(ctx.projectId, run.testRunId, run.testCaseId);
       return { testRunId: run.testRunId, ok: true, message: null };

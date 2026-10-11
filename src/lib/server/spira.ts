@@ -116,6 +116,13 @@ function retryDelay(response: Response | null, attempt: number): number {
   return 400 * 2 ** attempt;
 }
 
+/** Spira's service errors are HTML pages; keep the exception message, or the page text without markup. */
+export function htmlErrorText(html: string): string {
+  const text = richText(html.replace(/<head[\s\S]*?<\/head>/i, "")).replace(/\s+/g, " ").trim();
+  const exception = /exception message is '([\s\S]*?)'\.? *(See server logs|The exception stack trace)/i.exec(text);
+  return exception ? exception[1].trim() : text.replace(/ The exception stack trace is:[\s\S]*$/i, "");
+}
+
 async function describeFailure(response: Response, what: string): Promise<SpiraError> {
   if (response.status === 401 || response.status === 403) {
     return new SpiraError(
@@ -133,7 +140,7 @@ async function describeFailure(response: Response, what: string): Promise<SpiraE
     const body = JSON.parse(text) as { Message?: string; message?: string };
     detail = body.Message ?? body.message ?? text;
   } catch {
-    detail = text;
+    detail = /^<(\?xml|!doctype|html)/i.test(text) ? htmlErrorText(text) : text;
   }
   detail = detail.slice(0, 300);
   return new SpiraError(`Spira returned HTTP ${response.status} while ${what}${detail ? `: ${detail}` : "."}`, 502, response.status);
