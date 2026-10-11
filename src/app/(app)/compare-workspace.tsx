@@ -7,8 +7,9 @@ import type { WorkBook } from "xlsx";
 import { modulesFrom, useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { api, errorMessage } from "@/lib/client/api";
-import { createDraft } from "@/lib/client/drafts";
-import { compareTestSet } from "@/lib/client/workflow";
+import { createDraft, getDraft } from "@/lib/client/drafts";
+import { compareTestSet, completeWithoutChanges } from "@/lib/client/workflow";
+import { completionBlocker } from "@/lib/domain/board";
 import { guessMapping } from "@/lib/domain/settings";
 import { moduleKey, suggestTestSets } from "@/lib/domain/test-set-suggest";
 import type { Draft, SpiraTestSetSummary, TestSetRef, WorkbookRow } from "@/lib/domain/types";
@@ -119,6 +120,7 @@ export function CompareWorkspace() {
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [completion, setCompletion] = useState<{ state: "checking" | "completed" } | { state: "differs"; message: string } | null>(null);
 
   const projectId = settings?.projectId ?? null;
   const projectSets = useProjectTestSets(spira?.configured === true, projectId);
@@ -236,6 +238,25 @@ export function CompareWorkspace() {
     }
   }
 
+  /** A board with nothing to remove or review goes straight to Completed once Spira is confirmed to match it. */
+  async function completeIfClean(draftId: string) {
+    const current = getDraft(draftId);
+    if (completionBlocker(current)) return;
+    setCompletion({ state: "checking" });
+    try {
+      const check = await completeWithoutChanges(draftId);
+      setDraft(check.draft);
+      setCompletion(check.completed ? { state: "completed" } : { state: "differs", message: check.reason ?? "" });
+    } catch (err) {
+      setCompletion({ state: "differs", message: `Could not confirm Spira matches the board: ${errorMessage(err)}` });
+    }
+  }
+
+  async function retrySet(draftId: string, testSetId: number) {
+    await compareSet(draftId, testSetId);
+    await completeIfClean(draftId);
+  }
+
   async function startComparison() {
     if (!loaded || !rows || !settings || settings.projectId === null) return;
     setStarting(true);
@@ -257,6 +278,7 @@ export function CompareWorkspace() {
       setDraft(created);
       setStatuses(Object.fromEntries(ids.map((id) => [id, "pending" as SetStatus])));
       for (const id of ids) await compareSet(created.id, id);
+      await completeIfClean(created.id);
     } catch (err) {
       setStartError(errorMessage(err));
     } finally {
@@ -266,6 +288,7 @@ export function CompareWorkspace() {
 
   function startOver() {
     setDraft(null);
+    setCompletion(null);
     setStatuses({});
     setErrors({});
     setStartError(null);
@@ -502,7 +525,7 @@ export function CompareWorkspace() {
                     {status === "pending" && <span className="flex items-center gap-1.5 text-xs text-slate-500"><Clock className="size-3.5" aria-hidden /> Waiting</span>}
                     {status === "ok" && <Badge tone="success"><CheckCircle2 aria-hidden /> Compared</Badge>}
                     {status === "failed" && (
-                      <Button size="sm" icon={RotateCcw} onClick={() => compareSet(draft.id, id)} disabled={anyRunning}>
+                      <Button size="sm" icon={RotateCcw} onClick={() => retrySet(draft.id, id)} disabled={anyRunning}>
                         Retry
                       </Button>
                     )}
@@ -510,8 +533,26 @@ export function CompareWorkspace() {
                 );
               })}
             </ul>
+            {completion?.state === "checking" && (
+              <p className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+                <Spinner className="size-4" /> Nothing to remove or review. Confirming Spira matches the board…
+              </p>
+            )}
+            {completion?.state === "completed" && (
+              <Notice tone="success" title="Moved to Completed">
+                Every case is In Scope and nothing has to change in Spira, so no live apply is needed. Moving a card to Out of Scope or
+                Needs Review later sends the draft back to Drafts.
+              </Notice>
+            )}
+            {completion?.state === "differs" && <Notice tone="warning">{completion.message}</Notice>}
             <div className="flex flex-wrap items-center gap-3">
-              {allOk ? (
+              {allOk && completion?.state === "completed" ? (
+                <>
+                  <ButtonLink href={`/drafts/${draft.id}/execute`} variant="primary" icon={ArrowRight}>Run execution</ButtonLink>
+                  <ButtonLink href={`/drafts/${draft.id}`}>Open board</ButtonLink>
+                  <ButtonLink href="/completed" variant="ghost">Go to Completed</ButtonLink>
+                </>
+              ) : allOk ? (
                 <ButtonLink href={`/drafts/${draft.id}`} variant="primary" icon={ArrowRight}>Open board</ButtonLink>
               ) : (
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">

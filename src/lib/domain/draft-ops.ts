@@ -1,4 +1,4 @@
-import { allCards, cardKey, moveCards, normalizeDecisions, preserveDecisions, removalActions } from "./board";
+import { allCards, cardKey, moveCards, needsReopening, normalizeDecisions, preserveDecisions, removalActions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
 import { emptyExecution, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, STATUS_LABEL } from "./execution";
 import type {
@@ -47,6 +47,16 @@ export function recordComparison(draft: Draft, comparison: TestSetComparison): v
   if (isRecompare) {
     draft.history.push({ at: comparison.comparedAt, label: `Recompared ${comparison.testSetName}`, changes: [] });
   }
+  reopenIfChanged(draft);
+}
+
+/**
+ * A completed draft goes back to Drafts when its board asks for changes in Spira again: a card moved
+ * to Out of Scope or Needs Review, or a recompare that found new cases. It completes again once Spira
+ * is verified to match.
+ */
+function reopenIfChanged(draft: Draft): void {
+  if (needsReopening(draft)) draft.status = "draft";
 }
 
 export function recordCompareError(draft: Draft, testSetId: number, message: string): void {
@@ -64,6 +74,7 @@ export function recordBoardEdits(
       draft.apply.preflight = null;
     }
     draft.decisions = next;
+    reopenIfChanged(draft);
   }
   if (edits.history) draft.history = edits.history;
 }
@@ -161,7 +172,20 @@ export function recordBlockedReview(draft: Draft, assessments: Record<string, Bl
 
 export function recordVerification(draft: Draft, verification: VerificationResult): void {
   draft.apply.verification = verification;
+  draft.apply.completedWithoutChanges = null;
   draft.status = verification.ok ? "applied" : "appliedWithErrors";
+}
+
+/**
+ * Completes a draft that had nothing to change in Spira, once a read-only check found Spira matching
+ * the board. A check that found differences changes nothing: no apply ran, so it is not an apply error.
+ */
+export function recordCleanCompletion(draft: Draft, verification: VerificationResult): boolean {
+  if (!verification.ok) return false;
+  draft.apply.verification = verification;
+  draft.apply.completedWithoutChanges = verification.at;
+  draft.status = "applied";
+  return true;
 }
 
 /** Keeps the latest execution status read from Spira for every membership on the board. */

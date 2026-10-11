@@ -141,6 +141,8 @@ export interface DraftApplyState {
   verification: VerificationResult | null;
   lastLiveRunAt: string | null;
   lastDryRunAt: string | null;
+  /** When the draft completed without a live apply, because nothing had to change in Spira. */
+  completedWithoutChanges?: string | null;
   /** Test runs this app recorded in Spira; kept so they can be undone. Missing on older drafts. */
   signOffRuns?: SignOffRun[];
   /** Cards whose result could not be recorded, so they can be retried. */
@@ -416,6 +418,10 @@ export interface DraftSummary {
   counts: ColumnCounts;
   missingFromSpira: number;
   manualDecisions: number;
+  /** Nothing to remove or review: only a read-only check against Spira stands between it and Completed. */
+  readyToComplete: boolean;
+  /** Completed without a live apply, because Spira already matched the board. */
+  completedWithoutChanges: boolean;
 }
 
 export interface TestSetRef {

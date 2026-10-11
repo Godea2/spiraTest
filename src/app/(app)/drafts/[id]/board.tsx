@@ -47,11 +47,12 @@ import { DraftConflictError, mutateDraft, renameDraft } from "@/lib/client/draft
 import { exportBoard } from "@/lib/client/exports";
 import { formatDateTime, relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
-import { compareTestSet } from "@/lib/client/workflow";
+import { compareTestSet, completeWithoutChanges } from "@/lib/client/workflow";
 import { recordBoardEdits } from "@/lib/domain/draft-ops";
 import {
   allCards,
   applyChanges,
+  completionBlocker,
   countColumns,
   effectiveColumn,
   isComparisonComplete,
@@ -106,6 +107,7 @@ export function Board({ id }: { id: string }) {
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [recompare, setRecompare] = useState<{ running: boolean; error: string | null; done: number; total: number } | null>(null);
+  const [completion, setCompletion] = useState<{ running: boolean; message: string | null } | null>(null);
   const [showMissing, setShowMissing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -466,6 +468,19 @@ export function Board({ id }: { id: string }) {
     setRedoStack([]);
     setSelection(new Set());
     setRecompare((r) => (r?.error ? r : latest ? null : r));
+    if (fresh && !completionBlocker(fresh)) await checkCompletion();
+  }
+
+  /** Completes a board with nothing to remove or review, once Spira is confirmed to still match it. */
+  async function checkCompletion() {
+    setCompletion({ running: true, message: null });
+    try {
+      const check = await completeWithoutChanges(id);
+      setDraft(check.draft);
+      setCompletion({ running: false, message: check.completed ? null : check.reason });
+    } catch (err) {
+      setCompletion({ running: false, message: `Could not confirm Spira matches the board: ${errorMessage(err)}` });
+    }
   }
 
   async function goToReview() {
@@ -493,6 +508,7 @@ export function Board({ id }: { id: string }) {
   }
 
   const complete = isComparisonComplete(draft);
+  const blocker = completionBlocker({ ...draft, decisions });
   const missingSets = draft.testSetIds.filter((tid) => !draft.testSets.some((s) => s.testSetId === tid));
   const activeCard = activeDrag ? cardByKey.get(activeDrag) : null;
   const detailCard = openKey ? cardByKey.get(openKey) ?? null : null;
@@ -574,6 +590,26 @@ export function Board({ id }: { id: string }) {
         <Notice tone="info"><span className="flex items-center gap-2"><Spinner className="size-3.5" /> Recomparing {recompare.done} / {recompare.total}…</span></Notice>
       )}
       {recompare?.error && <Notice tone="danger" title="Recompare stopped" action={<Button size="sm" onClick={() => setRecompare(null)}>Dismiss</Button>}>{recompare.error}</Notice>}
+      {!isCompleted(draft.status) && !recompare?.running && blocker === null && (
+        <Notice
+          tone="success"
+          title="Nothing to remove or review"
+          action={<Button size="sm" variant="primary" icon={CheckCircle2} busy={completion?.running} onClick={async () => { if (await save()) await checkCompletion(); }}>Move to Completed</Button>}
+        >
+          No case is Out of Scope or in Needs Review, so Spira needs no changes. A read-only check confirms Spira still matches the board, then the
+          draft moves to Completed without a live apply.{counts.blocked > 0 && " Blocked sign-off stays available from Review."}
+        </Notice>
+      )}
+      {completion?.message && (
+        <Notice tone="warning" title="Not moved to Completed" action={<Button size="sm" onClick={() => setCompletion(null)}>Dismiss</Button>}>
+          {completion.message}
+        </Notice>
+      )}
+      {!isCompleted(draft.status) && (draft.apply.completedWithoutChanges || draft.apply.verification?.ok) && blocker !== null && (
+        <Notice tone="info" title="Back in Drafts">
+          This draft was completed, but the board has changed since: {blocker}
+        </Notice>
+      )}
       {counts.needsReview > 0 && complete && (
         <Notice tone="warning">
           {counts.needsReview} card{counts.needsReview === 1 ? "" : "s"} in Needs Review. Move each to In Scope, Defects, Blocked or Out of Scope before a live apply.

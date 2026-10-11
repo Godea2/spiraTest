@@ -6,10 +6,11 @@ import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeader } from "@/components/ui";
+import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeader, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/client/drafts";
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
+import { completeWithoutChanges } from "@/lib/client/workflow";
 import { isCompleted } from "@/lib/domain/board";
 import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
 
@@ -47,15 +48,39 @@ function ScopeBar({ counts }: { counts: DraftSummary["counts"] }) {
 
 type Bucket = "drafts" | "completed";
 
+/** Completion checks already run in this browser session, so a draft is checked once per version. */
+const CHECKS_KEY = "srs:completion-checks";
+type CheckRecord = { updatedAt: string; message: string | null };
+
+function readChecks(): Record<string, CheckRecord> {
+  try {
+    return JSON.parse(sessionStorage.getItem(CHECKS_KEY) ?? "{}") as Record<string, CheckRecord>;
+  } catch {
+    return {};
+  }
+}
+
+function saveCheck(id: string, record: CheckRecord) {
+  try {
+    sessionStorage.setItem(CHECKS_KEY, JSON.stringify({ ...readChecks(), [id]: record }));
+  } catch {
+    // Without the record the draft is simply checked again next time.
+  }
+}
+
+const CHECK_CONCURRENCY = 2;
+
 const BUCKET_TEXT: Record<Bucket, { title: string; description: string; search: string }> = {
   drafts: {
     title: "Drafts",
-    description: "Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later. Once a live apply is verified, the draft moves to Completed.",
+    description:
+      "Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later. Once a live apply is verified, or when there is nothing to remove and Spira already matches the board, the draft moves to Completed.",
     search: "Search drafts by name or module",
   },
   completed: {
     title: "Completed",
-    description: "Drafts whose test sets have been cleaned up in Spira: the live apply was verified and Spira matches the reviewed board. Run the In Scope cases from here.",
+    description:
+      "Drafts whose test sets match the reviewed board in Spira, either after a verified live apply or because nothing had to be removed. Run the In Scope cases from here.",
     search: "Search completed by name or module",
   },
 };
@@ -79,18 +104,56 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
     }
   }, []);
 
+  const [checking, setChecking] = useState<Set<string>>(new Set());
+  const [checks, setChecks] = useState<Record<string, CheckRecord>>({});
+  const [moved, setMoved] = useState<string[]>([]);
+
+  // Drafts with nothing to remove or review are completed once a read-only check finds Spira matches them.
+  const checkDrafts = useCallback(async (targets: DraftSummary[]) => {
+    if (!targets.length) return;
+    setChecking((s) => new Set([...s, ...targets.map((t) => t.id)]));
+    const queue = [...targets];
+    const worker = async () => {
+      for (let d = queue.shift(); d; d = queue.shift()) {
+        const id = d.id;
+        try {
+          const result = await completeWithoutChanges(id);
+          saveCheck(id, { updatedAt: result.draft.updatedAt, message: result.completed ? null : result.reason });
+          if (result.completed) setMoved((m) => [...m, result.draft.name]);
+        } catch (err) {
+          saveCheck(id, { updatedAt: d.updatedAt, message: `Could not check Spira: ${errorMessage(err)}` });
+        } finally {
+          setChecking((s) => {
+            const next = new Set(s);
+            next.delete(id);
+            return next;
+          });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: CHECK_CONCURRENCY }, worker));
+    setChecks(readChecks());
+    setDrafts(listDrafts());
+  }, []);
+
   useEffect(() => {
     let active = true;
     Promise.resolve()
       .then(listDrafts)
       .then(
-        (loaded) => active && setDrafts(loaded),
+        (loaded) => {
+          if (!active) return;
+          setDrafts(loaded);
+          const done = readChecks();
+          setChecks(done);
+          void checkDrafts(loaded.filter((d) => d.readyToComplete && done[d.id]?.updatedAt !== d.updatedAt));
+        },
         (err) => active && setError(errorMessage(err)),
       );
     return () => {
       active = false;
     };
-  }, []);
+  }, [checkDrafts]);
 
   const inBucket = useMemo(
     () =>
@@ -143,6 +206,15 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
         actions={<ButtonLink href="/" variant="primary" icon={Plus}>New comparison</ButtonLink>}
       />
       {error && <Notice tone="danger">{error}</Notice>}
+      {moved.length > 0 && (
+        <Notice
+          tone="success"
+          title={`Moved to Completed: ${moved.join(", ")}`}
+          action={bucket === "drafts" ? <ButtonLink href="/completed" size="sm">Go to Completed</ButtonLink> : undefined}
+        >
+          Nothing had to be removed or reviewed, and Spira matches the board, so no live apply was needed.
+        </Notice>
+      )}
 
       {inBucket === null && !error ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -151,7 +223,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
       ) : inBucket && inBucket.length === 0 ? (
         bucket === "completed" ? (
           <EmptyState icon={CircleCheckBig} title="Nothing completed yet" action={<ButtonLink href="/drafts" icon={KanbanSquare}>Open drafts</ButtonLink>}>
-            A draft moves here once its live apply is verified and Spira matches the reviewed board.
+            A draft moves here once Spira matches its reviewed board: after a verified live apply, or straight away when nothing has to be removed.
           </EmptyState>
         ) : (
           <EmptyState
@@ -160,7 +232,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
             action={<ButtonLink href="/" variant="primary" icon={Plus}>Start a comparison</ButtonLink>}
           >
             {otherCount
-              ? <>All your drafts are applied. They are under <Link href="/completed" className="font-medium underline underline-offset-2">Completed</Link>.</>
+              ? <>All your drafts are completed. They are under <Link href="/completed" className="font-medium underline underline-offset-2">Completed</Link>.</>
               : "Upload the scope workbook to compare a module with its Spira test sets."}
           </EmptyState>
         )
@@ -203,6 +275,23 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
 
                   <ScopeBar counts={d.counts} />
 
+                  {bucket === "drafts" && d.readyToComplete && (
+                    checking.has(d.id) ? (
+                      <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-zinc-400">
+                        <Spinner className="size-3.5" /> Nothing to remove or review. Checking Spira…
+                      </p>
+                    ) : (
+                      <div className="flex items-start gap-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs text-amber-900 dark:bg-amber-500/[0.07] dark:text-amber-100">
+                        <p className="min-w-0 flex-1">
+                          {checks[d.id]?.message ?? "Nothing to remove or review: it can move to Completed once Spira is confirmed to match."}
+                        </p>
+                        <Button size="sm" icon={CircleCheckBig} onClick={() => void checkDrafts([d])}>
+                          {checks[d.id]?.message ? "Check again" : "Move to Completed"}
+                        </Button>
+                      </div>
+                    )
+                  )}
+
                   {bucket === "completed" && (
                     <div className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-white/[0.03]">
                       <div className="min-w-0 flex-1">
@@ -219,6 +308,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
 
                   <div className="mt-auto flex items-center gap-1.5">
                     {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}
+                    {d.completedWithoutChanges && <Badge tone="neutral">No changes needed</Badge>}
                     <div className="ml-auto flex gap-1 opacity-100 transition-opacity sm:opacity-60 sm:group-hover:opacity-100">
                       <Button size="sm" variant="ghost" icon={Pencil} aria-label={`Rename ${d.name}`} title="Rename" onClick={() => { setName(d.name); setPending({ kind: "rename", draft: d }); }} disabled={busy === d.id} />
                       <Button size="sm" variant="ghost" icon={Copy} aria-label={`Duplicate ${d.name}`} title="Duplicate" onClick={() => duplicate(d)} busy={busy === d.id} />
@@ -233,7 +323,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
           {visible.length === 0 && <p className="text-sm text-slate-500">Nothing matches “{query}”.</p>}
           {bucket === "drafts" && otherCount > 0 && (
             <p className="text-sm text-slate-500 dark:text-zinc-400">
-              {otherCount} applied draft{otherCount === 1 ? " is" : "s are"} under{" "}
+              {otherCount} completed draft{otherCount === 1 ? " is" : "s are"} under{" "}
               <Link href="/completed" className="font-medium text-slate-700 underline underline-offset-2 dark:text-zinc-200">Completed</Link>.
             </p>
           )}

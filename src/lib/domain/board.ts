@@ -160,8 +160,39 @@ export function isComparisonComplete(draft: Pick<Draft, "testSetIds" | "testSets
   return draft.testSetIds.length > 0 && draft.testSetIds.every((id) => compared.has(id));
 }
 
-/** A draft is completed once a live apply was verified: Spira matches the reviewed board. */
+/**
+ * A draft is completed once Spira is verified to match the reviewed board: after a live apply, or
+ * straight away when the board has nothing to remove.
+ */
 export const isCompleted = (status: DraftStatus): boolean => status === "applied";
+
+/** Out of Scope memberships a live apply still has to remove (those already removed are left out). */
+export function pendingRemovals(draft: Pick<Draft, "testSets" | "decisions" | "apply">): number {
+  return draft.testSets.reduce((n, set) => {
+    const removed = new Set(draft.apply.removed[String(set.testSetId)] ?? []);
+    return n + removalActions(set, draft.decisions).filter((a) => !removed.has(a.testSetTestCaseId)).length;
+  }, 0);
+}
+
+/**
+ * Why a draft still needs the review before it can complete, or null when there is nothing left to
+ * change in Spira: every test set compared, nothing in Needs Review and nothing to remove. Such a draft
+ * only has to be checked against Spira (read only) to complete.
+ */
+export function completionBlocker(draft: Draft): string | null {
+  if (isCompleted(draft.status)) return "Already completed.";
+  if (!isComparisonComplete(draft)) return "Every test set must be compared first.";
+  const review = countColumns(allCards(draft.testSets), draft.decisions).needsReview;
+  if (review > 0) return `${review} card${review === 1 ? " is" : "s are"} in Needs Review.`;
+  const pending = pendingRemovals(draft);
+  if (pending > 0) return `${pending} Out of Scope case${pending === 1 ? "" : "s"} to remove with a live apply.`;
+  return null;
+}
+
+/** Whether a completed draft's board now asks for changes in Spira again (cards to remove or to review). */
+export function needsReopening(draft: Draft): boolean {
+  return isCompleted(draft.status) && (pendingRemovals(draft) > 0 || countColumns(allCards(draft.testSets), draft.decisions).needsReview > 0);
+}
 
 export function summarizeDraft(draft: Draft): DraftSummary {
   const cards = allCards(draft.testSets);
@@ -179,5 +210,7 @@ export function summarizeDraft(draft: Draft): DraftSummary {
     counts: countColumns(cards, draft.decisions),
     missingFromSpira: draft.testSets.reduce((sum, set) => sum + set.missingFromSpira.length, 0),
     manualDecisions: Object.keys(draft.decisions).length,
+    readyToComplete: completionBlocker(draft) === null,
+    completedWithoutChanges: isCompleted(draft.status) && !!draft.apply.completedWithoutChanges && !draft.apply.lastLiveRunAt,
   };
 }

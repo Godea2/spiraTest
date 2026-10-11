@@ -52,6 +52,16 @@ Opening **Review & apply** reads each test set's membership from Spira (read onl
 
 Once a live apply is verified (Spira matches the reviewed board), the draft moves from **Drafts** to **Completed**. A draft applied with errors stays under Drafts until a retry succeeds. Completed drafts can still be opened, and their board and review work as before.
 
+A draft with nothing to change in Spira does not need a live apply. That is a draft where every test set is compared, nothing is in Needs Review, and no Out of Scope case is left to remove (none were found, or they were already removed in Spira). The app reads the test sets' membership from Spira (read-only, nothing is written) and, if it still matches the board, moves the draft to Completed with a **No changes needed** badge. This check runs on its own:
+
+- when a comparison finishes;
+- after a recompare on the board;
+- when the review page opens;
+- after a live run that only recorded Blocked or Passed results;
+- when **Drafts** or **Completed** opens, for any draft that is ready. Each version of a draft is checked once per browser session, two at a time.
+
+Boards and draft cards also have a **Move to Completed** button. If Spira has changed since the comparison, the draft stays under Drafts and the card says what differs, so the board can be recompared. Blocked results can still be recorded from **Review** after the draft is completed. A completed draft goes back to **Drafts** when its board asks for changes in Spira again: a card moved to Out of Scope or Needs Review, or a recompare that finds new cases to review.
+
 ### Test execution
 
 From **Completed**, **Run execution** lists the draft's In Scope cases (including those in Defects) with their latest result, read from Spira when the page opens (and on **Check Spira again**), so results recorded by others show up too. Cases are grouped in buckets with counts: the page opens on **To run**, and a case leaves it as soon as it has a result and shows under Passed, Failed, Blocked or Caution (**All** shows everything). Next and previous in the runner follow the list as it was when the case was opened, so cases leaving the bucket do not shift the order.

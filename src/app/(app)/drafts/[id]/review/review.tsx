@@ -7,10 +7,11 @@ import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, ProgressBar, Sec
 import { errorMessage } from "@/lib/client/api";
 import { formatDateTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
-import { applyBatch, signOffBatch, syncWithSpira, undoSignOff, verifyApply } from "@/lib/client/workflow";
+import { applyBatch, completeWithoutChanges, signOffBatch, syncWithSpira, undoSignOff, verifyApply } from "@/lib/client/workflow";
 import {
   allCards,
   chunk,
+  completionBlocker,
   countColumns,
   effectiveColumn,
   isComparisonComplete,
@@ -104,6 +105,7 @@ export function Review({ id }: { id: string }) {
 
   const [spira, setSpira] = useState<SpiraCheck>({ checking: false, preflight: null, adopted: 0, error: null });
   const checkedOnOpen = useRef(false);
+  const [completionNote, setCompletionNote] = useState<string | null>(null);
 
   const plan = useMemo(() => {
     if (!draft) return [];
@@ -137,9 +139,19 @@ export function Review({ id }: { id: string }) {
       const out = await syncWithSpira(id);
       setDraft(out.draft);
       setSpira({ checking: false, preflight: out.preflight, adopted: out.adopted, error: null });
+      if (out.preflight.ok) await completeIfClean(out.draft);
     } catch (err) {
       setSpira((s) => ({ ...s, checking: false, error: errorMessage(err) }));
     }
+  }
+
+  /** A board with nothing left to remove or review completes once Spira is confirmed to match it. */
+  async function completeIfClean(current: Draft): Promise<Draft> {
+    if (completionBlocker(current)) return current;
+    const check = await completeWithoutChanges(current.id);
+    setDraft(check.draft);
+    setCompletionNote(check.completed ? null : check.reason);
+    return check.draft;
   }
 
   const hits = useMemo(
@@ -297,6 +309,8 @@ export function Review({ id }: { id: string }) {
         }
         setDraft(latest);
       }
+      // A live run with nothing to remove (sign-off only) leaves no apply to verify.
+      if (runAs === "live" && removals.size === 0) await completeIfClean(latest);
       setPhase("done");
     } catch (err) {
       setRunError(errorMessage(err));
@@ -461,6 +475,17 @@ export function Review({ id }: { id: string }) {
                 <p className="mt-2">Someone changed these test sets outside this review. Recompare the board and review the differences before applying.</p>
               </Notice>
             )}
+            {isCompleted(draft.status) && draft.apply.completedWithoutChanges && !draft.apply.lastLiveRunAt && (
+              <Notice
+                tone="success"
+                title="Completed without a live apply"
+                action={<ButtonLink href={`/drafts/${draft.id}/execute`} size="sm" variant="primary">Run execution</ButtonLink>}
+              >
+                Nothing had to be removed, and Spira matched this board on {formatDateTime(draft.apply.completedWithoutChanges)}, so the draft
+                moved to Completed.{blockedCount > 0 && " Blocked results can still be recorded below."}
+              </Notice>
+            )}
+            {completionNote && <Notice tone="warning" title="Not moved to Completed">{completionNote}</Notice>}
           </div>
         )}
       </Section>
@@ -508,7 +533,7 @@ export function Review({ id }: { id: string }) {
                 title="Nothing left to apply"
               action={isCompleted(draft.status) ? <ButtonLink href={`/drafts/${draft.id}/execute`} size="sm">Run execution</ButtonLink> : undefined}
             >
-              Spira already matches this board.
+              Spira already matches this board{isCompleted(draft.status) ? " and the draft is under Completed." : "."}
                 {passCount > 0 && " To record Passed results for the In Scope cases, tick the option above."}
               </Notice>
             ) : liveBlockers.length > 0 ? (

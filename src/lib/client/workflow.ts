@@ -1,7 +1,8 @@
 import type { ApplyBatchInput } from "@/lib/domain/apply-rules";
-import { chunk, MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { allCards, chunk, completionBlocker, countColumns, MAX_APPLY_BATCH } from "@/lib/domain/board";
 import {
   adoptSpiraRemovals,
+  recordCleanCompletion,
   recordApplyResults,
   recordCompareError,
   recordComparison,
@@ -319,6 +320,67 @@ export async function undoSignOff(
     details: { deleted, failed: failed.map((f) => f.testRunId) },
   });
   return { draft: updated, failed };
+}
+
+export interface CompletionCheck {
+  draft: Draft;
+  completed: boolean;
+  /** Why the draft did not complete; null when it did. */
+  reason: string | null;
+}
+
+/** What a failed check found, in words. */
+function differences(verification: VerificationResult, draft: Draft): string {
+  const name = (id: number) => draft.testSets.find((s) => s.testSetId === id)?.testSetName ?? `Test set ${id}`;
+  const parts = verification.sets
+    .filter((s) => !s.ok)
+    .map((s) =>
+      s.error
+        ? `${name(s.testSetId)} could not be read (${s.error})`
+        : [
+            s.stillPresent.length && `${s.stillPresent.length} case${s.stillPresent.length === 1 ? "" : "s"} added in Spira`,
+            s.unexpectedlyRemoved.length && `${s.unexpectedlyRemoved.length} removed in Spira`,
+          ]
+            .filter(Boolean)
+            .map((p) => `${name(s.testSetId)}: ${p}`)
+            .join("; "),
+    );
+  return parts.join("; ") || "Spira does not match the board.";
+}
+
+/**
+ * Completes a draft that has nothing to change in Spira (every test set compared, nothing in Needs
+ * Review, nothing left to remove) once a read-only check finds Spira's test sets still match the board.
+ * Nothing is written to Spira. A draft with work left, or whose test sets changed in Spira since the
+ * comparison, stays a draft and the reason is returned.
+ */
+export async function completeWithoutChanges(draftId: string): Promise<CompletionCheck> {
+  const draft = getDraft(draftId);
+  const blocker = completionBlocker(draft);
+  if (blocker) return { draft, completed: false, reason: blocker };
+  const { verification } = await api<{ verification: VerificationResult }>("/api/workflow/verify", {
+    method: "POST",
+    body: { context: contextOf(draft), testSets: draft.testSets, decisions: draft.decisions },
+  });
+  // The board may have changed while Spira was being read.
+  const latest = getDraft(draftId);
+  const stillReady = completionBlocker(latest);
+  const completed = !stillReady && verification.ok;
+  const updated = completed ? mutateDraft(draftId, (d) => void recordCleanCompletion(d, verification)) : latest;
+  const reason = completed
+    ? null
+    : (stillReady ?? `Spira changed since the comparison: ${differences(verification, updated)}. Recompare the board.`);
+  const counts = countColumns(allCards(updated.testSets), updated.decisions);
+  logActivity({
+    type: completed ? "draft.completedWithoutChanges" : "draft.completionCheckFailed",
+    message: completed
+      ? `Completed without a live apply: nothing to remove, and Spira matches the board (${counts.inScope + counts.defects} In Scope${counts.blocked ? `, ${counts.blocked} Blocked` : ""}).`
+      : `Not completed: ${reason}`,
+    draftId,
+    module: updated.module,
+    details: { sets: verification.sets.map(({ testSetId, ok, stillPresent, unexpectedlyRemoved, error }) => ({ testSetId, ok, added: stillPresent.length, removed: unexpectedlyRemoved.length, error })) },
+  });
+  return { draft: updated, completed, reason };
 }
 
 export async function verifyApply(draftId: string): Promise<{ draft: Draft; verification: VerificationResult }> {
