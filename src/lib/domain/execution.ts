@@ -1,10 +1,11 @@
-import { effectiveColumn } from "./board";
+import { cardKey, effectiveColumn } from "./board";
 import type {
   Card,
   Draft,
   DraftExecution,
   ExecutedStep,
   ExecutionProgress,
+  ExecutionResult,
   ExecutionStatus,
   StepStatus,
   TestCaseStep,
@@ -21,6 +22,9 @@ export const EXECUTION_STATUS_NAMES: Record<number, string> = {
   5: "Blocked",
   6: "Caution",
 };
+
+/** Results sent per request. Spira prepares and saves a whole batch in one call each. */
+export const MAX_EXECUTION_BATCH = 20;
 
 /** Statuses that mean a run was recorded (Failed, Passed, Blocked, Caution). */
 export const EXECUTED_STATUS_IDS = new Set<number>([1, 2, 5, 6]);
@@ -260,6 +264,16 @@ export function executionCounts(cards: Card[], execution: DraftExecution | undef
     else counts.notRun += 1;
   }
   return counts;
+}
+
+/**
+ * Recorded results checked against a fresh read of Spira: confirmed when Spira now shows the
+ * recorded status for that membership. A difference usually means a newer run was recorded since.
+ */
+export function confirmInSpira(results: ExecutionResult[], execution: DraftExecution | undefined): { confirmed: number; differing: ExecutionResult[] } {
+  const recorded = results.filter((r) => r.result === "recorded");
+  const differing = recorded.filter((r) => execution?.spira[cardKey(r.testSetId, r.testSetTestCaseId)]?.statusId !== EXECUTION_STATUS[r.status]);
+  return { confirmed: recorded.length - differing.length, differing };
 }
 
 /** Latest known result of a case: from the last Spira read, or from the comparison before any read. */

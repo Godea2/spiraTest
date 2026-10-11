@@ -1,6 +1,6 @@
-import { chunk, MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { chunk } from "@/lib/domain/board";
 import { recordExecutionResults, recordExecutionStatus, recordExecutionUndo, saveExecutionProgress } from "@/lib/domain/draft-ops";
-import { STATUS_LABEL } from "@/lib/domain/execution";
+import { MAX_EXECUTION_BATCH, STATUS_LABEL } from "@/lib/domain/execution";
 import type {
   Draft,
   ExecutionCaseInput,
@@ -42,17 +42,22 @@ export function saveProgress(draftId: string, key: string, progress: ExecutionPr
   return mutateDraft(draftId, (d) => saveExecutionProgress(d, key, progress));
 }
 
-/** Records results in Spira, a few cases per request, and keeps each recorded run for undo. */
+/**
+ * Records results in Spira in batches, and keeps each recorded run for undo. `onBatch` reports
+ * progress after each batch; returning false from `keepGoing` stops before the next one.
+ */
 export async function recordResults(
   draftId: string,
   testSetId: number,
   cases: ExecutionCaseInput[],
   tester: string,
+  options: { onBatch?: (done: number, draft: Draft) => void; keepGoing?: () => boolean } = {},
 ): Promise<{ draft: Draft; results: ExecutionResult[] }> {
   const draft = getDraft(draftId);
   const all: ExecutionResult[] = [];
   let updated = draft;
-  for (const batch of chunk(cases, MAX_APPLY_BATCH)) {
+  for (const batch of chunk(cases, MAX_EXECUTION_BATCH)) {
+    if (options.keepGoing && !options.keepGoing()) break;
     const { results } = await api<{ results: ExecutionResult[] }>("/api/execution/record", {
       method: "POST",
       body: {
@@ -66,6 +71,7 @@ export async function recordResults(
     });
     all.push(...results);
     updated = mutateDraft(draftId, (d) => recordExecutionResults(d, results, batch, tester));
+    options.onBatch?.(all.length, updated);
   }
   const count = (outcome: ExecutionResult["result"]) => all.filter((r) => r.result === outcome).length;
   const recorded = all.filter((r) => r.result === "recorded");

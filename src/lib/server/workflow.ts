@@ -21,7 +21,7 @@ import type {
 } from "@/lib/domain/types";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
 import {
-  createManualRunShell,
+  createManualRunShells,
   deleteRecordedTestRun,
   EXECUTION_STATUS,
   getMembership,
@@ -30,8 +30,10 @@ import {
   recordTestRun,
   removeFromTestSet,
   RUNNER_NAME,
-  saveManualRun,
+  saveManualRuns,
   SpiraError,
+  type ManualRunInput,
+  type ManualRunShell,
   type SpiraSetCase,
 } from "./spira";
 
@@ -335,8 +337,9 @@ export async function readExecutionStatus(input: { projectId: number; testSetIds
 
 /**
  * Records a manual test run for each executed case, with the tester's status and actual result on
- * each step, as Spira's own execution screen would. A case Spira gives no steps is recorded as an
- * automated run with the report in its details.
+ * each step, as Spira's own execution screen would. The whole batch is prepared in one Spira call
+ * and saved in another. A case Spira gives no steps is recorded as an automated run with the report
+ * in its details.
  * Only In Scope cases of a verified board can be recorded, and the test set is re-read first so a
  * case is only recorded while it is still in the set and still the same test case. A case can be
  * executed again: Spira keeps every run and shows the latest result.
@@ -386,45 +389,116 @@ export async function recordExecutions(input: {
     return { results: batch.cases.map((c) => result(c, "failed", error.message)) };
   }
 
-  const results = await inPool(batch.cases, WRITE_CONCURRENCY, async (c): Promise<ExecutionResult> => {
+  const outcomes = new Map<number, ExecutionResult>();
+  const settle = (c: ExecutionCaseInput, outcome: ExecutionResult["result"], message: string | null = null, testRunId: number | null = null) =>
+    outcomes.set(c.testSetTestCaseId, result(c, outcome, message, testRunId));
+  const failure = (error: unknown) => {
+    if (!(error instanceof SpiraError)) throw error;
+    return error;
+  };
+
+  const eligible: ExecutionCaseInput[] = [];
+  for (const c of batch.cases) {
     const current = cases.get(c.testSetTestCaseId);
-    if (!current) return result(c, "skipped", "No longer in this test set in Spira.");
-    if (current.testCaseId !== c.testCaseId) return result(c, "failed", `This membership now points at test case ${current.testCaseId}. Recompare first.`);
+    if (!current) settle(c, "skipped", "No longer in this test set in Spira.");
+    else if (current.testCaseId !== c.testCaseId) settle(c, "failed", `This membership now points at test case ${current.testCaseId}. Recompare first.`);
+    else eligible.push(c);
+  }
+
+  // One call prepares the runs of the whole batch, with Spira's own steps; nothing is saved yet.
+  const shells = new Map<number, ManualRunShell[]>();
+  const takeShell = async (testCaseId: number): Promise<ManualRunShell | undefined> =>
+    shells.get(testCaseId)?.shift() ?? (await createManualRunShells(ctx.projectId, [testCaseId], releaseId)).find((s) => s.raw.TestCaseId === testCaseId);
+  if (eligible.length > 0) {
     try {
-      const shell = await createManualRunShell(ctx.projectId, c.testCaseId, releaseId);
-      if (shell.steps.length > 0) {
-        const note = runNote({ runner: RUNNER_NAME, tester: input.tester, comment: c.comment });
-        const filled = fillRunSteps(shell.steps, c.status, c.steps, note);
-        if (!filled) {
-          return result(c, "failed", "The steps of this test case changed in Spira. Open it with Run and mark the steps again.");
-        }
-        const testRunId = await saveManualRun(ctx.projectId, shell, {
-          testSetId: batch.testSetId,
-          testSetTestCaseId: c.testSetTestCaseId,
-          releaseId,
-          executionStatusId: EXECUTION_STATUS[c.status],
-          steps: filled.map((f) => ({ executionStatusId: f.status ? EXECUTION_STATUS[f.status] : EXECUTION_STATUS.notRun, actualResult: f.actualResult })),
-        });
-        return result(c, "recorded", null, testRunId);
+      for (const shell of await createManualRunShells(ctx.projectId, eligible.map((c) => c.testCaseId), releaseId)) {
+        shells.set(shell.raw.TestCaseId, [...(shells.get(shell.raw.TestCaseId) ?? []), shell]);
       }
-      const report = runReport({ runner: RUNNER_NAME, tester: input.tester, module: ctx.module, draftName: input.draftName, status: c.status, comment: c.comment, steps: c.steps });
+    } catch (error) {
+      const message = failure(error).message;
+      for (const c of eligible) settle(c, "failed", message);
+      eligible.length = 0;
+    }
+  }
+
+  const manual: Array<{ c: ExecutionCaseInput; run: ManualRunInput }> = [];
+  const automated: ExecutionCaseInput[] = [];
+  for (const c of eligible) {
+    let shell: ManualRunShell | undefined;
+    try {
+      shell = await takeShell(c.testCaseId);
+    } catch (error) {
+      settle(c, "failed", failure(error).message);
+      continue;
+    }
+    if (!shell) {
+      settle(c, "failed", "Spira did not prepare a test run for this test case.");
+      continue;
+    }
+    if (shell.steps.length === 0) {
+      automated.push(c);
+      continue;
+    }
+    const filled = fillRunSteps(shell.steps, c.status, c.steps, runNote({ runner: RUNNER_NAME, tester: input.tester, comment: c.comment }));
+    if (!filled) {
+      settle(c, "failed", "The steps of this test case changed in Spira. Open it with Run and mark the steps again.");
+      continue;
+    }
+    manual.push({
+      c,
+      run: {
+        shell,
+        testSetId: batch.testSetId,
+        testSetTestCaseId: c.testSetTestCaseId,
+        releaseId,
+        executionStatusId: EXECUTION_STATUS[c.status],
+        steps: filled.map((f) => ({ executionStatusId: f.status ? EXECUTION_STATUS[f.status] : EXECUTION_STATUS.notRun, actualResult: f.actualResult })),
+      },
+    });
+  }
+
+  // One call saves them all. If Spira rejects the batch, each run is saved on its own so one bad
+  // case does not hold back the rest; a repeated run is harmless, Spira keeps every run.
+  if (manual.length > 0) {
+    try {
+      const ids = await saveManualRuns(ctx.projectId, manual.map((m) => m.run));
+      manual.forEach((m, i) => settle(m.c, "recorded", null, ids[i]));
+    } catch (error) {
+      const batchError = failure(error);
+      if (manual.length === 1 || batchError.upstream === null) {
+        for (const m of manual) settle(m.c, "failed", batchError.message);
+      } else {
+        for (const m of manual) {
+          try {
+            settle(m.c, "recorded", null, (await saveManualRuns(ctx.projectId, [m.run]))[0]);
+          } catch (single) {
+            settle(m.c, "failed", failure(single).message);
+          }
+        }
+      }
+    }
+  }
+
+  for (const c of automated) {
+    const report = runReport({ runner: RUNNER_NAME, tester: input.tester, module: ctx.module, draftName: input.draftName, status: c.status, comment: c.comment, steps: c.steps });
+    try {
       const testRunId = await recordTestRun(ctx.projectId, {
         testCaseId: c.testCaseId,
         testSetId: batch.testSetId,
         testSetTestCaseId: c.testSetTestCaseId,
         releaseId,
         executionStatusId: EXECUTION_STATUS[c.status],
-        testName: current.name,
+        testName: cases.get(c.testSetTestCaseId)?.name ?? `TC${c.testCaseId}`,
         message: report.message,
         details: report.details,
       });
-      return result(c, "recorded", null, testRunId);
+      settle(c, "recorded", null, testRunId);
     } catch (error) {
-      if (!(error instanceof SpiraError)) throw error;
-      return result(c, "failed", error.message);
+      settle(c, "failed", failure(error).message);
     }
-  });
-  return { results };
+  }
+
+  return { results: batch.cases.map((c) => outcomes.get(c.testSetTestCaseId) ?? result(c, "failed", "Not recorded.")) };
 }
 
 /** Deletes test runs this app recorded. Each run is checked to be ours before it is deleted. */

@@ -1,19 +1,21 @@
 "use client";
 
 import clsx from "clsx";
-import { Check, ChevronLeft, ListChecks, Play, RefreshCw, Search, UserRound } from "lucide-react";
+import { Check, ChevronLeft, Download, ListChecks, Play, RefreshCw, Search, Square, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { getDraft } from "@/lib/client/drafts";
 import { getTester, recordResults, refreshExecution, setTester as storeTester, undoRun } from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
-import { isCompleted } from "@/lib/domain/board";
-import { currentStatus, executionCards, executionCounts, STATUS_LABEL } from "@/lib/domain/execution";
-import { EXECUTION_STATUSES, type Card, type Draft, type ExecutionStatus } from "@/lib/domain/types";
+import { exportExecution } from "@/lib/client/exports";
+import { cardKey, isCompleted } from "@/lib/domain/board";
+import { confirmInSpira, currentStatus, executionCards, executionCounts, MAX_EXECUTION_BATCH, STATUS_LABEL } from "@/lib/domain/execution";
+import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
 type Filter = "all" | "notRun" | "inProgress" | ExecutionStatus;
@@ -30,8 +32,22 @@ const FILTERS: Array<{ id: Filter; label: string }> = [
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+interface BulkReport {
+  status: ExecutionStatus;
+  comment: string;
+  total: number;
+  recorded: number;
+  /** How many Spira shows with the recorded status after a fresh read; null when it could not be read. */
+  confirmed: number | null;
+  differing: number;
+  failed: Array<{ key: string; testCaseId: number; message: string }>;
+  stopped: boolean;
+  seconds: number;
+}
+
 export function Execute({ id }: { id: string }) {
   const { draft, setDraft, error: loadError } = useDraft(id);
+  const { spira } = useSettings();
   const [tester, setTester] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -43,7 +59,10 @@ export function Execute({ id }: { id: string }) {
   const [sync, setSync] = useState<{ checking: boolean; errors: string[] }>({ checking: false, errors: [] });
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState<{ status: ExecutionStatus; comment: string } | null>(null);
-  const [bulkRunning, setBulkRunning] = useState(false);
+  const [job, setJob] = useState<{ status: ExecutionStatus; total: number; done: number; stopping: boolean; checking: boolean } | null>(null);
+  const [report, setReport] = useState<BulkReport | null>(null);
+  const stopRef = useRef(false);
+  const bulkRunning = job !== null;
   const checkedOnOpen = useRef(false);
 
   useEffect(() => {
@@ -151,39 +170,88 @@ export function Execute({ id }: { id: string }) {
     }
   }
 
-  /** Records one result, with one reason, for every selected case. */
-  async function bulkRecord(status: ExecutionStatus, comment: string) {
+  /**
+   * Records one result, with one reason, for many cases: batches of cases per request, live progress,
+   * a stop between batches, then a fresh read of Spira to confirm what it now shows.
+   */
+  async function bulkRecord(status: ExecutionStatus, comment: string, targets: Card[]) {
+    if (targets.length === 0) return;
     setBulk(null);
-    setBulkRunning(true);
-    const targets = visibleSelected;
+    setReport(null);
+    stopRef.current = false;
+    const started = Date.now();
+    setJob({ status, total: targets.length, done: 0, stopping: false, checking: false });
     markBusy(targets.map((c) => c.key), true);
-    let latest: Draft | null = null;
-    let recorded = 0;
-    const problems: string[] = [];
+    const results: ExecutionResult[] = [];
+    const failed: BulkReport["failed"] = [];
     try {
       const bySet = new Map<number, Card[]>();
       for (const c of targets) bySet.set(c.testSetId, [...(bySet.get(c.testSetId) ?? []), c]);
       for (const [testSetId, group] of bySet) {
-        const out = await recordResults(
-          id,
-          testSetId,
-          group.map((c) => ({ testCaseId: c.testCaseId, testSetTestCaseId: c.testSetTestCaseId, status, comment: comment.trim(), steps: [] })),
-          tester.trim(),
-        );
-        latest = out.draft;
-        recorded += out.results.filter((r) => r.result === "recorded").length;
-        problems.push(...out.results.filter((r) => r.result !== "recorded").map((r) => `TC${r.testCaseId}: ${r.message ?? r.result}`));
+        if (stopRef.current) break;
+        const before = results.length;
+        try {
+          const out = await recordResults(
+            id,
+            testSetId,
+            group.map((c) => ({ testCaseId: c.testCaseId, testSetTestCaseId: c.testSetTestCaseId, status, comment: comment.trim(), steps: [] })),
+            tester.trim(),
+            {
+              keepGoing: () => !stopRef.current,
+              onBatch: (done, d) => {
+                setDraft(d);
+                setJob((j) => (j ? { ...j, done: before + done } : j));
+              },
+            },
+          );
+          results.push(...out.results);
+        } catch (err) {
+          const sent = new Set(results.map((r) => cardKey(r.testSetId, r.testSetTestCaseId)));
+          for (const c of group) if (!sent.has(c.key)) failed.push({ key: c.key, testCaseId: c.testCaseId, message: errorMessage(err) });
+        }
       }
-    } catch (err) {
-      problems.push(errorMessage(err));
+      for (const r of results) {
+        if (r.result !== "recorded") failed.push({ key: cardKey(r.testSetId, r.testSetTestCaseId), testCaseId: r.testCaseId, message: r.message ?? r.result });
+      }
+      const recorded = results.filter((r) => r.result === "recorded").length;
+      let confirmed: number | null = null;
+      let differing = 0;
+      if (recorded > 0) {
+        setJob((j) => (j ? { ...j, checking: true } : j));
+        try {
+          const sets = [...new Set(results.map((r) => r.testSetId))];
+          const out = await refreshExecution(id, sets);
+          setDraft(out.draft);
+          if (out.errors.length === 0) {
+            const check = confirmInSpira(results, out.draft.execution);
+            confirmed = check.confirmed;
+            differing = check.differing.length;
+          }
+        } catch {
+          // The confirmation is a courtesy read; the results are recorded either way.
+        }
+      }
+      setReport({
+        status,
+        comment,
+        total: targets.length,
+        recorded,
+        confirmed,
+        differing,
+        failed,
+        stopped: stopRef.current && results.length + failed.length < targets.length,
+        seconds: Math.max(1, Math.round((Date.now() - started) / 1000)),
+      });
     } finally {
-      if (latest) setDraft(latest);
       markBusy(targets.map((c) => c.key), false);
-      setBulkRunning(false);
+      setJob(null);
       setSelected(new Set());
     }
-    if (recorded) toast.success(`Recorded ${plural(recorded, `${STATUS_LABEL[status]} result`)} in Spira`);
-    if (problems.length) toast.error(`${plural(problems.length, "case")} not recorded: ${problems[0]}`);
+  }
+
+  function stopJob() {
+    stopRef.current = true;
+    setJob((j) => (j ? { ...j, stopping: true } : j));
   }
 
   /** Runs the selected cases, or every listed case, one after another; picks up at the first one not finished. */
@@ -233,10 +301,66 @@ export function Execute({ id }: { id: string }) {
         actions={
           <>
             <ButtonLink href={`/drafts/${draft.id}`} variant="ghost">Board</ButtonLink>
+            <Button icon={Download} onClick={() => void exportExecution(draft, spira?.siteUrl ?? null)}>Report</Button>
             <Button icon={RefreshCw} onClick={() => void checkSpira()} busy={sync.checking}>Check Spira again</Button>
           </>
         }
       />
+
+      {job && (
+        <Notice
+          tone="info"
+          title={
+            job.checking
+              ? "Confirming the results in Spira…"
+              : `Recording ${STATUS_LABEL[job.status]}: ${job.done} of ${job.total}${job.stopping ? " (stopping after this batch)" : ""}`
+          }
+          action={!job.checking && <Button size="sm" icon={Square} onClick={stopJob} disabled={job.stopping}>Stop</Button>}
+        >
+          <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200/70 dark:bg-white/[0.08]" aria-hidden>
+            <div className={clsx("h-full transition-all duration-500", STATUS_STYLE[job.status].button)} style={{ width: `${(job.done / Math.max(1, job.total)) * 100}%` }} />
+          </div>
+          <p className="mt-1.5 text-xs">Each case gets a manual run in Spira{job.status === "passed" ? " with every step Passed" : ""}, {MAX_EXECUTION_BATCH} cases per request. You can keep this page open while it runs.</p>
+        </Notice>
+      )}
+
+      {report && !job && (
+        <Notice
+          tone={report.failed.length || report.differing ? "warning" : "success"}
+          title={`${plural(report.recorded, "case")} recorded as ${STATUS_LABEL[report.status]} in ${report.seconds}s${report.stopped ? " (stopped)" : ""}`}
+          action={<Button size="sm" variant="ghost" onClick={() => setReport(null)}>Dismiss</Button>}
+        >
+          <ul className="flex flex-col gap-1">
+            {report.confirmed !== null && report.recorded > 0 && (
+              <li>
+                Spira now shows {report.confirmed} of {report.recorded} as {STATUS_LABEL[report.status]}
+                {report.differing ? `; ${report.differing} show a different result, most likely from a newer run` : ", confirmed by reading Spira again"}.
+              </li>
+            )}
+            {report.confirmed === null && report.recorded > 0 && <li>Spira could not be read back to confirm; use Check Spira again.</li>}
+            {report.stopped && <li>{report.total - report.recorded - report.failed.length} were not sent because you stopped.</li>}
+            {report.failed.length > 0 && (
+              <li>
+                {plural(report.failed.length, "case")} not recorded:
+                <ul className="mt-1 list-disc pl-5 text-xs">
+                  {report.failed.slice(0, 8).map((f) => <li key={f.key}>TC{f.testCaseId}: {f.message}</li>)}
+                  {report.failed.length > 8 && <li>and {report.failed.length - 8} more</li>}
+                </ul>
+              </li>
+            )}
+          </ul>
+          {report.failed.length > 0 && (
+            <Button
+              size="sm"
+              className="mt-2"
+              icon={RefreshCw}
+              onClick={() => void bulkRecord(report.status, report.comment, cards.filter((c) => report.failed.some((f) => f.key === c.key)))}
+            >
+              Retry {plural(report.failed.length, "failed case")}
+            </Button>
+          )}
+        </Notice>
+      )}
 
       {!isCompleted(draft.status) && (
         <Notice tone="warning" title="This draft is not completed yet">
@@ -423,7 +547,7 @@ export function Execute({ id }: { id: string }) {
               <Button
                 variant="primary"
                 disabled={bulk.status !== "passed" && !bulk.comment.trim()}
-                onClick={() => void bulkRecord(bulk.status, bulk.comment)}
+                onClick={() => void bulkRecord(bulk.status, bulk.comment, visibleSelected)}
               >
                 Record {visibleSelected.length} {STATUS_LABEL[bulk.status]}
               </Button>

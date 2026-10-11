@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
 
@@ -192,7 +193,7 @@ export const executionRecordRequestSchema = z.object({
         }),
       )
       .min(1)
-      .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} results per batch.`),
+      .max(MAX_EXECUTION_BATCH, `Send at most ${MAX_EXECUTION_BATCH} results per batch.`),
   }),
 });
 

@@ -1,4 +1,5 @@
 import { effectiveColumn } from "@/lib/domain/board";
+import { currentStatus, executionCards, executionCounts, STATUS_LABEL } from "@/lib/domain/execution";
 import { keywordHits } from "@/lib/domain/keywords";
 import { COLUMN_LABELS, COLUMNS, type ActivityEntry, type Column, type Draft } from "@/lib/domain/types";
 
@@ -81,6 +82,92 @@ export async function exportBoard(draft: Draft): Promise<void> {
     "Change history",
   );
   XLSX.writeFile(wb, `${safeFileName(draft.name)}.xlsx`);
+}
+
+/** Execution report: a summary per test set, every In Scope case with its latest result, and every run recorded here. */
+export async function exportExecution(draft: Draft, siteUrl: string | null): Promise<void> {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  const cards = executionCards(draft);
+  const runs = draft.execution?.runs ?? [];
+  const setName = (testSetId: number) => draft.testSets.find((s) => s.testSetId === testSetId)?.testSetName ?? `Test set ${testSetId}`;
+  const runLink = (testRunId: number) => (siteUrl ? `${siteUrl}/${draft.projectId}/TestRun/${testRunId}.aspx` : "");
+  const label = (status: ReturnType<typeof currentStatus>) => (status ? STATUS_LABEL[status] : "Not Run");
+  const percent = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 1000) / 10}%` : "");
+
+  const summaryRow = (name: string, group: typeof cards) => {
+    const c = executionCounts(group, draft.execution);
+    const executed = c.total - c.notRun;
+    return {
+      "Test set": name,
+      "In Scope": c.total,
+      Executed: executed,
+      "Executed %": percent(executed, c.total),
+      Passed: c.passed,
+      Failed: c.failed,
+      Blocked: c.blocked,
+      Caution: c.caution,
+      "Not Run": c.notRun,
+      "Pass rate (of executed)": percent(c.passed, executed),
+    };
+  };
+  const summary = [
+    ...draft.testSets.map((s) => summaryRow(s.testSetName, cards.filter((c) => c.testSetId === s.testSetId))),
+    ...(draft.testSets.length > 1 ? [summaryRow("All test sets", cards)] : []),
+  ];
+  const about = [
+    ["Module", draft.module],
+    ["Draft", draft.name],
+    ["Release", draft.releaseLabel || draft.releaseId || ""],
+    ["Statuses read from Spira", draft.execution?.checkedAt ?? "Not checked; statuses are from the comparison"],
+    ["Report generated", new Date().toISOString()],
+    ["Testers", [...new Set(runs.map((r) => r.tester).filter(Boolean))].join(", ")],
+    [],
+  ];
+  const summarySheet = XLSX.utils.aoa_to_sheet(about);
+  XLSX.utils.sheet_add_json(summarySheet, summary, { origin: -1 });
+  XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      cards.map((card) => {
+        const last = [...runs].reverse().find((r) => r.testSetId === card.testSetId && r.testSetTestCaseId === card.testSetTestCaseId);
+        return {
+          "Test set": setName(card.testSetId),
+          "Test case ID": card.testCaseId,
+          "TC ID": card.tcId ?? "",
+          Name: card.name,
+          "Status in Spira": label(currentStatus(card, draft.execution)),
+          "Last result recorded here": last ? STATUS_LABEL[last.status] : "",
+          "Recorded at": last?.at ?? "",
+          Tester: last?.tester ?? "",
+          Comment: last?.comment ?? "",
+          "Test run ID": last?.testRunId ?? "",
+          "Test run link": last ? runLink(last.testRunId) : "",
+        };
+      }),
+    ),
+    "Cases",
+  );
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      runs.map((r) => ({
+        "Recorded at": r.at,
+        "Test set": setName(r.testSetId),
+        "Test case ID": r.testCaseId,
+        Result: STATUS_LABEL[r.status],
+        Tester: r.tester,
+        Comment: r.comment,
+        "Test run ID": r.testRunId,
+        "Test run link": runLink(r.testRunId),
+      })),
+    ),
+    "Runs recorded here",
+  );
+  XLSX.writeFile(wb, `${safeFileName(`${draft.name} - execution report`)}.xlsx`);
 }
 
 export async function exportActivity(entries: ActivityEntry[]): Promise<void> {

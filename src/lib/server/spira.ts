@@ -377,43 +377,57 @@ export interface ManualRunShell {
 }
 
 /**
- * Asks Spira for a manual run of one test case. Spira lays out the steps, including those of
- * called test cases, exactly as its own execution screen does. Nothing is saved until
- * saveManualRun.
+ * Asks Spira for manual runs of several test cases in one call. Spira lays out the steps, including
+ * those of called test cases, exactly as its own execution screen does. Nothing is saved until
+ * saveManualRuns. Runs are returned in the order Spira gives them; match them by test case.
  */
-export async function createManualRunShell(projectId: number, testCaseId: number, releaseId: number | null): Promise<ManualRunShell> {
-  const what = `preparing a test run for test case ${testCaseId}`;
+export async function createManualRunShells(projectId: number, testCaseIds: number[], releaseId: number | null): Promise<ManualRunShell[]> {
+  const what = `preparing test runs for ${testCaseIds.length === 1 ? `test case ${testCaseIds[0]}` : `${testCaseIds.length} test cases`}`;
   const query = releaseId ? `?release_id=${releaseId}` : "";
-  const runs = parse(z.array(manualRunSchema), await call("POST", `projects/${projectId}/test-runs/create${query}`, what, [testCaseId]), what);
-  const raw = runs.find((r) => r.TestCaseId === testCaseId);
-  if (!raw) throw new SpiraError(`Spira did not prepare a test run for test case ${testCaseId}.`, 502);
-  return { raw, steps: (raw.TestRunSteps ?? []).map((s) => ({ testStepId: s.TestStepId ?? null, testCaseId: s.TestCaseId ?? null })) };
+  const runs = parse(z.array(manualRunSchema), await call("POST", `projects/${projectId}/test-runs/create${query}`, what, testCaseIds), what);
+  return runs.map((raw) => ({ raw, steps: (raw.TestRunSteps ?? []).map((s) => ({ testStepId: s.TestStepId ?? null, testCaseId: s.TestCaseId ?? null })) }));
 }
 
-/** Saves a prepared manual run with a status and actual result on each step. A write: never retried. */
-export async function saveManualRun(
-  projectId: number,
-  shell: ManualRunShell,
-  run: { testSetId: number; testSetTestCaseId: number; releaseId: number | null; executionStatusId: number; steps: Array<{ executionStatusId: number; actualResult: string }> },
-): Promise<number> {
+export interface ManualRunInput {
+  shell: ManualRunShell;
+  testSetId: number;
+  testSetTestCaseId: number;
+  releaseId: number | null;
+  executionStatusId: number;
+  steps: Array<{ executionStatusId: number; actualResult: string }>;
+}
+
+/**
+ * Saves prepared manual runs in one call, each with a status and actual result on every step.
+ * A write: never retried. Returns the new test run IDs in the order given.
+ */
+export async function saveManualRuns(projectId: number, runs: ManualRunInput[]): Promise<number[]> {
   const now = `/Date(${Date.now()})/`;
-  const what = `saving a test run for test case ${shell.raw.TestCaseId}`;
-  const body = {
-    ...shell.raw,
+  const what = runs.length === 1 ? `saving a test run for test case ${runs[0].shell.raw.TestCaseId}` : `saving ${runs.length} test runs`;
+  const body = runs.map((run) => ({
+    ...run.shell.raw,
     TestSetId: run.testSetId,
     TestSetTestCaseId: run.testSetTestCaseId,
-    ReleaseId: run.releaseId ?? shell.raw.ReleaseId ?? null,
+    ReleaseId: run.releaseId ?? run.shell.raw.ReleaseId ?? null,
     ExecutionStatusId: run.executionStatusId,
     StartDate: now,
     EndDate: now,
-    TestRunSteps: (shell.raw.TestRunSteps ?? []).map((step, i) => ({
+    TestRunSteps: (run.shell.raw.TestRunSteps ?? []).map((step, i) => ({
       ...step,
       ExecutionStatusId: run.steps[i]?.executionStatusId ?? EXECUTION_STATUS.notRun,
       ActualResult: run.steps[i]?.actualResult ? textToHtml(run.steps[i].actualResult) : null,
     })),
-  };
-  const saved = parse(z.array(recordedRunSchema).min(1), await call("PUT", `projects/${projectId}/test-runs`, what, [body]), what);
-  return saved[0].TestRunId;
+  }));
+  const saved = parse(
+    z.array(z.object({ TestRunId: id, TestCaseId: id.nullish(), TestSetTestCaseId: z.number().int().nullish() })),
+    await call("PUT", `projects/${projectId}/test-runs`, what, body),
+    what,
+  );
+  if (saved.length !== runs.length) {
+    throw new SpiraError(`Spira saved ${saved.length} of ${runs.length} test runs; check Spira again before retrying.`, 502);
+  }
+  // Match by membership when Spira echoes it, otherwise by position.
+  return runs.map((run, i) => (saved.find((s) => s.TestSetTestCaseId === run.testSetTestCaseId) ?? saved[i]).TestRunId);
 }
 
 /**
