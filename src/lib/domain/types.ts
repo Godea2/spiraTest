@@ -267,6 +267,8 @@ export interface ExecutionResult {
   result: "recorded" | "skipped" | "failed";
   testRunId: number | null;
   message: string | null;
+  /** Execution status the test set shows in Spira when read back right after saving; absent when it could not be read. */
+  spiraStatusId?: number | null;
 }
 
 /** Current execution status of each membership in a test set, read from Spira. */

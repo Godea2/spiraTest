@@ -91,6 +91,14 @@ describe("recording execution results in batches", () => {
     ]);
   });
 
+  it("reports what Spira's test set shows after saving, not what was sent", async () => {
+    spira.saveManualRuns.mockResolvedValue([501, 502]);
+    const before = [1, 2, 3].map((id) => ({ testSetTestCaseId: id, testCaseId: id + 1000, name: `Case ${id}`, executionStatus: "Not Run", executionStatusId: 3, executed: false, customText: [] }));
+    spira.getTestSetCases.mockResolvedValueOnce(before).mockResolvedValueOnce(before.map((c) => (c.testSetTestCaseId === 1 ? { ...c, executionStatusId: 2 } : c)));
+    const { results } = await recordExecutions(request([1, 2]));
+    expect(results.map((r) => r.spiraStatusId)).toEqual([2, 3]);
+  });
+
   it("saves case by case when Spira rejects the batch, so one bad case does not hold back the rest", async () => {
     spira.saveManualRuns
       .mockRejectedValueOnce(new SpiraError("Spira returned HTTP 400", 502, 400))

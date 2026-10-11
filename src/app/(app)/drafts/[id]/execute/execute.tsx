@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { Check, ChevronLeft, Download, ListChecks, Play, RefreshCw, Search, Square, UserRound } from "lucide-react";
+import { Check, ChevronLeft, Download, ExternalLink, ListChecks, Play, RefreshCw, Search, Square, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -14,7 +14,15 @@ import { formatDateTime } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
 import { exportExecution } from "@/lib/client/exports";
 import { cardKey, isCompleted } from "@/lib/domain/board";
-import { confirmInSpira, currentStatus, executionCards, executionCounts, MAX_EXECUTION_BATCH, STATUS_LABEL } from "@/lib/domain/execution";
+import {
+  confirmInSpira,
+  currentStatus,
+  EXECUTION_STATUS_NAMES,
+  executionCards,
+  executionCounts,
+  MAX_EXECUTION_BATCH,
+  STATUS_LABEL,
+} from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
@@ -153,7 +161,9 @@ export function Execute({ id }: { id: string }) {
       const r = out.results[0];
       if (r?.result === "recorded" && r.testRunId) {
         const run = out.draft.execution?.runs.find((x) => x.testRunId === r.testRunId);
-        toast.success(`TC${card.testCaseId} recorded as Passed`, {
+        const shows = r.spiraStatusId === undefined ? null : r.spiraStatusId === null ? "Not Run" : EXECUTION_STATUS_NAMES[r.spiraStatusId];
+        const notify = shows && shows !== "Passed" ? toast.warning : toast.success;
+        notify(shows && shows !== "Passed" ? `TC${card.testCaseId}: run ${r.testRunId} saved, but Spira's test set shows ${shows}` : `TC${card.testCaseId} recorded as Passed, confirmed in Spira`, {
           action: run ? { label: "Undo", onClick: () => void undoQuick(run.testRunId) } : undefined,
         });
       } else {
@@ -425,6 +435,18 @@ export function Execute({ id }: { id: string }) {
             ) : (
               "Statuses are from the comparison until Spira is checked."
             )}
+            {spira?.siteUrl &&
+              draft.testSets.map((s) => (
+                <a
+                  key={s.testSetId}
+                  href={`${spira.siteUrl}/${draft.projectId}/TestSet/${s.testSetId}.aspx`}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="ml-2 inline-flex items-center gap-1 font-medium text-brand-700 hover:underline dark:text-brand-300"
+                >
+                  Open {s.testSetName} in Spira <ExternalLink className="size-3" aria-hidden />
+                </a>
+              ))}
           </p>
           {executed === counts.total && counts.total > 0 && (
             <Notice tone="success" title="Every In Scope case has a result">
@@ -530,7 +552,23 @@ export function Execute({ id }: { id: string }) {
                         {lastRun && `${STATUS_LABEL[lastRun.status]} here ${formatDateTime(lastRun.at)}${lastRun.tester ? ` by ${lastRun.tester}` : ""}`}
                       </span>
                     )}
+                    {lastRun && status !== lastRun.status && (
+                      <span className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
+                        Spira&apos;s test set shows {status ? STATUS_LABEL[status] : "Not Run"}, not {STATUS_LABEL[lastRun.status]}. Open the run in Spira, then Check Spira again.
+                      </span>
+                    )}
                   </button>
+                  {lastRun && spira?.siteUrl && (
+                    <a
+                      href={`${spira.siteUrl}/${draft.projectId}/TestRun/${lastRun.testRunId}.aspx`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title="Open the test run in Spira"
+                      className="hidden shrink-0 items-center gap-1 text-xs text-brand-700 hover:underline sm:inline-flex dark:text-brand-300"
+                    >
+                      Run {lastRun.testRunId} <ExternalLink className="size-3" aria-hidden />
+                    </a>
+                  )}
                   {inProgress && <Badge tone="brand">In progress</Badge>}
                   <StatusChip status={status} className="shrink-0" />
                   <span className="flex shrink-0 gap-1">

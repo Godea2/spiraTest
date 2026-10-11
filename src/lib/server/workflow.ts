@@ -498,7 +498,18 @@ export async function recordExecutions(input: {
     }
   }
 
-  return { results: batch.cases.map((c) => outcomes.get(c.testSetTestCaseId) ?? result(c, "failed", "Not recorded.")) };
+  const results = batch.cases.map((c) => outcomes.get(c.testSetTestCaseId) ?? result(c, "failed", "Not recorded."));
+
+  // Read the test set back, so the app shows what Spira itself now reports rather than what was sent.
+  if (results.some((r) => r.result === "recorded")) {
+    try {
+      const after = new Map((await getTestSetCases(ctx.projectId, batch.testSetId)).map((c) => [c.testSetTestCaseId, c.executionStatusId]));
+      for (const r of results) if (r.result === "recorded") r.spiraStatusId = after.get(r.testSetTestCaseId) ?? null;
+    } catch (error) {
+      failure(error);
+    }
+  }
+  return { results };
 }
 
 /** Deletes test runs this app recorded. Each run is checked to be ours before it is deleted. */

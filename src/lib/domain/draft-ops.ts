@@ -1,6 +1,6 @@
 import { allCards, cardKey, normalizeDecisions, preserveDecisions, removalActions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
-import { emptyExecution, EXECUTION_STATUS, STATUS_LABEL } from "./execution";
+import { emptyExecution, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, STATUS_LABEL } from "./execution";
 import type {
   ApplyActionResult,
   BlockedAssessment,
@@ -209,7 +209,8 @@ export function recordExecutionResults(
       tester,
       comment: sent.find((s) => s.testSetTestCaseId === r.testSetTestCaseId)?.comment ?? "",
     });
-    execution.spira[key] = { statusId: EXECUTION_STATUS[r.status], status: STATUS_LABEL[r.status] };
+    const statusId = r.spiraStatusId !== undefined ? r.spiraStatusId : EXECUTION_STATUS[r.status];
+    execution.spira[key] = { statusId, status: statusId === null ? "Not Run" : (EXECUTION_STATUS_NAMES[statusId] ?? STATUS_LABEL[r.status]) };
     delete execution.progress[key];
   }
   draft.execution = execution;
