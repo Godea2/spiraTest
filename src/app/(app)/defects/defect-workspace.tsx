@@ -17,8 +17,10 @@ import {
   raiseDefect,
   readIncidentOptions,
   readLeftOutModules,
+  readNewCaseStatus,
   searchDefect,
   storeLeftOutModules,
+  storeNewCaseStatus,
   suggestNewCase,
   undoDefect,
   type DefectCase,
@@ -384,18 +386,19 @@ function Finder({
   }
 
   async function draftNewCase(from: DefectSearch) {
-    setNewCase({ status: "drafting", error: null, reason: "", testCase: EMPTY_CASE, targets: [] });
+    const statusId = readNewCaseStatus(projectId);
+    setNewCase({ status: "drafting", error: null, reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
     try {
       const s = await suggestNewCase(drafts, from);
       setNewCase({
         status: "ready",
         error: null,
         reason: s.reason,
-        testCase: { name: s.name, description: s.description, steps: s.steps, failingStep: s.failingStep },
+        testCase: { name: s.name, description: s.description, steps: s.steps, failingStep: s.failingStep, statusId },
         targets: s.testSetKeys.filter((k) => caseTargets.some((t) => t.key === k)),
       });
     } catch (err) {
-      setNewCase({ status: "error", error: errorMessage(err), reason: "", testCase: EMPTY_CASE, targets: [] });
+      setNewCase({ status: "error", error: errorMessage(err), reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
     }
   }
 
@@ -441,7 +444,9 @@ function Finder({
     if (newCase && newTargets.length > 0) {
       setJob((j) => j && { ...j, creating: true });
       try {
-        const made = await createDefectTestCase({ targets: newTargets, testCase: newCase.testCase }, settings?.mappings ?? []);
+        // Only a status from the project's own list is sent; anything else falls back to the project's default.
+        const statusId = options?.testCaseStatuses.some((s) => s.id === newCase.testCase.statusId) ? newCase.testCase.statusId : null;
+        const made = await createDefectTestCase({ targets: newTargets, testCase: { ...newCase.testCase, statusId } }, settings?.mappings ?? []);
         extra = made.picks;
         created = made.created;
         notes.push(`New test case TC${made.created.testCaseId} "${made.created.name}" added to ${newTargets.map((t) => t.testSetName).join(", ")}, in the Defects column.`, ...made.problems);
@@ -658,6 +663,8 @@ function Finder({
               <NewCasePanel
                 form={newCase}
                 targets={caseTargets}
+                statuses={options?.testCaseStatuses ?? (optionsError ? [] : undefined)}
+                onStatusChosen={(statusId) => storeNewCaseStatus(projectId, statusId)}
                 disabled={!!job}
                 onChange={(change) => setNewCase((f) => (f ? { ...f, ...change } : f))}
                 onRetry={() => void draftNewCase(search)}
@@ -808,20 +815,29 @@ function Finder({
 function NewCasePanel({
   form,
   targets,
+  statuses,
   disabled,
   onChange,
+  onStatusChosen,
   onRetry,
   onRemove,
 }: {
   form: NewCaseForm;
   targets: NewCaseTarget[];
+  /** The project's test case statuses; undefined while loading. */
+  statuses: IncidentOptions["testCaseStatuses"] | undefined;
   disabled: boolean;
   onChange: (change: Partial<NewCaseForm>) => void;
+  onStatusChosen: (statusId: number | null) => void;
   onRetry: () => void;
   onRemove: () => void;
 }) {
   const { testCase } = form;
   const setCase = (change: Partial<NewDefectCase>) => onChange({ testCase: { ...testCase, ...change } });
+  const onStatus = (statusId: number | null) => {
+    setCase({ statusId });
+    onStatusChosen(statusId);
+  };
   const setStep = (index: number, change: Partial<NewDefectCase["steps"][number]>) =>
     setCase({ steps: testCase.steps.map((s, i) => (i === index ? { ...s, ...change } : s)) });
   const removeStep = (index: number) =>
@@ -901,6 +917,19 @@ function NewCasePanel({
           <label className="flex flex-col gap-1 text-sm">
             <span className="font-medium">Description</span>
             <textarea className="input min-h-16" value={testCase.description} maxLength={4_000} disabled={disabled} onChange={(e) => setCase({ description: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1 text-sm sm:max-w-xs">
+            <span className="font-medium">Status in Spira</span>
+            <select
+              className="input"
+              value={statuses?.some((s) => s.id === testCase.statusId) ? String(testCase.statusId) : ""}
+              disabled={disabled || !statuses}
+              onChange={(e) => onStatus(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">{statuses ? "Project default" : "Loading…"}</option>
+              {statuses?.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <span className="text-xs text-slate-500 dark:text-zinc-400">The test case&apos;s own status. Its run is recorded as Failed either way.</span>
           </label>
 
           <fieldset className="flex flex-col gap-2" disabled={disabled}>

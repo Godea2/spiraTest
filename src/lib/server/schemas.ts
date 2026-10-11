@@ -272,6 +272,8 @@ export const defectCaseCreateRequestSchema = z.object({
   testCase: z.object({
     name: z.string().trim().min(5, "Give the test case a name.").max(255),
     description: z.string().trim().max(4_000),
+    /** The test case's status in Spira; null or left out for the project's default. */
+    statusId: id.nullable().optional(),
     steps: z
       .array(z.object({ description: newStepText.min(3, "Every step needs an action."), expectedResult: newStepText }))
       .min(1, "Give the test case at least one step.")

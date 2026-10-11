@@ -346,6 +346,8 @@ export interface NewDefectCase {
   steps: Array<{ description: string; expectedResult: string }>;
   /** 1-based position of the step where the defect shows. */
   failingStep: number;
+  /** The test case's status in Spira; null or left out for the project's default. */
+  statusId?: number | null;
 }
 
 export interface NewDefectCaseSuggestion extends NewDefectCase {
@@ -371,6 +373,8 @@ export interface IncidentOptions {
   priorities: IncidentOption[];
   severities: IncidentOption[];
   defaultTypeId: number | null;
+  /** The project's test case statuses, for a test case created for a defect; empty when they could not be read. */
+  testCaseStatuses: IncidentOption[];
 }
 
 export interface DefectLogResult {

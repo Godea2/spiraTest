@@ -368,6 +368,23 @@ function limiter(size: number) {
 
 // ---- new test case ----------------------------------------------------------
 
+const NEW_CASE_STATUS_KEY = "defect-new-case-status";
+
+/** The test case status last chosen for a new defect case in this project; null for the project's default. */
+export function readNewCaseStatus(projectId: number): number | null {
+  const stored = readItem<Record<string, unknown>>(NEW_CASE_STATUS_KEY);
+  const value = stored?.[String(projectId)];
+  return typeof value === "number" ? value : null;
+}
+
+export function storeNewCaseStatus(projectId: number, statusId: number | null): void {
+  try {
+    writeItem(NEW_CASE_STATUS_KEY, { ...(readItem<Record<string, unknown>>(NEW_CASE_STATUS_KEY) ?? {}), [String(projectId)]: statusId });
+  } catch {
+    // Only a convenience: the choice still applies to this case.
+  }
+}
+
 /** A test set a new defect case can be added to: one on a searched board. */
 export interface NewCaseTarget {
   key: string;
@@ -435,12 +452,12 @@ export async function createDefectTestCase(
   const projectId = drafts[0].projectId;
   if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Choose test sets of one Spira project.");
   const boardOf = new Map(draftIds.map((id, i) => [id, i]));
-  const { name, description, steps, failingStep } = input.testCase;
+  const { name, description, steps, failingStep, statusId } = input.testCase;
   const out = await api<DefectCaseCreated>("/api/execution/defect/case", {
     method: "POST",
     body: {
       boards: drafts.map((d) => ({ context: contextOf(d), testSets: d.testSets, decisions: d.decisions })),
-      testCase: { name, description, steps },
+      testCase: { name, description, steps, statusId: statusId ?? null },
       targets: input.targets.map((t) => ({ board: boardOf.get(t.draftId)!, testSetId: t.testSetId })),
     },
   });

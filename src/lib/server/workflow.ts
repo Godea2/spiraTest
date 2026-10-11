@@ -659,7 +659,7 @@ export async function logDefect(input: {
  */
 export async function createDefectCase(input: {
   boards: Array<{ context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> }>;
-  testCase: { name: string; description: string; steps: Array<{ description: string; expectedResult: string }> };
+  testCase: { name: string; description: string; statusId?: number | null; steps: Array<{ description: string; expectedResult: string }> };
   targets: Array<{ board: number; testSetId: number }>;
 }): Promise<DefectCaseCreated> {
   const projectId = input.boards[0].context.projectId;
@@ -684,7 +684,7 @@ export async function createDefectCase(input: {
     }
   }
   const description = [input.testCase.description.trim(), testCaseSignature(RUNNER_NAME)].filter(Boolean).join("\n\n");
-  const testCaseId = await createTestCase(projectId, { name: input.testCase.name, description, folderId });
+  const testCaseId = await createTestCase(projectId, { name: input.testCase.name, description, folderId, statusId: input.testCase.statusId ?? null });
   const memberships: DefectCaseCreated["memberships"] = [];
   try {
     for (const [index, step] of input.testCase.steps.entries()) await addTestStep(projectId, testCaseId, { position: index + 1, ...step });

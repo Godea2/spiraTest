@@ -81,8 +81,14 @@ describe("createDefectCase", () => {
       name: testCase.name,
       description: expect.stringContaining(testCaseSignature("Spira Test Set Reconciler")),
       folderId: 31,
+      statusId: null,
     });
     expect(spira.addTestStep.mock.calls.map((c) => c[2].position)).toEqual([1, 2]);
+  });
+
+  it("creates the case with the chosen Spira status", async () => {
+    await createDefectCase({ boards: [board(ctx, 1, [1])], testCase: { ...testCase, statusId: 4 }, targets: [{ board: 0, testSetId: 1 }] });
+    expect(spira.createTestCase).toHaveBeenCalledWith(24, expect.objectContaining({ statusId: 4 }));
   });
 
   it("refuses test sets that are not on the boards sent, twice over, or from another project", async () => {

@@ -500,20 +500,31 @@ const optionListSchema = z.array(z.record(z.string(), z.unknown()));
 export async function getIncidentOptions(projectId: number): Promise<IncidentOptions> {
   const project = parse(projectSchema, await call("GET", `projects/${projectId}`, "reading the project"), "reading the project");
   const template = project.ProjectTemplateId;
-  if (!template) return { types: [], priorities: [], severities: [], defaultTypeId: null };
+  if (!template) return { types: [], priorities: [], severities: [], defaultTypeId: null, testCaseStatuses: [] };
   const read = async (path: string, key: string, what: string) => {
-    const rows = parse(optionListSchema, await call("GET", `project-templates/${template}/incidents/${path}`, what), what);
+    const rows = parse(optionListSchema, await call("GET", `project-templates/${template}/${path}`, what), what);
     return rows
       .filter((r) => typeof r[key] === "number" && r.Active !== false && r.IsActive !== false)
       .map((r) => ({ id: r[key] as number, name: (typeof r.Name === "string" && r.Name.trim()) || `#${r[key]}`, isDefault: r.IsDefault === true }));
   };
-  const [types, priorities, severities] = await Promise.all([
-    read("types", "IncidentTypeId", "reading the incident types"),
-    read("priorities", "PriorityId", "reading the incident priorities"),
-    read("severities", "SeverityId", "reading the incident severities"),
+  const [types, priorities, severities, testCaseStatuses] = await Promise.all([
+    read("incidents/types", "IncidentTypeId", "reading the incident types"),
+    read("incidents/priorities", "PriorityId", "reading the incident priorities"),
+    read("incidents/severities", "SeverityId", "reading the incident severities"),
+    // Only offered on a new test case; without it the project's default status is used.
+    read("test-cases/statuses", "TestCaseStatusId", "reading the test case statuses").catch((error) => {
+      if (error instanceof SpiraError) return [];
+      throw error;
+    }),
   ]);
   const strip = (list: Array<{ id: number; name: string }>) => list.map(({ id: optionId, name }) => ({ id: optionId, name }));
-  return { types: strip(types), priorities: strip(priorities), severities: strip(severities), defaultTypeId: types.find((t) => t.isDefault)?.id ?? null };
+  return {
+    types: strip(types),
+    priorities: strip(priorities),
+    severities: strip(severities),
+    defaultTypeId: types.find((t) => t.isDefault)?.id ?? null,
+    testCaseStatuses: strip(testCaseStatuses),
+  };
 }
 
 const manualRunStepsSchema = z
@@ -595,14 +606,18 @@ export async function getTestCaseFolderId(projectId: number, testCaseId: number)
   return raw.TestCaseFolderId && raw.TestCaseFolderId > 0 ? raw.TestCaseFolderId : null;
 }
 
-/** Creates a test case with the project's default type and status. A write: never retried. */
-export async function createTestCase(projectId: number, input: { name: string; description: string; folderId: number | null }): Promise<number> {
+/** Creates a test case with the project's default type, and the chosen status or the default one. A write: never retried. */
+export async function createTestCase(
+  projectId: number,
+  input: { name: string; description: string; folderId: number | null; statusId?: number | null },
+): Promise<number> {
   const what = "creating the test case";
   const body = {
     Name: input.name.slice(0, 255),
     Description: textToHtml(input.description),
     TestCaseFolderId: input.folderId,
-    TestCaseStatusId: 0,
+    // 0 lets Spira use the project's default status.
+    TestCaseStatusId: input.statusId ?? 0,
     TestCaseTypeId: null,
   };
   const raw = parse(z.object({ TestCaseId: id }).passthrough(), await call("POST", `projects/${projectId}/test-cases`, what, body), what);
