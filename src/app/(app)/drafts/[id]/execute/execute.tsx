@@ -24,6 +24,7 @@ import {
   STATUS_LABEL,
 } from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
+import { MarkMenu } from "./mark-menu";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
 type Filter = "all" | "notRun" | "inProgress" | ExecutionStatus;
@@ -515,9 +516,11 @@ export function Execute({ id }: { id: string }) {
               {visibleSelected.length ? `Run ${visibleSelected.length} selected` : `Run all ${visible.length}`}
             </Button>
             {visibleSelected.length > 0 && (
-              <Button size="sm" icon={Check} onClick={() => setBulk({ status: "passed", comment: "" })} busy={bulkRunning} disabled={bulkRunning}>
-                Mark {visibleSelected.length} as…
-              </Button>
+              <MarkMenu
+                count={visibleSelected.length}
+                busy={bulkRunning}
+                onPick={(status) => (status === "passed" ? void bulkRecord("passed", "", visibleSelected) : setBulk({ status, comment: "" }))}
+              />
             )}
           </div>
         )}
@@ -601,16 +604,12 @@ export function Execute({ id }: { id: string }) {
       <Dialog
         open={bulk !== null}
         onClose={() => setBulk(null)}
-        title={`Record a result for ${plural(visibleSelected.length, "case")}`}
+        title={bulk ? `Mark ${plural(visibleSelected.length, "case")} as ${STATUS_LABEL[bulk.status]}` : ""}
         footer={
           bulk && (
             <>
               <Button onClick={() => setBulk(null)}>Cancel</Button>
-              <Button
-                variant="primary"
-                disabled={bulk.status !== "passed" && !bulk.comment.trim()}
-                onClick={() => void bulkRecord(bulk.status, bulk.comment, visibleSelected)}
-              >
+              <Button variant="primary" disabled={!bulk.comment.trim()} onClick={() => void bulkRecord(bulk.status, bulk.comment, visibleSelected)}>
                 Record {visibleSelected.length} {STATUS_LABEL[bulk.status]}
               </Button>
             </>
@@ -619,24 +618,31 @@ export function Execute({ id }: { id: string }) {
       >
         {bulk && (
           <div className="flex flex-col gap-4">
-            <StatusButtons options={EXECUTION_STATUSES} value={bulk.status} onPick={(s) => setBulk({ ...bulk, status: s as ExecutionStatus })} />
+            <StatusButtons
+              options={EXECUTION_STATUSES.filter((s) => s !== "passed")}
+              value={bulk.status}
+              onPick={(s) => setBulk({ ...bulk, status: s as ExecutionStatus })}
+            />
             <label className="flex flex-col gap-1 text-sm">
-              <span className="font-medium">
-                {bulk.status === "passed" ? "Comment (optional)" : `Why ${STATUS_LABEL[bulk.status].toLowerCase()}? (required)`}
-              </span>
+              <span className="font-medium">Why {STATUS_LABEL[bulk.status].toLowerCase()}?</span>
               <textarea
+                autoFocus
                 className="input min-h-20"
                 value={bulk.comment}
                 maxLength={4000}
-                placeholder={bulk.status === "blocked" ? "For example: feature not deployed to this build" : bulk.status === "passed" ? "" : "What happened"}
+                placeholder={bulk.status === "blocked" ? "For example: feature not deployed to this build" : bulk.status === "failed" ? "What went wrong" : "What to watch"}
                 onChange={(e) => setBulk({ ...bulk, comment: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && bulk.comment.trim()) {
+                    e.preventDefault();
+                    void bulkRecord(bulk.status, bulk.comment, visibleSelected);
+                  }
+                }}
               />
             </label>
             <p className="text-sm text-slate-600 dark:text-zinc-400">
-              {bulk.status === "passed"
-                ? "Each selected case gets a Passed test run in Spira with every step marked Passed"
-                : `Each selected case gets a ${STATUS_LABEL[bulk.status]} test run in Spira: the first step is marked ${STATUS_LABEL[bulk.status]} with this reason, and the other steps stay Not Run`}
-              {tester.trim() ? `, recorded as tested by ${tester.trim()}` : ""}. Only do this for cases that were actually tested; to record which step failed, use Run instead. Each run can be undone from the case.
+              Each case gets a {STATUS_LABEL[bulk.status]} run in Spira: the first step is marked {STATUS_LABEL[bulk.status]} with this reason, the other steps stay Not Run
+              {tester.trim() ? `, tested by ${tester.trim()}` : ""}. To record which step failed, use Run instead. <kbd className="kbd">Ctrl</kbd>+<kbd className="kbd">Enter</kbd> records.
             </p>
           </div>
         )}
