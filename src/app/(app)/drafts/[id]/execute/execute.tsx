@@ -33,6 +33,7 @@ import {
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
+import { DefectFinder } from "./defect-finder";
 import { MarkMenu } from "./mark-menu";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
@@ -503,6 +504,16 @@ export function Execute({ id }: { id: string }) {
           )}
         </div>
       </Section>
+
+      <DefectFinder
+        draft={draft}
+        cards={setTab === "all" ? cards : cards.filter((c) => c.testSetId === setTab)}
+        scopeLabel={setTab === "all" ? (draft.testSets.length > 1 ? "all test sets" : setName(draft.testSets[0]?.testSetId ?? 0)) : setName(setTab)}
+        tester={tester.trim()}
+        disabled={bulkRunning}
+        onChange={setDraft}
+        onBusy={markBusy}
+      />
 
       <Section icon={ListChecks} title="In Scope cases" description={`${plural(counts.total, "case")} from ${plural(draft.testSets.length, "test set")}${releaseText ? `, recorded against release ${releaseText}` : ""}.`}>
         <div className="mb-4 flex flex-col gap-3">

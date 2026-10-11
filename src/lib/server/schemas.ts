@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { MAX_DEFECT_CANDIDATES, MAX_DEFECT_SEARCH_CASES, MAX_DEFECT_TEXT, MAX_DEFECT_VERIFY_BATCH, MAX_STEP_TEXT, MAX_VERIFY_STEPS } from "@/lib/domain/defects";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
@@ -198,6 +199,67 @@ export const executionRecordRequestSchema = z.object({
       .max(MAX_EXECUTION_BATCH, `Send at most ${MAX_EXECUTION_BATCH} results per batch.`),
   }),
 });
+
+const defectText = z.string().trim().min(10, "Describe the defect in a sentence or two.").max(MAX_DEFECT_TEXT);
+const stepText = z.string().max(MAX_STEP_TEXT);
+
+export const defectSearchRequestSchema = z.object({
+  module: z.string().trim().min(1).max(200),
+  description: defectText,
+  cases: z
+    .array(
+      z.object({
+        key: z.string().max(64),
+        testSetName: z.string().max(200),
+        scenario: z.string().max(MAX_SCENARIO_TEXT),
+        workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
+        status: z.string().max(40),
+      }),
+    )
+    .min(1)
+    .max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per search.`),
+});
+
+export const defectVerifyRequestSchema = z.object({
+  module: z.string().trim().min(1).max(200),
+  description: defectText,
+  analysis: z.object({ area: z.string().max(200), symptom: z.string().max(600), expected: z.string().max(600) }),
+  cases: z
+    .array(
+      z.object({
+        key: z.string().max(64),
+        name: z.string().max(2_000),
+        steps: z
+          .array(z.object({ label: z.string().max(20), description: stepText, expectedResult: stepText, sampleData: stepText }))
+          .max(MAX_VERIFY_STEPS),
+      }),
+    )
+    .min(1)
+    .max(MAX_DEFECT_VERIFY_BATCH, `Send at most ${MAX_DEFECT_VERIFY_BATCH} cases per request.`),
+});
+
+const optionalId = id.nullable();
+
+export const defectLogRequestSchema = z.object({
+  context: contextSchema,
+  testSets,
+  decisions,
+  defect: z.object({
+    name: z.string().trim().min(3, "Give the defect a title.").max(255),
+    description: z.string().trim().min(10).max(20_000),
+    typeId: optionalId,
+    priorityId: optionalId,
+    severityId: optionalId,
+  }),
+  runs: z
+    .array(z.object({ testRunId: id, testCaseId: id, testSetId: id, testSetTestCaseId: id }))
+    .min(1)
+    .max(MAX_DEFECT_CANDIDATES, `Link at most ${MAX_DEFECT_CANDIDATES} runs to one defect.`),
+});
+
+export const defectUndoRequestSchema = z.object({ projectId: id, incidentId: id });
+
+export const projectLookupSchema = z.object({ projectId: id });
 
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });
 

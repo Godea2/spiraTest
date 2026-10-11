@@ -1,8 +1,9 @@
 import "server-only";
 import { z } from "zod";
-import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, runSignature, type RunStepSlot } from "@/lib/domain/execution";
+import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, RUNNER_NAME, runSignature, type RunStepSlot } from "@/lib/domain/execution";
+import { incidentSignature } from "@/lib/domain/defects";
 import { richText } from "@/lib/domain/text";
-import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
+import type { IncidentOptions, SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
 // and are sent as headers, never in the URL, so they do not end up in proxy or server logs.
@@ -363,8 +364,7 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
   });
 }
 
-/** Name the app records as the runner, and checks before deleting a run on undo. */
-export const RUNNER_NAME = "Spira Test Set Reconciler";
+export { RUNNER_NAME };
 
 export interface TestRunRecord {
   testCaseId: number;
@@ -491,6 +491,101 @@ export async function deleteRecordedTestRun(projectId: number, testRunId: number
     if (automated.RunnerName !== RUNNER_NAME) throw notOurs();
   }
   await call("DELETE", `projects/${projectId}/test-runs/${testRunId}`, `deleting test run ${testRunId}`);
+}
+
+const projectSchema = z.object({ ProjectId: id, ProjectTemplateId: z.number().int().nullish() });
+const optionListSchema = z.array(z.record(z.string(), z.unknown()));
+
+/** The project's incident types, priorities and severities, for the defect form. Read-only. */
+export async function getIncidentOptions(projectId: number): Promise<IncidentOptions> {
+  const project = parse(projectSchema, await call("GET", `projects/${projectId}`, "reading the project"), "reading the project");
+  const template = project.ProjectTemplateId;
+  if (!template) return { types: [], priorities: [], severities: [], defaultTypeId: null };
+  const read = async (path: string, key: string, what: string) => {
+    const rows = parse(optionListSchema, await call("GET", `project-templates/${template}/incidents/${path}`, what), what);
+    return rows
+      .filter((r) => typeof r[key] === "number" && r.Active !== false && r.IsActive !== false)
+      .map((r) => ({ id: r[key] as number, name: (typeof r.Name === "string" && r.Name.trim()) || `#${r[key]}`, isDefault: r.IsDefault === true }));
+  };
+  const [types, priorities, severities] = await Promise.all([
+    read("types", "IncidentTypeId", "reading the incident types"),
+    read("priorities", "PriorityId", "reading the incident priorities"),
+    read("severities", "SeverityId", "reading the incident severities"),
+  ]);
+  const strip = (list: Array<{ id: number; name: string }>) => list.map(({ id: optionId, name }) => ({ id: optionId, name }));
+  return { types: strip(types), priorities: strip(priorities), severities: strip(severities), defaultTypeId: types.find((t) => t.isDefault)?.id ?? null };
+}
+
+const manualRunStepsSchema = z
+  .object({
+    TestRunId: id,
+    TestCaseId: id,
+    ReleaseId: z.number().int().nullish(),
+    TestRunSteps: z
+      .array(z.object({ TestRunStepId: z.number().int().nullish(), ExecutionStatusId: z.number().int().nullish(), ActualResult: z.string().nullish() }).passthrough())
+      .nullish(),
+  })
+  .passthrough();
+
+export interface RecordedRunSteps {
+  testRunId: number;
+  testCaseId: number;
+  releaseId: number | null;
+  /** True when the run carries this app's signature, so it was recorded here. */
+  ours: boolean;
+  /** Run step IDs of the steps marked Failed, in order. */
+  failedStepIds: number[];
+}
+
+/** A saved manual run's steps, read back to find the run steps a defect links to. Read-only. */
+export async function getRecordedRunSteps(projectId: number, testRunId: number): Promise<RecordedRunSteps> {
+  const what = `reading test run ${testRunId}`;
+  const run = parse(manualRunStepsSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/manual`, what), what);
+  const steps = run.TestRunSteps ?? [];
+  const signature = runSignature(RUNNER_NAME);
+  return {
+    testRunId: run.TestRunId,
+    testCaseId: run.TestCaseId,
+    releaseId: run.ReleaseId ?? null,
+    ours: steps.some((s) => s.ActualResult?.includes(signature)),
+    failedStepIds: steps.filter((s) => s.ExecutionStatusId === EXECUTION_STATUS.failed && s.TestRunStepId).map((s) => s.TestRunStepId!),
+  };
+}
+
+export interface IncidentInput {
+  name: string;
+  description: string;
+  typeId: number | null;
+  priorityId: number | null;
+  severityId: number | null;
+  releaseId: number | null;
+  testRunStepIds: number[];
+}
+
+/** Creates an incident linked to failed run steps. A write: never retried, so a lost answer cannot create a duplicate. */
+export async function createIncident(projectId: number, input: IncidentInput): Promise<number> {
+  const what = "logging the defect as an incident";
+  const body = {
+    Name: input.name.slice(0, 255),
+    Description: textToHtml(input.description),
+    IncidentTypeId: input.typeId,
+    PriorityId: input.priorityId,
+    SeverityId: input.severityId,
+    DetectedReleaseId: input.releaseId,
+    TestRunStepIds: input.testRunStepIds,
+  };
+  const raw = parse(z.object({ IncidentId: id }).passthrough(), await call("POST", `projects/${projectId}/incidents`, what, body), what);
+  return raw.IncidentId;
+}
+
+/** Deletes an incident, but only one this app logged: its description must carry the app's signature. */
+export async function deleteLoggedIncident(projectId: number, incidentId: number): Promise<void> {
+  const what = `reading incident ${incidentId}`;
+  const raw = parse(z.object({ IncidentId: id, Description: z.string().nullish() }).passthrough(), await call("GET", `projects/${projectId}/incidents/${incidentId}`, what), what);
+  if (!richText(raw.Description).includes(incidentSignature(RUNNER_NAME))) {
+    throw new SpiraError(`Incident ${incidentId} was not logged by this app, so it was not deleted.`, 409);
+  }
+  await call("DELETE", `projects/${projectId}/incidents/${incidentId}`, `deleting incident ${incidentId}`);
 }
 
 /** Removes one membership. The test case itself is not deleted. */

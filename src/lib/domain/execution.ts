@@ -210,6 +210,9 @@ export interface FilledRunStep {
   actualResult: string;
 }
 
+/** Name the app records as the runner, and checks before deleting a run or incident on undo. */
+export const RUNNER_NAME = "Spira Test Set Reconciler";
+
 /** Marks a manual run as made by this app; undo only deletes manual runs carrying it. */
 export function runSignature(runner: string): string {
   return `with ${runner}.`;

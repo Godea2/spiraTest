@@ -5,6 +5,7 @@ import type {
   ApplyActionResult,
   BlockedAssessment,
   Column,
+  DefectRecord,
   Draft,
   DraftApplyState,
   ExecutionProgress,
@@ -231,6 +232,19 @@ export function recordExecutionUndo(draft: Draft, deletedRunIds: number[]): void
   if (!draft.execution) return;
   const deleted = new Set(deletedRunIds);
   draft.execution.runs = draft.execution.runs.filter((run) => !deleted.has(run.testRunId));
+}
+
+/** Keeps a defect raised here, or replaces it when it is already kept (for example once its incident is logged). */
+export function recordDefect(draft: Draft, defect: DefectRecord): void {
+  const execution = draft.execution ?? emptyExecution();
+  execution.defects = [...(execution.defects ?? []).filter((d) => d.id !== defect.id), defect];
+  draft.execution = execution;
+}
+
+/** Forgets a defect whose incident and runs were deleted from Spira. */
+export function removeDefect(draft: Draft, defectId: string): void {
+  if (!draft.execution?.defects) return;
+  draft.execution.defects = draft.execution.defects.filter((d) => d.id !== defectId);
 }
 
 export function sortedEntries<T>(record: Record<string, T>): Array<[string, T]> {

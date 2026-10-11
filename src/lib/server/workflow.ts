@@ -7,6 +7,7 @@ import type {
   ApplyAction,
   ApplyActionResult,
   Column,
+  DefectLogResult,
   ExecutionCaseInput,
   ExecutionResult,
   Platform,
@@ -22,8 +23,11 @@ import type {
 } from "@/lib/domain/types";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
 import {
+  createIncident,
   createManualRunShells,
+  deleteLoggedIncident,
   deleteRecordedTestRun,
+  getRecordedRunSteps,
   EXECUTION_STATUS,
   getMembership,
   getTestSet,
@@ -574,6 +578,78 @@ export async function recordExecutions(input: {
     testSet = await keepTestSet(ctx.projectId, before, statuses);
   }
   return { results, testSet };
+}
+
+/**
+ * Logs one defect as a Spira incident linked to the failed step of each given run. Only runs of In
+ * Scope cases on a verified board are used, and each run is read back first: it must be a manual run
+ * this app recorded for that test case, with a Failed step. Runs that do not qualify are reported and
+ * left out; when none qualifies nothing is created. The incident is a write and is never retried.
+ */
+export async function logDefect(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+  defect: { name: string; description: string; typeId: number | null; priorityId: number | null; severityId: number | null };
+  runs: Array<{ testRunId: number; testCaseId: number; testSetId: number; testSetTestCaseId: number }>;
+}): Promise<DefectLogResult> {
+  const ctx = input.context;
+  const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
+  const seen = new Set<number>();
+  for (const run of input.runs) {
+    if (seen.has(run.testRunId)) throw new ApplyValidationError(`Test run ${run.testRunId} appears twice.`);
+    seen.add(run.testRunId);
+    const card = sets.find((s) => s.testSetId === run.testSetId)?.cards.find((c) => c.testSetTestCaseId === run.testSetTestCaseId);
+    if (!card || card.testCaseId !== run.testCaseId) throw new ApplyValidationError(`TC${run.testCaseId} is not on this board.`);
+    if (effectiveColumn(card, decisions) !== "inScope") throw new ApplyValidationError(`TC${run.testCaseId} is not In Scope.`);
+  }
+
+  const linked: DefectLogResult["linked"] = [];
+  const unlinked: DefectLogResult["unlinked"] = [];
+  let releaseId = ctx.releaseId;
+  const reads = await inPool(input.runs, 3, async (run) => {
+    try {
+      return { run, steps: await getRecordedRunSteps(ctx.projectId, run.testRunId), error: null };
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return { run, steps: null, error: error.message };
+    }
+  });
+  for (const { run, steps, error } of reads) {
+    if (!steps) {
+      unlinked.push({ testRunId: run.testRunId, message: error ?? "The run could not be read." });
+      continue;
+    }
+    if (steps.testCaseId !== run.testCaseId || !steps.ours) {
+      unlinked.push({ testRunId: run.testRunId, message: `Test run ${run.testRunId} was not recorded here for TC${run.testCaseId}.` });
+    } else if (steps.failedStepIds.length === 0) {
+      unlinked.push({ testRunId: run.testRunId, message: `Test run ${run.testRunId} has no Failed step.` });
+    } else {
+      linked.push({ testRunId: run.testRunId, testRunStepId: steps.failedStepIds[0] });
+      releaseId ??= steps.releaseId;
+    }
+  }
+  if (linked.length === 0) {
+    throw new ApplyValidationError(`No run could be linked, so no incident was logged. ${unlinked.map((u) => u.message).join(" ")}`.trim());
+  }
+
+  const incidentId = await createIncident(ctx.projectId, {
+    ...input.defect,
+    releaseId,
+    testRunStepIds: linked.map((l) => l.testRunStepId),
+  });
+  return { incidentId, linked, unlinked };
+}
+
+/** Deletes an incident this app logged; it is checked to be ours first. */
+export async function undoDefect(input: { projectId: number; incidentId: number }): Promise<{ ok: true; message: string | null }> {
+  try {
+    await deleteLoggedIncident(input.projectId, input.incidentId);
+    return { ok: true, message: null };
+  } catch (error) {
+    if (error instanceof SpiraError && error.upstream === 404) return { ok: true, message: "Already deleted in Spira." };
+    throw error;
+  }
 }
 
 /** Deletes test runs this app recorded. Each run is checked to be ours before it is deleted. */

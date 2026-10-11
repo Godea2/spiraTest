@@ -251,6 +251,81 @@ export interface DraftExecution {
   checkedAt: string | null;
   /** Each test set's own status in Spira, keyed by test set ID; expectedId is set when its cases call for another. */
   testSets?: Record<string, TestSetStatusState>;
+  /** Defects raised here from a description, newest last. */
+  defects?: DefectRecord[];
+}
+
+export const DEFECT_SEVERITIES = ["critical", "high", "medium", "low"] as const;
+export type DefectSeverity = (typeof DEFECT_SEVERITIES)[number];
+
+/** How Gemini reads a defect description. */
+export interface DefectAnalysis {
+  /** A bug title: "<screen or feature>: <what goes wrong>". */
+  title: string;
+  area: string;
+  symptom: string;
+  /** What should happen instead; empty when the description does not say. */
+  expected: string;
+  severity: DefectSeverity;
+  /** One question that would sharpen the search when the description is too vague; null otherwise. */
+  question: string | null;
+}
+
+/** A case Gemini picked from names alone as possibly affected; its steps are checked next. */
+export interface DefectCandidate {
+  key: string;
+  relevance: BlockedConfidence;
+  why: string;
+}
+
+export type DefectVerdict = "fails" | "possible" | "unaffected";
+
+/** Whether a defect makes a case fail, judged from the case's steps. */
+export interface DefectMatch {
+  key: string;
+  verdict: DefectVerdict;
+  confidence: BlockedConfidence;
+  /** Step where the tester meets the defect; null for a case without steps or when none applies. */
+  stepLabel: string | null;
+  /** Words copied from the case that show it exercises the broken behaviour. */
+  evidence: string;
+  /** True when the evidence was found, word for word, in the case's own text. */
+  grounded: boolean;
+  reason: string;
+}
+
+/** A defect logged here: the cases failed for it and the Spira incident linked to their runs. */
+export interface DefectRecord {
+  id: string;
+  at: string;
+  title: string;
+  description: string;
+  tester: string;
+  /** The incident's description as logged, kept so logging can be retried. */
+  report: string;
+  incidentId: number | null;
+  /** Failed run steps the incident is linked to. */
+  linkedSteps: number;
+  cases: Array<{ testSetId: number; testCaseId: number; testSetTestCaseId: number; testRunId: number; stepLabel: string | null }>;
+}
+
+export interface IncidentOption {
+  id: number;
+  name: string;
+}
+
+/** The project's incident lists, for the defect form. */
+export interface IncidentOptions {
+  types: IncidentOption[];
+  priorities: IncidentOption[];
+  severities: IncidentOption[];
+  defaultTypeId: number | null;
+}
+
+export interface DefectLogResult {
+  incidentId: number;
+  linked: Array<{ testRunId: number; testRunStepId: number }>;
+  unlinked: Array<{ testRunId: number; message: string }>;
 }
 
 export interface TestSetStatusState {
