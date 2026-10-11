@@ -157,24 +157,32 @@ export async function applyBatch(
 
 /**
  * Decides whether each candidate is really blocked. With AI on, the server asks Gemini, reading the test
- * scenario only; cases it could not answer, or every case when AI is off, fall back to the keyword verdict.
+ * scenario only; keyword matches it could not answer, or every match when AI is off, fall back to the keyword
+ * verdict. Deep-check candidates (no keyword in the scenario) only ever get an AI verdict.
  */
 export async function reviewBlockedCases(
   draftId: string,
   candidates: BlockedCandidate[],
   useAi: boolean,
   onProgress?: (done: number, total: number) => void,
-): Promise<{ draft: Draft; aiError: string | null }> {
+  signal?: AbortSignal,
+): Promise<{ draft: Draft; aiError: string | null; stopped: boolean }> {
   const draft = getDraft(draftId);
   const at = new Date().toISOString();
   const assessments: Record<string, BlockedAssessment> = {};
   let aiError: string | null = null;
+  let stopped = false;
   if (useAi) {
     let done = 0;
     for (const batch of chunk(candidates, MAX_AI_REVIEW_BATCH)) {
+      if (signal?.aborted) {
+        stopped = true;
+        break;
+      }
       try {
         const { verdicts } = await api<{ verdicts: AiBlockedVerdict[] }>("/api/ai/blocked-review", {
           method: "POST",
+          signal,
           body: {
             module: draft.module,
             cases: batch.map(({ card, keywords }) => ({
@@ -191,18 +199,29 @@ export async function reviewBlockedCases(
         for (const v of verdicts) {
           const candidate = byKey.get(v.key);
           if (!candidate) continue;
-          assessments[v.key] = { keywords: candidate.keywords, blocked: v.blocked, confidence: v.confidence, reason: v.reason, source: "ai", at };
+          assessments[v.key] = {
+            keywords: candidate.keywords,
+            blocked: v.blocked,
+            confidence: v.confidence,
+            reason: v.reason,
+            source: "ai",
+            at,
+            features: v.features,
+            against: draft.testSetKeywords?.[String(candidate.card.testSetId)] ?? [],
+          };
         }
       } catch (err) {
-        aiError = errorMessage(err);
+        if ((err as Error).name === "AbortError") stopped = true;
+        else aiError = errorMessage(err);
         break;
       }
+      mutateDraft(draftId, (d) => recordBlockedReview(d, assessments, at));
       done += batch.length;
       onProgress?.(done, candidates.length);
     }
   }
-  for (const c of candidates) assessments[c.card.key] ??= keywordAssessment(c.keywords, at);
-  return { draft: mutateDraft(draftId, (d) => recordBlockedReview(d, assessments, at)), aiError };
+  for (const c of candidates) if (c.keywords.length) assessments[c.card.key] ??= keywordAssessment(c.keywords, at);
+  return { draft: mutateDraft(draftId, (d) => recordBlockedReview(d, assessments, at)), aiError, stopped };
 }
 
 export async function signOffBatch(

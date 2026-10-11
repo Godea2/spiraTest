@@ -1,4 +1,4 @@
-import { GitCompareArrows, Layers3, ShieldCheck, Sparkles } from "lucide-react";
+import { Ban, GitCompareArrows, Layers3, ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Logo } from "@/components/brand";
@@ -8,16 +8,14 @@ export const metadata: Metadata = { title: "Sign in" };
 
 const POINTS = [
   { icon: GitCompareArrows, title: "Compare scope with Spira", text: "Match the release workbook against every test set in a module." },
-  { icon: Sparkles, title: "Spot what is not built yet", text: "Keywords and an AI review flag cases blocked by missing features." },
+  { icon: Ban, title: "Spot what is not built yet", text: "Keywords in the test scenario, checked by Gemini, flag cases blocked by missing features." },
   { icon: ShieldCheck, title: "Apply safely", text: "Membership checks, typed confirmation and undo before anything changes." },
 ];
 
 export default function LoginPage() {
   return (
     <main className="app-backdrop grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
-      <section className="relative hidden overflow-hidden border-r border-slate-200/70 bg-gradient-to-br from-brand-600 via-violet-600 to-fuchsia-600 p-12 text-white lg:flex lg:flex-col dark:border-white/[0.06]">
-        <div className="pointer-events-none absolute -top-40 -right-40 size-[32rem] rounded-full bg-white/10 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-48 -left-24 size-[28rem] rounded-full bg-fuchsia-300/20 blur-3xl" />
+      <section className="relative hidden overflow-hidden border-r border-slate-200/70 bg-slate-900 p-12 text-white lg:flex lg:flex-col dark:border-white/[0.06] dark:bg-zinc-900">
         <div className="relative flex items-center gap-3">
           <span className="grid size-10 place-items-center rounded-xl bg-white/15 ring-1 ring-white/25 backdrop-blur">
             <Layers3 className="size-5" aria-hidden />

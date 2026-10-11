@@ -144,7 +144,7 @@ export const blockedReviewRequestSchema = z.object({
         testSetName: z.string().max(200),
         scenario: z.string().max(MAX_SCENARIO_TEXT),
         workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
-        keywords: z.array(z.string().max(60)).min(1).max(20),
+        keywords: z.array(z.string().max(60)).max(20),
         allKeywords: keywordListSchema,
       }),
     )
@@ -159,6 +159,8 @@ export const verifyRequestSchema = z.object({
 });
 
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });
+
+export const testCaseLookupSchema = z.object({ projectId: id, testCaseId: id });
 
 export const releaseListSchema = z.object({ projectId: id });
 

@@ -308,7 +308,7 @@ export function ProgressBar({ value, max, tone = "brand" }: { value: number; max
       <div
         className={clsx(
           "h-full rounded-full transition-[width] duration-500 ease-out",
-          tone === "danger" ? "bg-red-500" : tone === "success" ? "bg-emerald-500" : "bg-gradient-to-r from-brand-500 via-violet-500 to-fuchsia-500",
+          tone === "danger" ? "bg-red-500" : tone === "success" ? "bg-emerald-500" : "bg-brand-500",
         )}
         style={{ width: `${pct}%` }}
       />
@@ -330,7 +330,7 @@ export function EmptyState({
   return (
     <div className="surface flex animate-fade-up flex-col items-center px-6 py-16 text-center">
       {Icon && (
-        <span className="mb-4 grid size-12 place-items-center rounded-2xl bg-gradient-to-br from-brand-50 to-violet-50 text-brand-600 ring-1 ring-brand-100 dark:from-brand-500/15 dark:to-violet-500/10 dark:text-brand-300 dark:ring-brand-400/20">
+        <span className="mb-4 grid size-12 place-items-center rounded-2xl bg-slate-100 text-slate-500 ring-1 ring-slate-200 dark:bg-white/[0.06] dark:text-zinc-400 dark:ring-white/10">
           <Icon className="size-6" aria-hidden />
         </span>
       )}

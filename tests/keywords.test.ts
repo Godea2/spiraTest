@@ -5,15 +5,17 @@ import {
   applyProposals,
   blockedCandidates,
   blockedProposals,
+  deepCandidates,
   defaultSelection,
   hasCurrentAiVerdict,
+  hasCurrentDeepVerdict,
   keywordAssessment,
   keywordHits,
   keywordReport,
   matchKeywords,
   parseKeywords,
 } from "@/lib/domain/keywords";
-import { reconcileTestSet } from "@/lib/domain/matching";
+import { reconcileTestSet, workbookRowsFor } from "@/lib/domain/matching";
 import type { BlockedAssessment, Card, Draft, SignOffResult, TestSetComparison } from "@/lib/domain/types";
 
 function card(id: number, suggestion: Card["suggestion"], name = `Case ${id}`, workbookScenario?: string): Card {
@@ -148,6 +150,34 @@ describe("blocked review", () => {
     expect(decisions).toEqual({ "1:1": "blocked", "1:2": "inScope" });
   });
 
+  it("deep-checks In Scope and Blocked cards whose scenario names no keyword, only in sets with keywords", () => {
+    const other = { ...card(5, "inScope", "Happy path"), key: "2:5", testSetId: 2 };
+    const cards = [card(1, "inScope", "Link BVN"), card(2, "inScope", "Sign up as a new customer"), card(3, "outOfScope", "Legacy"), card(4, "blocked", "Happy path"), other];
+    expect(deepCandidates(cards, {}, byTestSet).map((c) => [c.card.key, c.keywords])).toEqual([
+      ["1:2", []],
+      ["1:4", []],
+    ]);
+  });
+
+  it("proposes deep-check verdicts made against the current keywords, and ignores stale ones", () => {
+    const deep = (blocked: boolean, against = ["bvn"], confidence: BlockedAssessment["confidence"] = "medium"): BlockedAssessment => ({
+      ...ai([], blocked, confidence),
+      features: blocked ? ["bvn"] : [],
+      against,
+    });
+    const cards = [card(1, "inScope", "New customer signs up"), card(2, "blocked", "Change theme"), card(3, "inScope", "View balance"), card(4, "inScope", "Create PIN")];
+    const review = { "1:1": deep(true), "1:2": deep(false), "1:3": deep(false), "1:4": deep(true, ["nin"]) };
+    const proposals = blockedProposals(cards, {}, byTestSet, review);
+    expect(proposals.map((p) => [p.card.key, p.kind, p.proposed])).toEqual([
+      ["1:1", "deep", "blocked"],
+      ["1:2", "deep", "inScope"],
+    ]);
+    expect([...defaultSelection(proposals)]).toEqual(["1:1", "1:2"]);
+    expect(hasCurrentDeepVerdict(deep(true), ["bvn"])).toBe(true);
+    expect(hasCurrentDeepVerdict(deep(true), ["bvn", "nin"])).toBe(false);
+    expect(hasCurrentDeepVerdict(ai(["bvn"], true), ["bvn"])).toBe(false);
+  });
+
   it("stores verdicts on the draft and records when the filter ran", () => {
     const d = { blockedReview: { "1:9": ai(["bvn"], true) } } as unknown as Draft;
     recordBlockedReview(d, { "1:1": ai(["bvn"], false) }, AT);
@@ -174,6 +204,18 @@ describe("workbook scenario on cards", () => {
     expect(cards[0].workbookScenario).toBe("Sign up");
     expect(cards[1].workbookScenario).toBeUndefined();
     expect(Object.fromEntries(keywordHits(cards, { "1": ["nin"] }))).toEqual({});
+  });
+
+  it("finds the workbook rows behind a card for its detail view", () => {
+    const rows = [
+      { sheet: "In-Scope", rowNumber: 2, scope: "inScope" as const, values: { "TC ID": "TC-ONB-001", "Test Scenario": "Sign up" } },
+      { sheet: "In-Scope", rowNumber: 3, scope: "inScope" as const, values: { "TC ID": "TC-ONB-002", "Test Scenario": "Log in!" } },
+      { sheet: "In-Scope", rowNumber: 4, scope: "inScope" as const, values: { "TC ID": "TC-ONB-003", "Test Scenario": "Reset PIN" } },
+    ];
+    expect(workbookRowsFor({ ...card(1, "inScope", "Anything"), tcId: "tc-onb-001" }, rows).map((r) => r.rowNumber)).toEqual([2]);
+    expect(workbookRowsFor(card(2, "inScope", "log in"), rows).map((r) => r.rowNumber)).toEqual([3]);
+    expect(workbookRowsFor(card(3, "inScope", "Other", "Reset PIN"), rows).map((r) => r.rowNumber)).toEqual([4]);
+    expect(workbookRowsFor(card(4, "inScope", "Nothing"), rows)).toEqual([]);
   });
 });
 

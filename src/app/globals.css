@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+/* Desktop sidebar collapsed to an icon rail (set on <html> before paint). */
+@custom-variant rail (&:where([data-sidebar="rail"], [data-sidebar="rail"] *));
 
 @theme {
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -91,23 +93,18 @@
       dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-300;
   }
   .text-gradient {
-    @apply bg-gradient-to-r from-brand-600 via-violet-600 to-fuchsia-500 bg-clip-text text-transparent dark:from-brand-300 dark:via-violet-300 dark:to-fuchsia-300;
+    @apply text-brand-600 dark:text-brand-300;
   }
   .skeleton {
     @apply rounded-lg bg-[linear-gradient(90deg,rgb(148_163_184/0.12),rgb(148_163_184/0.24),rgb(148_163_184/0.12))] bg-[length:200%_100%] animate-shimmer;
   }
 }
 
-/* Soft brand glow behind the app, kept subtle so content stays the focus. */
 .app-backdrop {
-  background:
-    radial-gradient(60rem 30rem at 85% -10%, rgb(99 102 241 / 0.1), transparent 60%),
-    radial-gradient(40rem 24rem at -5% 0%, rgb(217 70 239 / 0.06), transparent 60%);
+  background: rgb(248 250 252);
 }
 .dark .app-backdrop {
-  background:
-    radial-gradient(60rem 30rem at 85% -10%, rgb(99 102 241 / 0.16), transparent 60%),
-    radial-gradient(40rem 24rem at -5% 0%, rgb(217 70 239 / 0.08), transparent 60%);
+  background: rgb(9 9 11);
 }
 
 .card-list > * {

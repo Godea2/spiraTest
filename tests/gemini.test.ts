@@ -58,6 +58,42 @@ describe("Gemini blocked review", () => {
     await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/refused the API key/);
   });
 
+  it("keeps only features from the case's keyword list, and none when not blocked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer([
+          { key: "1:1", blocked: true, confidence: "medium", reason: "New-customer path needs NIN.", features: ["NIN", "facial scan"] },
+          { key: "1:2", blocked: false, confidence: "high", reason: "Logging only.", features: ["bvn"] },
+        ]),
+      ),
+    );
+    const verdicts = await reviewBlockedCases("Onboarding", cases);
+    expect(verdicts.map((v) => [v.key, v.features])).toEqual([
+      ["1:1", ["nin"]],
+      ["1:2", []],
+    ]);
+  });
+
+  it("sends the scenario fields the instructions refer to", async () => {
+    const fetchMock = vi.fn(async () => answer([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await reviewBlockedCases("Onboarding", cases);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const input = String(JSON.parse(String(init.body)).input);
+    expect(input).toContain('"mentionedKeywords"');
+    expect(input).toContain('"notImplemented"');
+  });
+
+  it("gives up with a clear message when Gemini times out, without retrying past the budget", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/answering slowly/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects answers in the wrong shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer([{ key: "1:1", blocked: "yes" }])));
     await expect(reviewBlockedCases("Onboarding", cases)).rejects.toThrow(/expected format/);

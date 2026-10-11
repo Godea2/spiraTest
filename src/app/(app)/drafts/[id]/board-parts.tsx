@@ -2,8 +2,8 @@
 
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import clsx from "clsx";
-import { Ban, CheckCircle2, CircleHelp, Hand, MinusCircle, Sparkles, Tag, type LucideIcon } from "lucide-react";
-import { memo, useState, type KeyboardEvent } from "react";
+import { Ban, CheckCircle2, CircleHelp, Hand, MinusCircle, Tag, type LucideIcon } from "lucide-react";
+import { memo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { COLUMN_LABELS, COLUMNS, type BlockedAssessment, type Card, type Column } from "@/lib/domain/types";
 
 const PAGE = 150;
@@ -63,9 +63,8 @@ export function AssessmentBadge({ assessment, className }: { assessment: Blocked
           : "bg-sky-50 text-sky-700 ring-sky-200/70 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-400/20",
         className,
       )}
-      title={`${ai ? "AI review" : "Keyword match"}${assessment.confidence ? ` (${assessment.confidence} confidence)` : ""}: ${assessment.reason}`}
+      title={`${ai ? "Gemini" : "Keyword match"}${assessment.confidence ? ` (${assessment.confidence} confidence)` : ""}: ${assessment.reason}`}
     >
-      {ai ? <Sparkles className="size-3" aria-hidden /> : <Tag className="size-3" aria-hidden />}
       {assessment.blocked ? "Blocked" : "Not blocked"}
       {ai && assessment.confidence && <span className="opacity-70">· {assessment.confidence}</span>}
     </span>
@@ -84,10 +83,16 @@ interface CardProps {
   onToggle: (key: string, range: boolean) => void;
   onMove: (key: string, to: Column) => void;
   onKey: (event: KeyboardEvent<HTMLDivElement>, card: Card) => void;
+  /** Opens the card's details. */
+  onOpen: (key: string) => void;
 }
 
-export const BoardCard = memo(function BoardCard({ card, column, setName, keywords, assessment, moved, selected, onToggle, onMove, onKey }: CardProps) {
+export const BoardCard = memo(function BoardCard({ card, column, setName, keywords, assessment, moved, selected, onToggle, onMove, onKey, onOpen }: CardProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.key });
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) onToggle(card.key, e.shiftKey);
+    else onOpen(card.key);
+  };
   return (
     <div
       ref={setNodeRef}
@@ -96,11 +101,12 @@ export const BoardCard = memo(function BoardCard({ card, column, setName, keywor
       role="listitem"
       tabIndex={0}
       aria-roledescription="Draggable card"
-      aria-label={`${card.name}. ${COLUMN_LABELS[column]}${card.executed ? ", executed" : ""}${moved ? ", moved manually" : ""}${selected ? ", selected" : ""}`}
+      aria-label={`${card.name}. ${COLUMN_LABELS[column]}${card.executed ? ", executed" : ""}${moved ? ", moved manually" : ""}${selected ? ", selected" : ""}. Press Enter for details.`}
       data-card-key={card.key}
       onKeyDown={(e) => onKey(e, card)}
+      onClick={onClick}
       className={clsx(
-        "group relative cursor-grab touch-manipulation rounded-xl border bg-white p-3 text-left transition-all duration-150 select-none active:cursor-grabbing dark:bg-zinc-900",
+        "group relative cursor-pointer touch-manipulation rounded-xl border bg-white p-3 text-left transition-all duration-150 select-none active:cursor-grabbing dark:bg-zinc-900",
         selected
           ? "border-brand-400 shadow-glow dark:border-brand-400/60"
           : "border-slate-200/80 shadow-xs hover:-translate-y-px hover:border-slate-300 hover:shadow-soft dark:border-white/[0.07] dark:hover:border-white/15",

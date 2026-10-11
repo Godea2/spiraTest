@@ -5,7 +5,7 @@ import { COLUMNS, type BlockedAssessment, type Card, type CardChange, type Colum
 export const MAX_KEYWORDS = 50;
 export const MAX_SCENARIO_TEXT = 1000;
 /** Cases sent to the AI review per request. */
-export const MAX_AI_REVIEW_BATCH = 40;
+export const MAX_AI_REVIEW_BATCH = 20;
 
 export const keywordListSchema = z.array(z.string().trim().max(60)).max(MAX_KEYWORDS);
 
@@ -121,6 +121,26 @@ export function blockedCandidates(
     .map((card) => ({ card, keywords: hits.get(card.key)! }));
 }
 
+/**
+ * In Scope or Blocked cards, in test sets with keywords, whose scenario names none of them. Only the AI deep check
+ * looks at these, for scenarios that describe a missing feature in other words.
+ */
+export function deepCandidates(
+  cards: Card[],
+  decisions: Record<string, Column>,
+  byTestSet: TestSetKeywordMap | undefined,
+): BlockedCandidate[] {
+  const hits = keywordHits(cards, byTestSet);
+  return cards
+    .filter(
+      (card) =>
+        keywordsFor(byTestSet, card.testSetId).length > 0 &&
+        !hits.has(card.key) &&
+        ["inScope", "blocked"].includes(effectiveColumn(card, decisions)),
+    )
+    .map((card) => ({ card, keywords: [] }));
+}
+
 /** The verdict used when no AI review is available: a keyword in the scenario means Blocked. */
 export function keywordAssessment(keywords: string[], at: string): BlockedAssessment {
   return {
@@ -140,7 +160,13 @@ export function hasCurrentAiVerdict(assessment: BlockedAssessment | undefined, k
   return !!assessment && assessment.source === "ai" && sameKeywords(assessment.keywords, keywords);
 }
 
-export type ProposalKind = "match" | "noKeyword";
+/** True when a deep-check verdict exists and was made against the test set's current keyword list. */
+export function hasCurrentDeepVerdict(assessment: BlockedAssessment | undefined, setKeywords: string[]): assessment is BlockedAssessment {
+  return !!assessment && assessment.source === "ai" && assessment.keywords.length === 0 && !!assessment.against && sameKeywords(assessment.against, setKeywords);
+}
+
+/** match: the scenario names a keyword. deep: it does not, but the AI deep check found a dependency (or cleared a Blocked card). */
+export type ProposalKind = "match" | "noKeyword" | "deep";
 
 export interface BlockedProposal {
   card: Card;
@@ -166,14 +192,19 @@ export function blockedProposals(
   const hits = keywordHits(cards, byTestSet);
   const proposals: BlockedProposal[] = [];
   for (const card of cards) {
-    if (keywordsFor(byTestSet, card.testSetId).length === 0) continue;
+    const setKeywords = keywordsFor(byTestSet, card.testSetId);
+    if (setKeywords.length === 0) continue;
     const current = effectiveColumn(card, decisions);
     if (current !== "inScope" && current !== "blocked") continue;
     const keywords = hits.get(card.key);
+    const saved = review?.[card.key];
     if (keywords) {
-      const saved = review?.[card.key];
       const assessment = saved && sameKeywords(saved.keywords, keywords) ? saved : null;
       proposals.push({ card, current, proposed: assessment && !assessment.blocked ? "inScope" : "blocked", kind: "match", keywords, assessment });
+    } else if (hasCurrentDeepVerdict(saved, setKeywords)) {
+      if (saved.blocked || current === "blocked") {
+        proposals.push({ card, current, proposed: saved.blocked ? "blocked" : "inScope", kind: "deep", keywords: [], assessment: saved });
+      }
     } else if (current === "blocked") {
       proposals.push({ card, current, proposed: "inScope", kind: "noKeyword", keywords: [], assessment: null });
     }
@@ -185,7 +216,7 @@ export function blockedProposals(
 export function defaultSelection(proposals: BlockedProposal[]): Set<string> {
   return new Set(
     proposals
-      .filter((p) => p.kind === "match" && p.assessment && p.proposed !== p.current && p.assessment.confidence !== "low")
+      .filter((p) => p.kind !== "noKeyword" && p.assessment && p.proposed !== p.current && p.assessment.confidence !== "low")
       .map((p) => p.card.key),
   );
 }

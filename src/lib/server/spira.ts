@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
-import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary } from "@/lib/domain/types";
+import { richText } from "@/lib/domain/text";
+import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
 // and are sent as headers, never in the URL, so they do not end up in proxy or server logs.
@@ -39,7 +40,7 @@ export class SpiraError extends Error {
   }
 }
 
-export type BaseUrlCheck = { ok: true; restBase: string; host: string } | { ok: false; error: string };
+export type BaseUrlCheck = { ok: true; restBase: string; host: string; siteUrl: string } | { ok: false; error: string };
 
 /**
  * Accepts the Spira site URL (https://example.spiraservice.net) or the full REST URL and
@@ -62,7 +63,7 @@ export function validateSpiraBaseUrl(input: string): BaseUrlCheck {
   let path = url.pathname.replace(/\/+$/, "");
   const restIndex = path.toLowerCase().indexOf("/services/");
   if (restIndex >= 0) path = path.slice(0, restIndex);
-  return { ok: true, restBase: `${url.origin}${path}${REST_PATH}`, host: url.host };
+  return { ok: true, restBase: `${url.origin}${path}${REST_PATH}`, host: url.host, siteUrl: `${url.origin}${path}` };
 }
 
 interface SpiraConfig {
@@ -84,6 +85,7 @@ function readConfig(): { config: SpiraConfig | null; status: SpiraStatus } {
   const status: SpiraStatus = {
     configured: problems.length === 0,
     host: check?.ok ? check.host : null,
+    siteUrl: check?.ok ? check.siteUrl : null,
     username: username || null,
     apiKeyConfigured: apiKey.length > 0,
     problems,
@@ -374,6 +376,95 @@ export async function removeFromTestSet(projectId: number, testSetId: number, te
     `projects/${projectId}/test-sets/${testSetId}/test-cases/${testSetTestCaseId}`,
     `removing membership ${testSetTestCaseId} from test set ${testSetId}`,
   );
+}
+
+const testCaseDetailSchema = z.object({
+  TestCaseId: id,
+  Name: z.string().nullish(),
+  Description: z.string().nullish(),
+  TestCasePriorityName: z.string().nullish(),
+  TestCaseStatusName: z.string().nullish(),
+  TestCaseTypeName: z.string().nullish(),
+  AuthorName: z.string().nullish(),
+  OwnerName: z.string().nullish(),
+  ExecutionStatusId: z.number().int().nullish(),
+  CustomProperties: z.array(customPropertySchema).nullish(),
+});
+
+const testStepSchema = z.array(
+  z.object({
+    Position: z.number().int().nullish(),
+    Description: z.string().nullish(),
+    ExpectedResult: z.string().nullish(),
+    SampleData: z.string().nullish(),
+    Precondition: z.string().nullish(),
+    LinkedTestCaseId: z.number().int().nullish(),
+  }),
+);
+
+/** Linked test cases are followed this deep, and at most this many steps are returned. */
+const LINKED_DEPTH = 2;
+const MAX_STEPS = 300;
+
+/**
+ * A test case with its steps, for reading on the board. Read-only. Spira's HTML is reduced to
+ * plain text with line breaks, so nothing from Spira is ever rendered as HTML in the browser.
+ */
+export async function getTestCaseDetail(projectId: number, testCaseId: number): Promise<TestCaseDetail> {
+  let budget = MAX_STEPS;
+  let truncated = false;
+  const readSteps = async (caseId: number, depth: number, seen: Set<number>): Promise<TestCaseStep[]> => {
+    const what = `reading the steps of test case ${caseId}`;
+    const raw = parse(testStepSchema, await call("GET", `projects/${projectId}/test-cases/${caseId}/test-steps`, what), what);
+    const steps: TestCaseStep[] = [];
+    for (const [index, s] of raw.entries()) {
+      if (budget <= 0) {
+        truncated = true;
+        break;
+      }
+      budget -= 1;
+      const linkedId = s.LinkedTestCaseId && s.LinkedTestCaseId > 0 ? s.LinkedTestCaseId : null;
+      const step: TestCaseStep = {
+        position: s.Position ?? index + 1,
+        description: richText(s.Description),
+        expectedResult: richText(s.ExpectedResult),
+        sampleData: richText(s.SampleData),
+        precondition: richText(s.Precondition),
+        linkedTestCaseId: linkedId,
+        linkedName: null,
+        linkedSteps: [],
+      };
+      if (linkedId && depth < LINKED_DEPTH && !seen.has(linkedId)) {
+        const linkWhat = `reading linked test case ${linkedId}`;
+        const linked = parse(testCaseDetailSchema, await call("GET", `projects/${projectId}/test-cases/${linkedId}`, linkWhat), linkWhat);
+        step.linkedName = linked.Name?.trim() || null;
+        step.linkedSteps = await readSteps(linkedId, depth + 1, new Set([...seen, linkedId]));
+      }
+      steps.push(step);
+    }
+    return steps.sort((a, b) => a.position - b.position);
+  };
+
+  const what = `reading test case ${testCaseId}`;
+  const [raw, steps] = await Promise.all([
+    call("GET", `projects/${projectId}/test-cases/${testCaseId}`, what).then((data) => parse(testCaseDetailSchema, data, what)),
+    readSteps(testCaseId, 0, new Set([testCaseId])),
+  ]);
+  return {
+    testCaseId: raw.TestCaseId,
+    name: raw.Name?.trim() || `Test case TC:${testCaseId}`,
+    description: richText(raw.Description),
+    priority: raw.TestCasePriorityName?.trim() || null,
+    status: raw.TestCaseStatusName?.trim() || null,
+    type: raw.TestCaseTypeName?.trim() || null,
+    author: raw.AuthorName?.trim() || null,
+    owner: raw.OwnerName?.trim() || null,
+    customFields: (raw.CustomProperties ?? [])
+      .map((p) => ({ name: p.Definition?.Name?.trim() ?? "", value: richText(p.StringValue) }))
+      .filter((f) => f.name && f.value),
+    steps,
+    truncated,
+  };
 }
 
 /** Read-only check that the credentials work. Returns the projects this user can open. */

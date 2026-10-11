@@ -1,6 +1,6 @@
 "use client";
 
-import { Boxes, CloudDownload, FolderKanban, PlugZap, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { Boxes, CloudDownload, FolderKanban, PlugZap, Plus, RefreshCw, ScanText } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
@@ -743,9 +743,9 @@ function AiReviewStatus() {
   const { ai } = useSettings();
   return (
     <Section
-      icon={Sparkles}
-      title="AI review of blocked cases"
-      description="When you filter a board by not-implemented keywords, Gemini reads each matching test scenario and says whether the case really depends on the missing feature. You review every suggestion before anything moves."
+      icon={ScanText}
+      title="Gemini review of blocked cases"
+      description="When you filter a board by not-implemented keywords, Gemini reads each matching test scenario and says whether the case really depends on the missing feature. Deep check also asks about scenarios that name no keyword. You review every suggestion before anything moves."
     >
       {!ai ? (
         <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading…</div>

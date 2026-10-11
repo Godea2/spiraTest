@@ -57,8 +57,8 @@ function StepTitle({ n, children, done }: { n: number; children: React.ReactNode
         className={clsx(
           "grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold transition-colors duration-300",
           done
-            ? "bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-[0_0_0_4px_rgb(16_185_129/0.12)]"
-            : "bg-gradient-to-br from-brand-500 to-violet-600 text-white shadow-[0_0_0_4px_rgb(99_102_241/0.12)]",
+            ? "bg-emerald-600 text-white"
+            : "bg-slate-900 text-white dark:bg-white dark:text-slate-900",
         )}
         aria-hidden
       >

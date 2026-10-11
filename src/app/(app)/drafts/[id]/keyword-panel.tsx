@@ -6,15 +6,16 @@ import {
   BarChart3,
   ChevronDown,
   Filter,
+  Loader2,
   RefreshCw,
   ScanSearch,
-  Sparkles,
+  Square,
   Tag,
   UserCheck,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Notice, ProgressBar } from "@/components/ui";
@@ -24,9 +25,12 @@ import { reviewBlockedCases } from "@/lib/client/workflow";
 import {
   blockedCandidates,
   blockedProposals,
+  deepCandidates,
   defaultSelection,
   hasCurrentAiVerdict,
+  hasCurrentDeepVerdict,
   hasKeywords,
+  keywordsFor,
   keywordReport,
   normalizeKeywords,
   parseKeywords,
@@ -36,7 +40,7 @@ import {
 import { COLUMN_LABELS, type Card, type Column, type Draft } from "@/lib/domain/types";
 import { AssessmentBadge, COLUMN_STYLE } from "./board-parts";
 
-type Scan = { done: number; total: number; ai: boolean };
+type Scan = { done: number; total: number; ai: boolean; deep: boolean };
 type View = "changes" | "blocked" | "notBlocked" | "all";
 
 const REPORT_COLUMNS: Column[] = ["inScope", "blocked", "needsReview", "outOfScope"];
@@ -81,10 +85,18 @@ export function KeywordPanel({
   const chosen = new Set([...selected].filter((k) => changeKeys.has(k)));
   const unanalysed = proposals.filter((p) => p.kind === "match" && !p.assessment).length;
   const lowConfidence = changes.filter((p) => p.assessment?.confidence === "low").length;
+  const deepPending = useMemo(
+    () =>
+      deepCandidates(cards, decisions, draft.testSetKeywords).filter(
+        (c) => !hasCurrentDeepVerdict(draft.blockedReview?.[c.card.key], keywordsFor(draft.testSetKeywords, c.card.testSetId)),
+      ),
+    [cards, decisions, draft.testSetKeywords, draft.blockedReview],
+  );
+  const stopRef = useRef<AbortController | null>(null);
 
   const visible = proposals.filter((p) => {
     if (view === "changes") return changeKeys.has(p.card.key);
-    if (view === "blocked") return p.kind === "match" && p.assessment?.blocked;
+    if (view === "blocked") return p.kind !== "noKeyword" && p.assessment?.blocked;
     if (view === "notBlocked") return p.kind === "noKeyword" || (p.assessment && !p.assessment.blocked);
     return true;
   });
@@ -104,21 +116,36 @@ export function KeywordPanel({
   async function filter(force: boolean) {
     const candidates = blockedCandidates(cards, decisions, draft.testSetKeywords);
     const toAnalyse = aiOn && !force ? candidates.filter((c) => !hasCurrentAiVerdict(draft.blockedReview?.[c.card.key], c.keywords)) : candidates;
+    await run(toAnalyse, aiOn, false, candidates.length);
+  }
+
+  async function deepCheck() {
+    if (!aiOn || deepPending.length === 0) return;
+    await run(deepPending, true, true, deepPending.length);
+  }
+
+  async function run(toAnalyse: typeof deepPending, useAi: boolean, deep: boolean, checked: number) {
+    const controller = new AbortController();
+    stopRef.current = controller;
     setAiError(null);
-    setScan({ done: 0, total: toAnalyse.length, ai: aiOn });
+    setScan({ done: 0, total: toAnalyse.length, ai: useAi, deep });
     try {
-      const out = await reviewBlockedCases(draft.id, toAnalyse, aiOn, (done, total) => setScan({ done, total, ai: true }));
+      const out = await reviewBlockedCases(draft.id, toAnalyse, useAi, (done, total) => setScan({ done, total, ai: true, deep }), controller.signal);
       onDraft(out.draft);
       setAiError(out.aiError);
       const next = blockedProposals(cards, decisions, out.draft.testSetKeywords, out.draft.blockedReview);
       setSelected(defaultSelection(next));
       setView("changes");
       const suggested = next.filter((p) => p.proposed !== p.current && p.assessment).length;
-      if (out.aiError) toast.warning("AI review stopped; the rest use the keyword match.", { description: out.aiError });
-      else toast.success(`Checked ${candidates.length} matching case${candidates.length === 1 ? "" : "s"}`, { description: suggested ? `${suggested} suggested change${suggested === 1 ? "" : "s"} to review.` : "Nothing needs to move." });
+      const description = suggested ? `${suggested} suggested change${suggested === 1 ? "" : "s"} to review.` : "Nothing needs to move.";
+      if (out.aiError) toast.warning(deep ? "Deep check stopped early." : "AI review stopped early.", { description: out.aiError });
+      else if (out.stopped) toast.info("Stopped. Answers so far are kept.", { description });
+      else if (deep) toast.success(`Deep-checked ${checked} case${checked === 1 ? "" : "s"}`, { description });
+      else toast.success(`Checked ${checked} matching case${checked === 1 ? "" : "s"}`, { description });
     } catch (err) {
       setAiError(errorMessage(err));
     } finally {
+      stopRef.current = null;
       setScan(null);
     }
   }
@@ -140,50 +167,50 @@ export function KeywordPanel({
 
   const counts = {
     changes: changes.length,
-    blocked: proposals.filter((p) => p.kind === "match" && p.assessment?.blocked).length,
+    blocked: proposals.filter((p) => p.kind !== "noKeyword" && p.assessment?.blocked).length,
     notBlocked: proposals.filter((p) => p.kind === "noKeyword" || (p.assessment && !p.assessment.blocked)).length,
     all: proposals.length,
   };
 
   return (
     <section className="surface overflow-hidden" aria-labelledby="keywords-title">
-      <div className="relative border-b border-slate-100 px-5 py-5 sm:px-6 dark:border-white/[0.06]">
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-brand-500/[0.05] via-violet-500/[0.04] to-transparent" />
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-violet-600 text-white shadow-[0_6px_16px_-6px_rgb(99_102_241/0.7)]">
-              <ScanSearch className="size-5" aria-hidden />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 id="keywords-title" className="text-base font-semibold tracking-tight">Not implemented yet</h2>
-                {ai &&
-                  (aiOn ? (
-                    <Badge tone="brand">
-                      <Sparkles aria-hidden /> AI review · {ai.model}
-                    </Badge>
-                  ) : (
-                    <Badge>
-                      <Tag aria-hidden /> Keyword match only
-                    </Badge>
-                  ))}
-              </div>
-              <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
-                Add keywords for features that are not built yet. Filter checks only the <strong className="font-medium text-slate-800 dark:text-zinc-200">test scenario</strong>{" "}
-                (the Spira name and the workbook scenario), never steps or test data.{" "}
-                {aiOn
-                  ? "Gemini then judges whether each matching case really depends on the feature, and you choose which suggestions to apply."
-                  : "Every match is suggested as Blocked for you to review. Add GEMINI_API_KEY on the server to have the AI judge each case."}
-              </p>
+      <div className="border-b border-slate-100 px-5 py-5 sm:px-6 dark:border-white/[0.06]">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="keywords-title" className="text-base font-semibold tracking-tight">Not implemented yet</h2>
+              {ai && <Badge>{aiOn ? `Reviewed by ${ai.model}` : "Keyword match only"}</Badge>}
             </div>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
+              Add keywords for features that are not built yet. Filter checks only the <strong className="font-medium text-slate-800 dark:text-zinc-200">test scenario</strong>{" "}
+              (the Spira name and the workbook scenario), never steps or test data.{" "}
+              {aiOn
+                ? "Gemini then judges whether each matching case really depends on the feature, and you choose which suggestions to apply. Deep check also asks about cases whose scenario names no keyword."
+                : "Every match is suggested as Blocked for you to review. Add GEMINI_API_KEY on the server to have the AI judge each case."}
+            </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             {filteredAt && aiOn && (
               <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => void filter(true)} disabled={!anyKeywords || !!scan} title="Ask the AI again about every matching case">
                 Re-analyse all
               </Button>
             )}
-            <Button variant="primary" icon={Filter} onClick={() => void filter(false)} disabled={!anyKeywords || !!scan} busy={!!scan}>
+            {aiOn && (
+              <Button
+                variant="secondary"
+                icon={ScanSearch}
+                onClick={() => void deepCheck()}
+                disabled={!anyKeywords || !!scan || deepPending.length === 0}
+                title={
+                  deepPending.length
+                    ? `Ask the AI about ${deepPending.length} In Scope or Blocked case${deepPending.length === 1 ? "" : "s"} whose scenario names no keyword, in case they depend on a missing feature anyway`
+                    : "Every case without a keyword has been deep-checked against the current keywords"
+                }
+              >
+                Deep check{deepPending.length ? ` (${deepPending.length})` : ""}
+              </Button>
+            )}
+            <Button variant="primary" icon={Filter} onClick={() => void filter(false)} disabled={!anyKeywords || !!scan} busy={!!scan && !scan.deep}>
               Filter
             </Button>
           </div>
@@ -207,8 +234,19 @@ export function KeywordPanel({
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="flex flex-col gap-2 border-t border-slate-100 px-5 py-4 sm:px-6 dark:border-white/[0.06]">
               <span className="flex items-center gap-2 text-sm text-slate-600 dark:text-zinc-400">
-                <Sparkles className="size-4 animate-pulse text-brand-500" aria-hidden />
-                {scan.ai ? `Gemini is reviewing the scenarios… ${scan.done} / ${scan.total}` : "Matching keywords against the scenarios…"}
+                <Loader2 className="size-4 animate-spin text-slate-400" aria-hidden />
+                {scan.ai
+                  ? `${scan.deep ? "Deep-checking scenarios without a keyword" : "Reviewing matching scenarios"}… ${scan.done} / ${scan.total}`
+                  : "Matching keywords against the scenarios…"}
+                {scan.ai && (
+                  <button
+                    type="button"
+                    className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-white"
+                    onClick={() => stopRef.current?.abort()}
+                  >
+                    <Square className="size-3 fill-current" aria-hidden /> Stop
+                  </button>
+                )}
               </span>
               <ProgressBar value={scan.ai ? scan.done : 1} max={Math.max(scan.ai ? scan.total : 1, 1)} />
             </div>
@@ -219,7 +257,7 @@ export function KeywordPanel({
       {aiError && !scan && (
         <div className="border-t border-slate-100 px-5 py-4 sm:px-6 dark:border-white/[0.06]">
           <Notice tone="warning" title="The AI review did not finish">
-            {aiError} Cases it did not answer use the keyword match; press Filter to try again.
+            {aiError} Answers received so far are kept. Matching cases it did not answer use the keyword match until you press Filter again.
           </Notice>
         </div>
       )}
@@ -336,6 +374,7 @@ function ProposalRow({
   const from = COLUMN_STYLE[p.current];
   const to = COLUMN_STYLE[p.proposed];
   const reason = p.kind === "noKeyword" ? "Blocked, but its test scenario mentions none of the keywords." : p.assessment?.reason ?? "Not analysed for its current keywords yet.";
+  const inferred = p.kind === "deep" ? (p.assessment?.features ?? []) : [];
   return (
     <li>
       <label
@@ -375,6 +414,11 @@ function ProposalRow({
                 {k}
               </span>
             ))}
+            {p.kind === "deep" && (
+              <span className="rounded-full border border-dashed border-slate-300 px-1.5 py-0.5 font-medium text-slate-600 dark:border-white/15 dark:text-zinc-400" title="Found by deep check: the scenario does not name the keyword">
+                Deep check{inferred.length ? `: ${inferred.join(", ")}` : ""}
+              </span>
+            )}
             {p.assessment && <AssessmentBadge assessment={p.assessment} />}
             {p.assessment?.confidence === "low" && <Badge tone="warning">Your call</Badge>}
           </span>

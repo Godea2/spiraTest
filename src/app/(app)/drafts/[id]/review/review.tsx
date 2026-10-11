@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ChevronLeft, ClipboardList, FlaskConical, ListChecks, Rocket, RotateCcw, Sparkles, Zap } from "lucide-react";
+import { ChevronLeft, ClipboardList, FlaskConical, ListChecks, Rocket, RotateCcw, Zap } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
@@ -531,10 +531,7 @@ function CaseList({
             <span className="min-w-0 flex-1 truncate">{c.name}</span>
             {hits.get(c.key) && (
               <span title={review?.[c.key]?.reason}>
-                <Badge tone={review?.[c.key]?.source === "ai" ? "brand" : "neutral"}>
-                  {review?.[c.key]?.source === "ai" && <Sparkles aria-hidden />}
-                  {hits.get(c.key)!.join(", ")}
-                </Badge>
+                <Badge>{hits.get(c.key)!.join(", ")}</Badge>
               </span>
             )}
             {c.executed && <Badge tone="warning">{c.executionStatus}</Badge>}

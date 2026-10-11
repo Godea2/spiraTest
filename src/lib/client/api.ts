@@ -35,7 +35,8 @@ export async function api<T>(
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      (data && typeof data.error === "string" && data.error) || `Request failed (HTTP ${response.status}).`,
+      (data && typeof data.error === "string" && data.error) ||
+        (response.status === 504 ? "The server took too long to answer. Try again." : `Request failed (HTTP ${response.status}).`),
       (data && data.fieldErrors) || {},
     );
   }

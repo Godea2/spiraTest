@@ -78,6 +78,15 @@ function prepareRows(rows: WorkbookRow[]): ScopeRow[] {
     .filter((r) => r.tcId || r.normalizedScenario);
 }
 
+/** The workbook rows behind a card: same TC ID, or a scenario equal to its name or matched scenario. */
+export function workbookRowsFor(card: Card, rows: WorkbookRow[]): WorkbookRow[] {
+  const id = card.tcId?.trim().toLowerCase();
+  const scenarios = new Set([card.name, ...(card.workbookScenario?.split("\n") ?? [])].map(normalizeScenario).filter(Boolean));
+  return prepareRows(rows)
+    .filter((r) => (id && r.tcId.toLowerCase() === id) || scenarios.has(r.normalizedScenario))
+    .map((r) => r.row);
+}
+
 const rowLabel = (r: ScopeRow) => r.tcId || `${r.row.sheet} row ${r.row.rowNumber}`;
 
 function decide(matched: ScopeRow[], how: string): { suggestion: Column; reason: string; tcId: string | null } {

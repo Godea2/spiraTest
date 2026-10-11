@@ -54,6 +54,10 @@ export interface BlockedAssessment {
   reason: string;
   source: "ai" | "keyword";
   at: string;
+  /** Keywords the case depends on, per the AI. For a deep check these may not appear in the scenario. */
+  features?: string[];
+  /** The test set's keyword list when this was decided; a deep check is redone when it changes. */
+  against?: string[];
 }
 
 export interface MissingRow {
@@ -240,6 +244,8 @@ export interface AiBlockedVerdict {
   blocked: boolean;
   confidence: BlockedConfidence;
   reason: string;
+  /** Not-implemented keywords the case depends on; empty when not blocked. */
+  features: string[];
 }
 
 /** Server-side Gemini configuration. Never includes the API key. */
@@ -252,6 +258,8 @@ export interface AiStatus {
 export interface SpiraStatus {
   configured: boolean;
   host: string | null;
+  /** Spira web address, for links to artifacts. */
+  siteUrl: string | null;
   username: string | null;
   apiKeyConfigured: boolean;
   problems: string[];
@@ -279,6 +287,33 @@ export interface SpiraTestSetSummary {
   name: string;
   releaseId: number | null;
   releaseVersion: string | null;
+}
+
+/** One step of a test case, as plain text. A step that calls another test case carries that case's steps. */
+export interface TestCaseStep {
+  position: number;
+  description: string;
+  expectedResult: string;
+  sampleData: string;
+  precondition: string;
+  linkedTestCaseId: number | null;
+  linkedName: string | null;
+  linkedSteps: TestCaseStep[];
+}
+
+export interface TestCaseDetail {
+  testCaseId: number;
+  name: string;
+  description: string;
+  priority: string | null;
+  status: string | null;
+  type: string | null;
+  author: string | null;
+  owner: string | null;
+  customFields: Array<{ name: string; value: string }>;
+  steps: TestCaseStep[];
+  /** True when the step list was cut short. */
+  truncated: boolean;
 }
 
 /** Identifies what a comparison or membership check was run against. */

@@ -64,8 +64,9 @@ import {
   type Draft,
   type HistoryEntry,
 } from "@/lib/domain/types";
-import { applyProposals, keywordHits, type BlockedProposal } from "@/lib/domain/keywords";
+import { applyProposals, hasCurrentDeepVerdict, keywordHits, keywordsFor, type BlockedProposal } from "@/lib/domain/keywords";
 import { BoardCard, BoardColumn, COLUMN_STYLE } from "./board-parts";
+import { CardDetail } from "./card-detail";
 import { KeywordPanel } from "./keyword-panel";
 
 const AUTOSAVE_MS = 30_000;
@@ -104,6 +105,8 @@ export function Board({ id }: { id: string }) {
   const [recompare, setRecompare] = useState<{ running: boolean; error: string | null; done: number; total: number } | null>(null);
   const [showMissing, setShowMissing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const dragEndedAt = useRef(0);
 
   const hydrate = useCallback((d: Draft) => {
     setDecisions(d.decisions);
@@ -145,6 +148,17 @@ export function Board({ id }: { id: string }) {
     for (const card of filtered) grouped[effectiveColumn(card, decisions)].push(card);
     return grouped;
   }, [filtered, decisions]);
+
+  /** Verdict shown on a card: the keyword-match review, or a deep check made against the current keywords. */
+  const assessmentFor = useCallback(
+    (card: Card) => {
+      const saved = draft?.blockedReview?.[card.key];
+      if (!saved) return null;
+      if (hits.has(card.key)) return saved;
+      return hasCurrentDeepVerdict(saved, keywordsFor(draft?.testSetKeywords, card.testSetId)) && saved.blocked ? saved : null;
+    },
+    [draft?.blockedReview, draft?.testSetKeywords, hits],
+  );
 
   const totalsInScope = useMemo(() => {
     const scoped = setFilter === "all" ? cards : cards.filter((c) => c.testSetId === setFilter);
@@ -381,7 +395,10 @@ export function Board({ id }: { id: string }) {
       if (to) {
         e.preventDefault();
         moveOne(card.key, to);
-      } else if (e.key === " " || e.key === "Enter") {
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        setOpenKey(card.key);
+      } else if (e.key === " ") {
         e.preventDefault();
         toggle(card.key, e.shiftKey);
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -404,11 +421,15 @@ export function Board({ id }: { id: string }) {
   const onDragStart = (e: DragStartEvent) => setActiveDrag(String(e.active.id));
   const onDragEnd = (e: DragEndEvent) => {
     setActiveDrag(null);
+    dragEndedAt.current = Date.now();
     const to = e.over?.id as Column | undefined;
     if (!to || !COLUMNS.includes(to)) return;
     moveOne(String(e.active.id), to);
   };
   const dragCount = activeDrag && selection.has(activeDrag) ? selection.size : 1;
+  const openCard = useCallback((key: string) => {
+    if (Date.now() - dragEndedAt.current > 250) setOpenKey(key);
+  }, []);
 
   // ---- other actions -------------------------------------------------------------
   async function rename() {
@@ -467,6 +488,14 @@ export function Board({ id }: { id: string }) {
   const complete = isComparisonComplete(draft);
   const missingSets = draft.testSetIds.filter((tid) => !draft.testSets.some((s) => s.testSetId === tid));
   const activeCard = activeDrag ? cardByKey.get(activeDrag) : null;
+  const detailCard = openKey ? cardByKey.get(openKey) ?? null : null;
+  const detailColumn = detailCard ? effectiveColumn(detailCard, decisions) : null;
+  const detailList = detailColumn ? byColumn[detailColumn] : [];
+  const detailIndex = detailCard ? detailList.findIndex((c) => c.key === detailCard.key) : -1;
+  const neighbour = (offset: number) => {
+    const next = detailIndex >= 0 ? detailList[detailIndex + offset] : undefined;
+    return next ? () => setOpenKey(next.key) : null;
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -593,7 +622,7 @@ export function Board({ id }: { id: string }) {
         </div>
         <p className="hidden items-center gap-1.5 text-xs text-slate-500 lg:flex dark:text-zinc-500">
           <Keyboard className="size-3.5" aria-hidden />
-          Drag cards between columns, or focus a card and press <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
+          Click a card for its full details and test steps. Drag cards between columns, or focus a card and press <kbd className="kbd">Enter</kbd> to open, <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
         </p>
       </div>
 
@@ -604,7 +633,7 @@ export function Board({ id }: { id: string }) {
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: 24, x: "-50%" }}
             transition={{ type: "spring", stiffness: 420, damping: 34 }}
-            className="fixed bottom-6 left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-max flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2.5 shadow-lift backdrop-blur-xl lg:ml-32 dark:border-white/10 dark:bg-zinc-900/90"
+            className="fixed bottom-6 left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-max flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2.5 shadow-lift backdrop-blur-xl lg:ml-32 lg:rail:ml-8 dark:border-white/10 dark:bg-zinc-900/90"
           >
             <span className="rounded-lg bg-brand-600 px-2 py-1 text-xs font-semibold text-white tabular-nums">{selection.size}</span>
             <span className="text-sm font-medium">selected · move to</span>
@@ -640,12 +669,13 @@ export function Board({ id }: { id: string }) {
                   column={column}
                   setName={setFilter === "all" && draft.testSets.length > 1 ? setNames.get(card.testSetId) ?? null : null}
                   keywords={hits.get(card.key)}
-                  assessment={hits.has(card.key) ? draft.blockedReview?.[card.key] ?? null : null}
+                  assessment={assessmentFor(card)}
                   moved={Boolean(decisions[card.key])}
                   selected={selection.has(card.key)}
                   onToggle={toggle}
                   onMove={moveOne}
                   onKey={onCardKey}
+                  onOpen={openCard}
                 />
               )}
             </BoardColumn>
@@ -688,6 +718,20 @@ export function Board({ id }: { id: string }) {
           </ol>
         </Collapsible>
       </div>
+
+      <CardDetail
+        card={detailCard}
+        draft={draft}
+        column={detailColumn}
+        moved={detailCard ? Boolean(decisions[detailCard.key]) : false}
+        keywords={detailCard ? hits.get(detailCard.key) : undefined}
+        assessment={detailCard ? assessmentFor(detailCard) : null}
+        position={detailIndex >= 0 ? { index: detailIndex, total: detailList.length } : null}
+        onClose={() => setOpenKey(null)}
+        onMove={(key, to) => move([key], to)}
+        onPrev={neighbour(-1)}
+        onNext={neighbour(1)}
+      />
 
       <Dialog
         open={confirm !== null}
