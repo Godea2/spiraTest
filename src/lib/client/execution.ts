@@ -1,5 +1,5 @@
 import { chunk } from "@/lib/domain/board";
-import { recordExecutionResults, recordExecutionStatus, recordExecutionUndo, saveExecutionProgress } from "@/lib/domain/draft-ops";
+import { recordExecutionResults, recordExecutionStatus, recordExecutionUndo, recordTestSetUpkeep, saveExecutionProgress } from "@/lib/domain/draft-ops";
 import { MAX_EXECUTION_BATCH, STATUS_LABEL } from "@/lib/domain/execution";
 import type {
   Draft,
@@ -8,6 +8,7 @@ import type {
   ExecutionResult,
   ExecutionRun,
   TestSetExecutionStatus,
+  TestSetUpkeep,
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { api } from "./api";
@@ -26,7 +27,7 @@ export function setTester(name: string): void {
   writeItem(TESTER_KEY, name.trim().slice(0, 100));
 }
 
-/** Reads the latest execution status of every case from Spira (read only). */
+/** Reads the latest execution status of every case, and each test set's own status, from Spira (read only). */
 export async function refreshExecution(draftId: string, testSetIds?: number[]): Promise<{ draft: Draft; errors: string[] }> {
   const draft = getDraft(draftId);
   const { sets } = await api<{ sets: TestSetExecutionStatus[] }>("/api/execution/status", {
@@ -36,6 +37,24 @@ export async function refreshExecution(draftId: string, testSetIds?: number[]): 
   const updated = mutateDraft(draftId, (d) => recordExecutionStatus(d, sets, new Date().toISOString()));
   const name = (id: number) => draft.testSets.find((s) => s.testSetId === id)?.testSetName ?? `Test set ${id}`;
   return { draft: updated, errors: sets.flatMap((s) => (s.error ? [`${name(s.testSetId)}: ${s.error}`] : [])) };
+}
+
+/** Sets a test set's status in Spira to the one its cases call for. */
+export async function settleTestSetStatus(draftId: string, testSetId: number): Promise<{ draft: Draft; upkeep: TestSetUpkeep }> {
+  const draft = getDraft(draftId);
+  const upkeep = await api<TestSetUpkeep>("/api/execution/test-set-status", { method: "POST", body: { projectId: draft.projectId, testSetId } });
+  if (upkeep.error) throw new Error(upkeep.error);
+  const updated = mutateDraft(draftId, (d) => recordTestSetUpkeep(d, upkeep));
+  if (upkeep.changedStatus) {
+    logActivity({
+      type: "execution.testSetStatus",
+      message: `Set test set ${testSetId} to ${upkeep.statusName} in Spira, to match its cases.`,
+      draftId,
+      module: draft.module,
+      details: { testSetId, status: upkeep.statusName },
+    });
+  }
+  return { draft: updated, upkeep };
 }
 
 export function saveProgress(draftId: string, key: string, progress: ExecutionProgress | null): Draft {
@@ -58,7 +77,7 @@ export async function recordResults(
   let updated = draft;
   for (const batch of chunk(cases, MAX_EXECUTION_BATCH)) {
     if (options.keepGoing && !options.keepGoing()) break;
-    const { results } = await api<{ results: ExecutionResult[] }>("/api/execution/record", {
+    const { results, testSet } = await api<{ results: ExecutionResult[]; testSet?: TestSetUpkeep }>("/api/execution/record", {
       method: "POST",
       body: {
         context: contextOf(draft),
@@ -70,7 +89,19 @@ export async function recordResults(
       },
     });
     all.push(...results);
-    updated = mutateDraft(draftId, (d) => recordExecutionResults(d, results, batch, tester));
+    updated = mutateDraft(draftId, (d) => {
+      recordExecutionResults(d, results, batch, tester);
+      if (testSet) recordTestSetUpkeep(d, testSet);
+    });
+    if (testSet && (testSet.changedStatus || testSet.restored.length)) {
+      logActivity({
+        type: "execution.testSetUpkeep",
+        message: `Kept test set ${testSetId} right in Spira after recording:${testSet.changedStatus ? ` status ${testSet.statusName}` : ""}${testSet.restored.length ? `${testSet.changedStatus ? ";" : ""} restored ${testSet.restored.join(" and ")}` : ""}.`,
+        draftId,
+        module: draft.module,
+        details: { testSetId, status: testSet.statusName, restored: testSet.restored },
+      });
+    }
     options.onBatch?.(all.length, updated);
   }
   const count = (outcome: ExecutionResult["result"]) => all.filter((r) => r.result === outcome).length;

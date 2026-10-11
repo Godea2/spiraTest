@@ -181,8 +181,10 @@ async function call(method: "GET" | "SEARCH" | "POST" | "PUT" | "DELETE", path: 
     }
     if (!response.ok) throw await describeFailure(response, what);
     if (method === "DELETE") return null;
+    const text = await response.text().catch(() => "");
+    if (!text.trim() && method === "PUT") return null;
     try {
-      return await response.json();
+      return JSON.parse(text);
     } catch {
       throw new SpiraError(`Spira answered with something other than JSON while ${what}.`, 502);
     }
@@ -286,6 +288,47 @@ export async function getTestSet(projectId: number, testSetId: number): Promise<
   const what = `reading test set ${testSetId}`;
   const raw = parse(testSetSchema, await call("GET", `projects/${projectId}/test-sets/${testSetId}`, what), what);
   return { testSetId: raw.TestSetId, name: raw.Name ?? `Test set ${testSetId}`, releaseId: raw.ReleaseId ?? null };
+}
+
+const testSetRecordSchema = z
+  .object({
+    TestSetId: id,
+    Name: z.string().nullish(),
+    ReleaseId: z.number().int().nullish(),
+    TestSetStatusId: z.number().int().nullish(),
+    OwnerId: z.number().int().nullish(),
+    PlannedDate: z.unknown().optional(),
+  })
+  .passthrough();
+
+/** A test set as Spira stores it, kept whole so it can be sent back with only a few fields changed. */
+export interface TestSetRecord {
+  raw: z.infer<typeof testSetRecordSchema>;
+  testSetId: number;
+  name: string;
+  releaseId: number | null;
+  statusId: number | null;
+  ownerId: number | null;
+  plannedDate: unknown;
+}
+
+export async function getTestSetRecord(projectId: number, testSetId: number): Promise<TestSetRecord> {
+  const what = `reading test set ${testSetId}`;
+  const raw = parse(testSetRecordSchema, await call("GET", `projects/${projectId}/test-sets/${testSetId}`, what), what);
+  return {
+    raw,
+    testSetId: raw.TestSetId,
+    name: raw.Name ?? `Test set ${testSetId}`,
+    releaseId: raw.ReleaseId ?? null,
+    statusId: raw.TestSetStatusId ?? null,
+    ownerId: raw.OwnerId ?? null,
+    plannedDate: raw.PlannedDate ?? null,
+  };
+}
+
+/** Updates a test set: the record as read, with the given fields changed. A write: never retried. */
+export async function updateTestSet(projectId: number, record: TestSetRecord, changes: Record<string, unknown>): Promise<void> {
+  await call("PUT", `projects/${projectId}/test-sets`, `updating test set ${record.testSetId}`, { ...record.raw, ...changes });
 }
 
 /** Current memberships of a test set: test set test case ID → test case ID. */

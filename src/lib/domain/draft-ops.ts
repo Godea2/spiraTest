@@ -12,6 +12,7 @@ import type {
   ExecutionRun,
   HistoryEntry,
   TestSetExecutionStatus,
+  TestSetUpkeep,
   PreflightResult,
   SignOffAction,
   SignOffResult,
@@ -170,8 +171,17 @@ export function recordExecutionStatus(draft: Draft, sets: TestSetExecutionStatus
     for (const c of set.cases) {
       execution.spira[cardKey(set.testSetId, c.testSetTestCaseId)] = { statusId: c.statusId, status: c.status };
     }
+    if (set.testSetStatus) execution.testSets = { ...execution.testSets, [set.testSetId]: set.testSetStatus };
   }
   execution.checkedAt = at;
+  draft.execution = execution;
+}
+
+/** The test set status the server left in Spira after recording runs; it now matches the test set's cases. */
+export function recordTestSetUpkeep(draft: Draft, upkeep: TestSetUpkeep): void {
+  if (upkeep.error || upkeep.statusName === null) return;
+  const execution = draft.execution ?? emptyExecution();
+  execution.testSets = { ...execution.testSets, [upkeep.testSetId]: { statusId: upkeep.statusId, name: upkeep.statusName, expectedId: null } };
   draft.execution = execution;
 }
 

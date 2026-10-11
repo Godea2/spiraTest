@@ -164,6 +164,8 @@ export const executionStatusRequestSchema = z.object({
   testSetIds: z.array(id).min(1).max(50),
 });
 
+export const testSetStatusRequestSchema = z.object({ projectId: id, testSetId: id });
+
 const executedStepSchema = z.object({
   label: z.string().max(20),
   testStepId: id.nullish(),

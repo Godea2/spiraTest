@@ -1,7 +1,7 @@
 import "server-only";
 import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
 import { allCards, diffMembership, effectiveColumn, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
-import { fillRunSteps, invalidResult, runNote, runReport } from "@/lib/domain/execution";
+import { expectedTestSetStatus, fillRunSteps, invalidResult, runNote, runReport, TEST_SET_STATUS_NAMES } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
   ApplyAction,
@@ -15,6 +15,7 @@ import type {
   SignOffStatus,
   TestSetComparison,
   TestSetExecutionStatus,
+  TestSetUpkeep,
   VerificationResult,
   WorkbookRow,
   WorkflowContext,
@@ -27,6 +28,9 @@ import {
   getMembership,
   getTestSet,
   getTestSetCases,
+  getTestSetRecord,
+  updateTestSet,
+  type TestSetRecord,
   recordTestRun,
   removeFromTestSet,
   RUNNER_NAME,
@@ -59,6 +63,46 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 function verifiedBoard(ctx: WorkflowContext, testSets: TestSetComparison[], decisions: Record<string, Column>) {
   const sets = verifyComparisons(ctx, testSets);
   return { sets, decisions: normalizeDecisions(allCards(sets), decisions) };
+}
+
+/**
+ * Recording runs makes Spira update the test set on its own: it can mark it Completed while cases are
+ * still Not Run, and clear its owner and planned date. Sets the status its cases call for, and puts
+ * back an owner or planned date that was there before the runs were saved. Never throws for Spira errors.
+ */
+async function keepTestSet(projectId: number, before: TestSetRecord, caseStatusIds?: Array<number | null>): Promise<TestSetUpkeep> {
+  const upkeep: TestSetUpkeep = { testSetId: before.testSetId, statusId: null, statusName: null, changedStatus: false, restored: [] };
+  try {
+    const statuses = caseStatusIds ?? (await getTestSetCases(projectId, before.testSetId)).map((c) => c.executionStatusId);
+    const now = await getTestSetRecord(projectId, before.testSetId);
+    const changes: Record<string, unknown> = {};
+    const expected = expectedTestSetStatus(now.statusId, statuses);
+    if (expected !== null && expected !== now.statusId) {
+      changes.TestSetStatusId = expected;
+      upkeep.changedStatus = true;
+    }
+    if (before.ownerId && !now.ownerId) {
+      changes.OwnerId = before.ownerId;
+      upkeep.restored.push("owner");
+    }
+    if (before.plannedDate && !now.plannedDate) {
+      changes.PlannedDate = before.plannedDate;
+      upkeep.restored.push("planned date");
+    }
+    if (Object.keys(changes).length > 0) await updateTestSet(projectId, now, changes);
+    upkeep.statusId = (changes.TestSetStatusId as number | undefined) ?? now.statusId;
+    upkeep.statusName = upkeep.statusId ? (TEST_SET_STATUS_NAMES[upkeep.statusId] ?? null) : null;
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    upkeep.error = `The test set's status could not be kept up to date: ${error.message}`;
+  }
+  return upkeep;
+}
+
+/** Sets a test set's status to the one its cases in Spira call for. Writes only when it differs. */
+export async function settleTestSetStatus(input: { projectId: number; testSetId: number }): Promise<TestSetUpkeep> {
+  const before = await getTestSetRecord(input.projectId, input.testSetId);
+  return keepTestSet(input.projectId, before);
 }
 
 export async function reconcileTestSet(input: {
@@ -248,7 +292,7 @@ export async function signOffBatch(input: {
   draftName: string;
   notes?: Record<string, string>;
   batch: SignOffBatchInput;
-}): Promise<{ results: SignOffResult[] }> {
+}): Promise<{ results: SignOffResult[]; testSet?: TestSetUpkeep }> {
   const ctx = input.context;
   const { batch } = input;
   const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
@@ -268,13 +312,15 @@ export async function signOffBatch(input: {
 
   let cases: Map<number, SpiraSetCase>;
   let releaseId: number | null;
+  let before: TestSetRecord;
   try {
     const [spiraSet, list] = await Promise.all([
-      getTestSet(ctx.projectId, batch.testSetId),
+      getTestSetRecord(ctx.projectId, batch.testSetId),
       getTestSetCases(ctx.projectId, batch.testSetId),
     ]);
     cases = new Map(list.map((c) => [c.testSetTestCaseId, c]));
     releaseId = ctx.releaseId ?? spiraSet.releaseId;
+    before = spiraSet;
   } catch (error) {
     if (!(error instanceof SpiraError)) throw error;
     return { results: batch.actions.map((action) => result(action, "failed", error.message)) };
@@ -315,17 +361,27 @@ export async function signOffBatch(input: {
       return result(action, "failed", error.message);
     }
   });
-  return { results };
+  const testSet = results.some((r) => r.result === "recorded") ? await keepTestSet(ctx.projectId, before) : undefined;
+  return { results, testSet };
 }
 
-/** Read-only: the current execution status of every membership in the given test sets. */
+/** Read-only: the current execution status of every membership in the given test sets, and of each test set. */
 export async function readExecutionStatus(input: { projectId: number; testSetIds: number[] }): Promise<{ sets: TestSetExecutionStatus[] }> {
   const sets = await inPool(input.testSetIds, 3, async (testSetId): Promise<TestSetExecutionStatus> => {
     try {
-      const cases = await getTestSetCases(input.projectId, testSetId);
+      const [cases, record] = await Promise.all([getTestSetCases(input.projectId, testSetId), getTestSetRecord(input.projectId, testSetId)]);
+      const expectedId = expectedTestSetStatus(
+        record.statusId,
+        cases.map((c) => c.executionStatusId),
+      );
       return {
         testSetId,
         cases: cases.map((c) => ({ testSetTestCaseId: c.testSetTestCaseId, testCaseId: c.testCaseId, statusId: c.executionStatusId, status: c.executionStatus })),
+        testSetStatus: {
+          statusId: record.statusId,
+          name: record.statusId ? (TEST_SET_STATUS_NAMES[record.statusId] ?? "Unknown") : "Unknown",
+          expectedId: expectedId !== null && expectedId !== record.statusId ? expectedId : null,
+        },
       };
     } catch (error) {
       if (!(error instanceof SpiraError)) throw error;
@@ -351,7 +407,7 @@ export async function recordExecutions(input: {
   draftName: string;
   tester: string;
   batch: { testSetId: number; cases: ExecutionCaseInput[] };
-}): Promise<{ results: ExecutionResult[] }> {
+}): Promise<{ results: ExecutionResult[]; testSet?: TestSetUpkeep }> {
   const ctx = input.context;
   const { batch } = input;
   const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
@@ -380,10 +436,12 @@ export async function recordExecutions(input: {
 
   let cases: Map<number, SpiraSetCase>;
   let releaseId: number | null;
+  let before: TestSetRecord;
   try {
-    const [spiraSet, list] = await Promise.all([getTestSet(ctx.projectId, batch.testSetId), getTestSetCases(ctx.projectId, batch.testSetId)]);
+    const [spiraSet, list] = await Promise.all([getTestSetRecord(ctx.projectId, batch.testSetId), getTestSetCases(ctx.projectId, batch.testSetId)]);
     cases = new Map(list.map((c) => [c.testSetTestCaseId, c]));
     releaseId = ctx.releaseId ?? spiraSet.releaseId;
+    before = spiraSet;
   } catch (error) {
     if (!(error instanceof SpiraError)) throw error;
     return { results: batch.cases.map((c) => result(c, "failed", error.message)) };
@@ -500,16 +558,22 @@ export async function recordExecutions(input: {
 
   const results = batch.cases.map((c) => outcomes.get(c.testSetTestCaseId) ?? result(c, "failed", "Not recorded."));
 
-  // Read the test set back, so the app shows what Spira itself now reports rather than what was sent.
+  // Read the test set back, so the app shows what Spira itself now reports rather than what was sent,
+  // then keep the test set's own status, owner and planned date right.
+  let testSet: TestSetUpkeep | undefined;
   if (results.some((r) => r.result === "recorded")) {
+    let statuses: Array<number | null> | undefined;
     try {
-      const after = new Map((await getTestSetCases(ctx.projectId, batch.testSetId)).map((c) => [c.testSetTestCaseId, c.executionStatusId]));
-      for (const r of results) if (r.result === "recorded") r.spiraStatusId = after.get(r.testSetTestCaseId) ?? null;
+      const after = await getTestSetCases(ctx.projectId, batch.testSetId);
+      const byMembership = new Map(after.map((c) => [c.testSetTestCaseId, c.executionStatusId]));
+      for (const r of results) if (r.result === "recorded") r.spiraStatusId = byMembership.get(r.testSetTestCaseId) ?? null;
+      statuses = after.map((c) => c.executionStatusId);
     } catch (error) {
       failure(error);
     }
+    testSet = await keepTestSet(ctx.projectId, before, statuses);
   }
-  return { results };
+  return { results, testSet };
 }
 
 /** Deletes test runs this app recorded. Each run is checked to be ours before it is deleted. */

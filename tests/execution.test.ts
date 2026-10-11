@@ -5,6 +5,7 @@ import {
   currentStatus,
   executionCards,
   executionCounts,
+  expectedTestSetStatus,
   fillRunSteps,
   invalidResult,
   runnableSteps,
@@ -111,6 +112,19 @@ describe("run report", () => {
     const report = runReport({ runner: "R", tester: "", module: "M", draftName: "D", status: "passed", comment: "", steps: [] });
     expect(report.message).toBe("Passed: whole case");
     expect(report.details).toContain("without step results");
+  });
+});
+
+describe("test set status", () => {
+  it("is In Progress while cases are left, Completed once every case has a result", () => {
+    expect(expectedTestSetStatus(3, [2, 3, null])).toBe(2);
+    expect(expectedTestSetStatus(2, [2, 1, 5, 4])).toBe(3);
+    expect(expectedTestSetStatus(1, [3, null])).toBeNull();
+  });
+
+  it("leaves a Blocked or Deferred test set alone", () => {
+    expect(expectedTestSetStatus(4, [2, 3])).toBeNull();
+    expect(expectedTestSetStatus(5, [2, 2])).toBeNull();
   });
 });
 

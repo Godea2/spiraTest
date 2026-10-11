@@ -249,6 +249,14 @@ export interface DraftExecution {
   /** Keyed by card key. */
   spira: Record<string, SpiraExecutionState>;
   checkedAt: string | null;
+  /** Each test set's own status in Spira, keyed by test set ID; expectedId is set when its cases call for another. */
+  testSets?: Record<string, TestSetStatusState>;
+}
+
+export interface TestSetStatusState {
+  statusId: number | null;
+  name: string;
+  expectedId: number | null;
 }
 
 export interface ExecutionCaseInput {
@@ -275,6 +283,18 @@ export interface ExecutionResult {
 export interface TestSetExecutionStatus {
   testSetId: number;
   cases: Array<{ testSetTestCaseId: number; testCaseId: number; statusId: number | null; status: string }>;
+  /** The test set's own status in Spira, and the one its cases call for when that differs. */
+  testSetStatus?: TestSetStatusState;
+  error?: string;
+}
+
+/** What the app did to keep a test set's status, owner and planned date right after recording runs. */
+export interface TestSetUpkeep {
+  testSetId: number;
+  statusId: number | null;
+  statusName: string | null;
+  changedStatus: boolean;
+  restored: string[];
   error?: string;
 }
 

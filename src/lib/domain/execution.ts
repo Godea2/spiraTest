@@ -29,6 +29,29 @@ export const MAX_EXECUTION_BATCH = 20;
 /** Statuses that mean a run was recorded (Failed, Passed, Blocked, Caution). */
 export const EXECUTED_STATUS_IDS = new Set<number>([1, 2, 5, 6]);
 
+/** Spira's test set status IDs. */
+export const TEST_SET_STATUS = { notStarted: 1, inProgress: 2, completed: 3, blocked: 4, deferred: 5 } as const;
+
+export const TEST_SET_STATUS_NAMES: Record<number, string> = {
+  1: "Not Started",
+  2: "In Progress",
+  3: "Completed",
+  4: "Blocked",
+  5: "Deferred",
+};
+
+/**
+ * The test set status its cases call for: Completed once every case has a result (N/A counts),
+ * In Progress once any has. Null when nothing has run yet, or when the current status is Blocked or
+ * Deferred, which a tester sets on purpose and is left alone.
+ */
+export function expectedTestSetStatus(current: number | null, caseStatusIds: Array<number | null>): number | null {
+  if (current === TEST_SET_STATUS.blocked || current === TEST_SET_STATUS.deferred) return null;
+  const done = caseStatusIds.filter((s) => s !== null && (EXECUTED_STATUS_IDS.has(s) || s === EXECUTION_STATUS.notApplicable)).length;
+  if (caseStatusIds.length === 0 || done === 0) return null;
+  return done === caseStatusIds.length ? TEST_SET_STATUS.completed : TEST_SET_STATUS.inProgress;
+}
+
 export const STATUS_LABEL: Record<StepStatus, string> = {
   passed: "Passed",
   failed: "Failed",

@@ -9,7 +9,14 @@ import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { getDraft } from "@/lib/client/drafts";
-import { getTester, recordResults, refreshExecution, setTester as storeTester, undoRun } from "@/lib/client/execution";
+import {
+  getTester,
+  recordResults,
+  refreshExecution,
+  settleTestSetStatus,
+  setTester as storeTester,
+  undoRun,
+} from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
 import { exportExecution } from "@/lib/client/exports";
@@ -22,6 +29,8 @@ import {
   executionCounts,
   MAX_EXECUTION_BATCH,
   STATUS_LABEL,
+  TEST_SET_STATUS,
+  TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
 import { MarkMenu } from "./mark-menu";
@@ -68,6 +77,7 @@ export function Execute({ id }: { id: string }) {
   /** Cases of a "Run all" session, fixed when it starts so saving a case does not reorder the run. */
   const [queue, setQueue] = useState<{ keys: string[]; runsBefore: number } | null>(null);
   const [sync, setSync] = useState<{ checking: boolean; errors: string[] }>({ checking: false, errors: [] });
+  const [settling, setSettling] = useState<number | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState<{ status: ExecutionStatus; comment: string } | null>(null);
   const [job, setJob] = useState<{ status: ExecutionStatus; total: number; done: number; stopping: boolean; checking: boolean } | null>(null);
@@ -267,6 +277,19 @@ export function Execute({ id }: { id: string }) {
     }
   }
 
+  async function settleStatus(testSetId: number) {
+    setSettling(testSetId);
+    try {
+      const { draft: updated, upkeep } = await settleTestSetStatus(id, testSetId);
+      setDraft(updated);
+      toast.success(`${setName(testSetId)} is now ${upkeep.statusName ?? "updated"} in Spira`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setSettling(null);
+    }
+  }
+
   function stopJob() {
     stopRef.current = true;
     setJob((j) => (j ? { ...j, stopping: true } : j));
@@ -391,6 +414,30 @@ export function Execute({ id }: { id: string }) {
           Finish the review and live apply first, so the In Scope list here matches the test sets in Spira.
         </Notice>
       )}
+      {draft.testSets.map((s) => {
+        const status = draft.execution?.testSets?.[s.testSetId];
+        if (!status?.expectedId) return null;
+        const expected = TEST_SET_STATUS_NAMES[status.expectedId];
+        const left = cards.filter((c) => c.testSetId === s.testSetId && currentStatus(c, draft.execution) === null).length;
+        return (
+          <Notice
+            key={s.testSetId}
+            tone="warning"
+            title={`Spira marks ${s.testSetName} as ${status.name}`}
+            action={
+              <Button size="sm" variant="primary" busy={settling === s.testSetId} onClick={() => void settleStatus(s.testSetId)}>
+                Set to {expected} in Spira
+              </Button>
+            }
+          >
+            {status.expectedId === TEST_SET_STATUS.inProgress
+              ? `${plural(left, "case")} still to run, so it should be ${expected}.`
+              : `Every case has a result, so it should be ${expected}.`}{" "}
+            Spira changes a test set&apos;s status by itself when runs are saved; the app now corrects it after each recording.
+          </Notice>
+        );
+      })}
+
       {sync.errors.length > 0 && (
         <Notice tone="warning" title="Spira could not be read">
           <ul className="list-disc pl-5">{sync.errors.map((e) => <li key={e}>{e}</li>)}</ul>

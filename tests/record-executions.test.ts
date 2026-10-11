@@ -4,7 +4,8 @@ import type { Card, Platform, WorkflowContext } from "@/lib/domain/types";
 vi.mock("server-only", () => ({}));
 
 const spira = vi.hoisted(() => ({
-  getTestSet: vi.fn(),
+  getTestSetRecord: vi.fn(),
+  updateTestSet: vi.fn(),
   getTestSetCases: vi.fn(),
   createManualRunShells: vi.fn(),
   saveManualRuns: vi.fn(),
@@ -40,6 +41,16 @@ const shell = (testCaseId: number) => ({
   ],
 });
 
+const testSetRecord = (statusId: number, ownerId: number | null, plannedDate: string | null) => ({
+  raw: { TestSetId: 1, Name: "TX125", ReleaseId: 5, TestSetStatusId: statusId, OwnerId: ownerId, PlannedDate: plannedDate },
+  testSetId: 1,
+  name: "TX125",
+  releaseId: 5,
+  statusId,
+  ownerId,
+  plannedDate,
+});
+
 function request(ids: number[]) {
   const cards = [1, 2, 3].map(card);
   const comparison = sealComparison(ctx, {
@@ -66,7 +77,8 @@ function request(ids: number[]) {
 
 beforeEach(() => {
   for (const fn of Object.values(spira)) fn.mockReset();
-  spira.getTestSet.mockResolvedValue({ testSetId: 1, name: "TX125", releaseId: 5 });
+  spira.getTestSetRecord.mockResolvedValue(testSetRecord(1, 7, "2026-09-22"));
+  spira.updateTestSet.mockResolvedValue(undefined);
   spira.getTestSetCases.mockResolvedValue(
     [1, 2, 3].map((id) => ({ testSetTestCaseId: id, testCaseId: id + 1000, name: `Case ${id}`, executionStatus: "Not Run", executionStatusId: 3, executed: false, customText: [] })),
   );
@@ -116,6 +128,24 @@ describe("recording execution results in batches", () => {
     const { results } = await recordExecutions(request([1, 2]));
     expect(spira.saveManualRuns).toHaveBeenCalledTimes(1);
     expect(results.every((r) => r.result === "failed")).toBe(true);
+  });
+
+  it("keeps the test set In Progress and puts back the owner and planned date Spira cleared", async () => {
+    spira.saveManualRuns.mockResolvedValue([801]);
+    spira.getTestSetRecord.mockResolvedValueOnce(testSetRecord(1, 7, "2026-09-22")).mockResolvedValueOnce(testSetRecord(3, null, null));
+    const cases = [1, 2, 3].map((id) => ({ testSetTestCaseId: id, testCaseId: id + 1000, name: `Case ${id}`, executionStatus: "Not Run", executionStatusId: 3, executed: false, customText: [] }));
+    spira.getTestSetCases.mockResolvedValueOnce(cases).mockResolvedValueOnce(cases.map((c) => (c.testSetTestCaseId === 1 ? { ...c, executionStatusId: 2 } : c)));
+    const { testSet } = await recordExecutions(request([1]));
+    expect(spira.updateTestSet).toHaveBeenCalledTimes(1);
+    expect(spira.updateTestSet.mock.calls[0][2]).toEqual({ TestSetStatusId: 2, OwnerId: 7, PlannedDate: "2026-09-22" });
+    expect(testSet).toMatchObject({ statusId: 2, statusName: "In Progress", changedStatus: true, restored: ["owner", "planned date"] });
+  });
+
+  it("leaves the test set alone when it already matches its cases", async () => {
+    spira.saveManualRuns.mockResolvedValue([801]);
+    spira.getTestSetRecord.mockResolvedValue(testSetRecord(2, 7, "2026-09-22"));
+    await recordExecutions(request([1]));
+    expect(spira.updateTestSet).not.toHaveBeenCalled();
   });
 
   it("skips a case that left the test set and does not prepare a run for it", async () => {
