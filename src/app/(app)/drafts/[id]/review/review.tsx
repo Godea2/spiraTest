@@ -1,13 +1,13 @@
 "use client";
 
 import clsx from "clsx";
-import { ChevronLeft, ClipboardList, FlaskConical, ListChecks, Rocket, RotateCcw, Zap } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { ChevronLeft, ClipboardList, FlaskConical, ListChecks, RefreshCw, Rocket, RotateCcw, Zap } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { formatDateTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
-import { applyBatch, runPreflight, signOffBatch, undoSignOff, verifyApply } from "@/lib/client/workflow";
+import { applyBatch, signOffBatch, syncWithSpira, undoSignOff, verifyApply } from "@/lib/client/workflow";
 import {
   allCards,
   chunk,
@@ -54,8 +54,18 @@ interface Work {
   signOff: SignOffAction[];
 }
 
+/** The last read-only membership check against Spira. */
+interface SpiraCheck {
+  checking: boolean;
+  preflight: PreflightResult | null;
+  adopted: number;
+  error: string | null;
+}
+
 const STATUS_WORD: Record<SignOffStatus, string> = { blocked: "Blocked", passed: "Passed" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+const removedIn = (draft: Draft, testSetId: number) => new Set(draft.apply.removed[String(testSetId)] ?? []);
 
 /** Cards of a column that this app has not already recorded a result for. */
 function signOffActions(set: TestSetComparison, draft: Draft, status: SignOffStatus): SignOffAction[] {
@@ -91,16 +101,45 @@ export function Review({ id }: { id: string }) {
     error: null,
   });
 
+  const [spira, setSpira] = useState<SpiraCheck>({ checking: false, preflight: null, adopted: 0, error: null });
+  const checkedOnOpen = useRef(false);
+
   const plan = useMemo(() => {
     if (!draft) return [];
-    return draft.testSets.map((set) => ({
-      set,
-      counts: countColumns(set.cards, draft.decisions),
-      actions: removalActions(set, draft.decisions),
-      blocked: signOffActions(set, draft, "blocked"),
-      passed: signOffActions(set, draft, "passed"),
-    }));
+    return draft.testSets.map((set) => {
+      const removed = removedIn(draft, set.testSetId);
+      const all = removalActions(set, draft.decisions);
+      const actions = all.filter((a) => !removed.has(a.testSetTestCaseId));
+      return {
+        set,
+        counts: countColumns(set.cards, draft.decisions),
+        actions,
+        alreadyRemoved: all.length - actions.length,
+        blocked: signOffActions(set, draft, "blocked"),
+        passed: signOffActions(set, draft, "passed"),
+      };
+    });
   }, [draft]);
+
+  const comparedAll = draft ? isComparisonComplete(draft) : false;
+  useEffect(() => {
+    if (!comparedAll || checkedOnOpen.current) return;
+    checkedOnOpen.current = true;
+    void checkSpira();
+    // Runs once when the draft is first available; later checks are on request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comparedAll]);
+
+  async function checkSpira() {
+    setSpira((s) => ({ ...s, checking: true, error: null }));
+    try {
+      const out = await syncWithSpira(id);
+      setDraft(out.draft);
+      setSpira({ checking: false, preflight: out.preflight, adopted: out.adopted, error: null });
+    } catch (err) {
+      setSpira((s) => ({ ...s, checking: false, error: errorMessage(err) }));
+    }
+  }
 
   const hits = useMemo(
     () => (draft ? keywordHits(allCards(draft.testSets), draft.testSetKeywords) : new Map<string, string[]>()),
@@ -128,7 +167,10 @@ export function Review({ id }: { id: string }) {
     !complete && "Every test set must be compared first.",
     totals.needsReview > 0 && `${plural(totals.needsReview, "card")} ${totals.needsReview === 1 ? "is" : "are"} still in Needs Review.`,
     workCount === 0 && "There is nothing to apply.",
+    spira.preflight && !spira.preflight.ok && "Spira does not match this board. Recompare the board first.",
   ].filter(Boolean) as string[];
+  const alreadyRemoved = plan.reduce((n, p) => n + p.alreadyRemoved, 0);
+  const setName = (testSetId: number) => draft.testSets.find((s) => s.testSetId === testSetId)?.testSetName ?? `Test set ${testSetId}`;
 
   const cardFor = (testSetId: number, membershipId: number): Card | undefined =>
     draft.testSets.find((s) => s.testSetId === testSetId)?.cards.find((c) => c.testSetTestCaseId === membershipId);
@@ -163,7 +205,9 @@ export function Review({ id }: { id: string }) {
       current = next;
       setPhase(next);
     };
-    setProgress(Object.fromEntries([...work.removals].map(([setId, actions]) => [setId, { sent: 0, total: actions.length, results: [] }])));
+    const progressFor = (removals: Work["removals"]) =>
+      Object.fromEntries([...removals].map(([setId, actions]) => [setId, { sent: 0, total: actions.length, results: [] }]));
+    setProgress(progressFor(work.removals));
     const groups = new Map<string, SignOffAction[]>();
     for (const a of work.signOff) groups.set(`${a.status}:${a.testSetId}`, [...(groups.get(`${a.status}:${a.testSetId}`) ?? []), a]);
     const ordered = [...groups.values()].sort((a, b) => (a[0].status === b[0].status ? 0 : a[0].status === "blocked" ? -1 : 1));
@@ -171,18 +215,28 @@ export function Review({ id }: { id: string }) {
 
     try {
       enter("preflight");
-      const pre = await runPreflight(draft.id);
+      const pre = await syncWithSpira(draft.id);
       setPreflight(pre.preflight);
       setDraft(pre.draft);
+      setSpira({ checking: false, preflight: pre.preflight, adopted: pre.adopted, error: null });
       if (!pre.preflight.ok && runAs === "live") {
         setPhase("blocked");
         return;
       }
 
       let latest = pre.draft;
-      if (work.removals.size > 0) {
+      const removals = new Map(
+        [...work.removals]
+          .map(([testSetId, actions]) => {
+            const removed = removedIn(latest, testSetId);
+            return [testSetId, actions.filter((a) => !removed.has(a.testSetTestCaseId))] as const;
+          })
+          .filter(([, actions]) => actions.length > 0),
+      );
+      setProgress(progressFor(removals));
+      if (removals.size > 0) {
         enter("applying");
-        for (const [testSetId, actions] of work.removals) {
+        for (const [testSetId, actions] of removals) {
           for (const batch of chunk(actions, MAX_APPLY_BATCH)) {
             const out = await applyBatch(draft.id, {
               testSetId,
@@ -321,7 +375,7 @@ export function Review({ id }: { id: string }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {plan.map(({ set, counts, actions }) => (
+              {plan.map(({ set, counts, actions, alreadyRemoved: done }) => (
                 <Fragment key={set.testSetId}>
                   <tr>
                     <td className="py-2.5 pr-4">
@@ -329,10 +383,13 @@ export function Review({ id }: { id: string }) {
                     </td>
                     <td className="py-2.5 pr-4 text-right tabular-nums">{counts.inScope}</td>
                     <td className="py-2.5 pr-4 text-right font-semibold text-orange-600 tabular-nums dark:text-orange-400">{counts.blocked}</td>
-                    <td className="py-2.5 pr-4 text-right font-semibold text-red-600 tabular-nums dark:text-red-400">{actions.length}</td>
+                    <td className="py-2.5 pr-4 text-right tabular-nums">
+                      <span className="font-semibold text-red-600 dark:text-red-400">{actions.length}</span>
+                      {done > 0 && <span className="block text-xs text-zinc-500">{done} already removed</span>}
+                    </td>
                     <td className={clsx("py-2.5 pr-4 text-right tabular-nums", counts.needsReview && "font-semibold text-amber-600 dark:text-amber-400")}>{counts.needsReview}</td>
                     <td className="py-2.5 text-right">
-                      {(actions.length > 0 || counts.blocked > 0) && (
+                      {(actions.length > 0 || done > 0 || counts.blocked > 0) && (
                         <Button size="sm" variant="ghost" aria-expanded={expanded === set.testSetId} onClick={() => setExpanded(expanded === set.testSetId ? null : set.testSetId)}>
                           {expanded === set.testSetId ? "Hide" : "Show"} cases
                         </Button>
@@ -343,7 +400,8 @@ export function Review({ id }: { id: string }) {
                     <tr>
                       <td colSpan={6} className="pb-3">
                         <CaseList title="Blocked" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "blocked")} hits={hits} review={draft.blockedReview} />
-                        <CaseList title="Remove" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope")} hits={hits} />
+                        <CaseList title="Remove" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope" && !removedIn(draft, set.testSetId).has(c.testSetTestCaseId))} hits={hits} />
+                        <CaseList title="Already removed" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope" && removedIn(draft, set.testSetId).has(c.testSetTestCaseId))} hits={hits} />
                       </td>
                     </tr>
                   )}
@@ -352,6 +410,54 @@ export function Review({ id }: { id: string }) {
             </tbody>
           </table>
         </div>
+
+        {complete && (
+          <div className="mt-4 flex flex-col gap-3 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              {spira.checking ? (
+                <span className="flex items-center gap-2 text-zinc-500"><Spinner /> Checking test set membership in Spira…</span>
+              ) : spira.preflight ? (
+                <span className="text-zinc-600 dark:text-zinc-400">
+                  Checked against Spira at {formatDateTime(spira.preflight.at)}.{" "}
+                  {spira.adopted > 0 && `${plural(spira.adopted, "Out of Scope case")} ${spira.adopted === 1 ? "was" : "were"} already gone from Spira and now count as removed. `}
+                  {alreadyRemoved > 0 && `${alreadyRemoved} removed so far, `}
+                  {plural(removalCount, "case")} left to remove.
+                </span>
+              ) : (
+                <span className="text-zinc-500">Spira has not been checked yet.</span>
+              )}
+              {!spira.checking && (
+                <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => void checkSpira()} disabled={running}>
+                  Check Spira again
+                </Button>
+              )}
+            </div>
+            {spira.error && <Notice tone="warning" title="Spira could not be checked">{spira.error}</Notice>}
+            {spira.preflight && !spira.preflight.ok && !spira.checking && (
+              <Notice
+                tone="warning"
+                title="Spira does not match this board"
+                action={<ButtonLink href={`/drafts/${draft.id}`} size="sm">Open board</ButtonLink>}
+              >
+                <ul className="mt-1 list-disc pl-5">
+                  {spira.preflight.sets.filter((s) => !s.ok).map((s) => (
+                    <li key={s.testSetId}>
+                      {setName(s.testSetId)}:{" "}
+                      {s.error ??
+                        [
+                          s.unexpected.length > 0 && `${plural(s.unexpected.length, "case")} in Spira ${s.unexpected.length === 1 ? "is" : "are"} not on this board`,
+                          s.missing.length > 0 && `${plural(s.missing.length, "case")} on this board ${s.missing.length === 1 ? "is" : "are"} no longer in Spira`,
+                        ]
+                          .filter(Boolean)
+                          .join("; ")}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2">Someone changed these test sets outside this review. Recompare the board and review the differences before applying.</p>
+              </Notice>
+            )}
+          </div>
+        )}
       </Section>
 
       <Section icon={Rocket} title="Apply">

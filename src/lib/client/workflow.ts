@@ -1,6 +1,7 @@
 import type { ApplyBatchInput } from "@/lib/domain/apply-rules";
 import { chunk, MAX_APPLY_BATCH } from "@/lib/domain/board";
 import {
+  adoptSpiraRemovals,
   recordApplyResults,
   recordCompareError,
   recordComparison,
@@ -90,8 +91,7 @@ export async function compareTestSet(
   return updated;
 }
 
-export async function runPreflight(draftId: string): Promise<{ draft: Draft; preflight: PreflightResult }> {
-  const draft = getDraft(draftId);
+async function checkMembership(draft: Draft): Promise<PreflightResult> {
   const { preflight } = await api<{ preflight: PreflightResult }>("/api/workflow/preflight", {
     method: "POST",
     body: {
@@ -101,6 +101,34 @@ export async function runPreflight(draftId: string): Promise<{ draft: Draft; pre
       removed: draft.apply.removed,
     },
   });
+  return preflight;
+}
+
+/**
+ * Reads membership from Spira (read only) and brings the draft up to date with it: Out of Scope cases
+ * already gone from Spira are counted as removed. Then checks membership again for the remaining work.
+ */
+export async function syncWithSpira(draftId: string): Promise<{ draft: Draft; preflight: PreflightResult; adopted: number }> {
+  const first = await checkMembership(getDraft(draftId));
+  let adopted = 0;
+  const synced = mutateDraft(draftId, (d) => {
+    adopted = adoptSpiraRemovals(d, first);
+    if (!adopted) recordPreflight(d, first);
+  });
+  if (!adopted) return { draft: synced, preflight: first, adopted };
+  logActivity({
+    type: "apply.synced",
+    message: `Spira check: ${adopted} Out of Scope case${adopted === 1 ? " was" : "s were"} already removed in Spira and ${adopted === 1 ? "is" : "are"} now counted as removed.`,
+    draftId,
+    module: synced.module,
+    details: { adopted },
+  });
+  const out = await runPreflight(draftId);
+  return { ...out, adopted };
+}
+
+export async function runPreflight(draftId: string): Promise<{ draft: Draft; preflight: PreflightResult }> {
+  const preflight = await checkMembership(getDraft(draftId));
   const updated = mutateDraft(draftId, (d) => recordPreflight(d, preflight));
   logActivity({
     type: preflight.ok ? "preflight.passed" : "preflight.blocked",
@@ -108,7 +136,7 @@ export async function runPreflight(draftId: string): Promise<{ draft: Draft; pre
       ? "Membership check passed: Spira matches the reviewed baseline."
       : "Membership check blocked apply: Spira changed since the comparison.",
     draftId,
-    module: draft.module,
+    module: updated.module,
     details: {
       sets: preflight.sets.map(({ testSetId, ok, unexpected, missing, error }) => ({
         testSetId,

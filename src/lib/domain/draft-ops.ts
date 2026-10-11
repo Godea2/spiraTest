@@ -1,4 +1,4 @@
-import { allCards, normalizeDecisions, preserveDecisions } from "./board";
+import { allCards, normalizeDecisions, preserveDecisions, removalActions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
 import type {
   ApplyActionResult,
@@ -65,6 +65,34 @@ export function recordPreflight(draft: Draft, preflight: PreflightResult): void 
   draft.apply.preflight = preflight;
 }
 
+/**
+ * Takes Spira's word for removals: Out of Scope memberships that a membership check found already gone
+ * count as removed, so they are not sent again and no longer read as a change in Spira. Anything else
+ * that differs is left for a recompare. Returns how many were taken over.
+ */
+export function adoptSpiraRemovals(draft: Draft, preflight: PreflightResult): number {
+  let adopted = 0;
+  for (const result of preflight.sets) {
+    const set = draft.testSets.find((s) => s.testSetId === result.testSetId);
+    if (!set || result.error) continue;
+    const removing = new Set(removalActions(set, draft.decisions).map((a) => a.testSetTestCaseId));
+    const gone = result.missing.filter((id) => removing.has(id));
+    if (gone.length === 0) continue;
+    const key = String(set.testSetId);
+    const removed = new Set(draft.apply.removed[key] ?? []);
+    const failed = new Set(draft.apply.failed[key] ?? []);
+    for (const id of gone) {
+      if (!removed.has(id)) adopted += 1;
+      removed.add(id);
+      failed.delete(id);
+    }
+    draft.apply.removed[key] = [...removed].sort((a, b) => a - b);
+    draft.apply.failed[key] = [...failed].sort((a, b) => a - b);
+  }
+  if (adopted) draft.apply.preflight = null;
+  return adopted;
+}
+
 export function recordApplyResults(
   draft: Draft,
   input: Pick<ApplyBatchInput, "testSetId" | "dryRun">,
@@ -118,7 +146,6 @@ export function recordSignOffUndo(draft: Draft, deletedRunIds: number[]): void {
   draft.apply.signOffRuns = (draft.apply.signOffRuns ?? []).filter((run) => !deleted.has(run.testRunId));
 }
 
-/** Merges step text read from Spira; long text is cut to keep the draft small. */
 /** Stores blocked/not-blocked verdicts and marks when Filter ran. */
 export function recordBlockedReview(draft: Draft, assessments: Record<string, BlockedAssessment>, at: string): void {
   draft.blockedReview = { ...(draft.blockedReview ?? {}), ...assessments };

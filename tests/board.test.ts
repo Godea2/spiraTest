@@ -10,7 +10,8 @@ import {
   preserveDecisions,
   removalActions,
 } from "@/lib/domain/board";
-import type { Card, TestSetComparison } from "@/lib/domain/types";
+import { adoptSpiraRemovals, emptyApplyState } from "@/lib/domain/draft-ops";
+import type { Card, Draft, PreflightResult, TestSetComparison } from "@/lib/domain/types";
 
 function card(id: number, suggestion: Card["suggestion"], executed = false): Card {
   return {
@@ -91,5 +92,41 @@ describe("apply planning", () => {
 
   it("diffs membership both ways", () => {
     expect(diffMembership([1, 2, 3], [2, 3, 4])).toEqual({ unexpected: [4], missing: [1] });
+  });
+});
+
+describe("syncing with Spira", () => {
+  const draftWith = (removed: number[], failed: number[]) =>
+    ({
+      testSets: [set],
+      decisions: { "1:4": "outOfScope" },
+      apply: { ...emptyApplyState(), removed: { "1": removed }, failed: { "1": failed } },
+    }) as unknown as Draft;
+  const check = (missing: number[], unexpected: number[] = []): PreflightResult => ({
+    at: "",
+    ok: false,
+    seal: null,
+    sets: [{ testSetId: 1, ok: false, missing, unexpected }],
+  });
+
+  it("counts Out of Scope cases already gone from Spira as removed and clears their failures", () => {
+    const draft = draftWith([], [2, 4]);
+    expect(adoptSpiraRemovals(draft, check([4]))).toBe(1);
+    expect(draft.apply.removed["1"]).toEqual([4]);
+    expect(draft.apply.failed["1"]).toEqual([2]);
+    expect(draft.apply.preflight).toBeNull();
+  });
+
+  it("leaves other differences for a recompare", () => {
+    const draft = draftWith([2], []);
+    expect(adoptSpiraRemovals(draft, check([1, 3], [9]))).toBe(0);
+    expect(draft.apply.removed["1"]).toEqual([2]);
+  });
+
+  it("ignores test sets that could not be read", () => {
+    const draft = draftWith([], []);
+    const failedRead = { ...check([2, 4]), sets: [{ testSetId: 1, ok: false, missing: [2, 4], unexpected: [], error: "HTTP 500" }] };
+    expect(adoptSpiraRemovals(draft, failedRead)).toBe(0);
+    expect(draft.apply.removed["1"]).toEqual([]);
   });
 });
