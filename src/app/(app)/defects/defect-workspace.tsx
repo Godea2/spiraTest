@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, Bug, ChevronDown, ExternalLink, Layers, Quote, RefreshCw, Search, Sparkles, Square, Undo2, UserRound } from "lucide-react";
+import { ArrowRight, Bug, ChevronDown, ExternalLink, Layers, Plus, Quote, RefreshCw, Search, Sparkles, Square, Undo2, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -10,15 +10,20 @@ import { Badge, Button, ButtonLink, Dialog, EmptyState, Notice, PageHeader, Prog
 import { errorMessage } from "@/lib/client/api";
 import {
   adoptDraftDefects,
+  createDefectTestCase,
   listDefects,
   logIncident,
+  newCaseTargets,
   raiseDefect,
   readIncidentOptions,
   searchDefect,
+  suggestNewCase,
   undoDefect,
   type DefectCase,
+  type DefectPick,
   type DefectSearch,
   type IncidentFields,
+  type NewCaseTarget,
   type RaiseOutcome,
   type SearchPhase,
 } from "@/lib/client/defects";
@@ -26,9 +31,18 @@ import { allDrafts } from "@/lib/client/drafts";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { effectiveColumn, isCompleted } from "@/lib/domain/board";
-import { defectTargets, MAX_DEFECT_TEXT, pickBySeverity } from "@/lib/domain/defects";
+import { defectTargets, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity } from "@/lib/domain/defects";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
-import { COLUMN_LABELS, type BlockedConfidence, type Column, type DefectRecord, type Draft, type IncidentOptions } from "@/lib/domain/types";
+import {
+  COLUMN_LABELS,
+  type BlockedConfidence,
+  type Column,
+  type CreatedDefectCase,
+  type DefectRecord,
+  type Draft,
+  type IncidentOptions,
+  type NewDefectCase,
+} from "@/lib/domain/types";
 import { COLUMN_STYLE } from "../drafts/[id]/board-parts";
 import { StatusChip } from "../drafts/[id]/execute/runner";
 
@@ -43,8 +57,30 @@ type Pick = { on: boolean; stepLabel: string | null };
 
 function phaseText(phase: SearchPhase): string {
   if (phase.stage === "reading") return `Gemini is reading ${plural(phase.total, "case name")} across ${plural(phase.modules, "module")} for the defect…`;
+  if (phase.stage === "widening") return "Nothing obvious yet. Gemini is looking again at the cases on the same screen, feature and journey…";
   if (phase.stage === "steps") return `Reading the steps of ${plural(phase.total, "likely case")} from Spira (${phase.done} of ${phase.total})…`;
   return `Checking each case's steps against the defect (${phase.done} of ${phase.total})…`;
+}
+
+/** The new test case being written for a defect no existing case covers. */
+type NewCaseForm = {
+  status: "drafting" | "ready" | "error";
+  error: string | null;
+  reason: string;
+  testCase: NewDefectCase;
+  /** Chosen test sets, by NewCaseTarget key. */
+  targets: string[];
+};
+
+const EMPTY_CASE: NewDefectCase = { name: "", description: "", steps: [{ description: "", expectedResult: "" }], failingStep: 1 };
+
+/** Why the new test case cannot be created yet, or null. */
+function newCaseProblem(form: NewCaseForm): string | null {
+  if (form.status !== "ready") return form.status === "drafting" ? "Gemini is drafting the test case." : "Write the test case first.";
+  if (form.targets.length === 0) return "Choose the test set it goes in.";
+  if (form.testCase.name.trim().length < 5) return "Give the test case a name.";
+  if (form.testCase.steps.some((s) => s.description.trim().length < 3)) return "Every step needs an action.";
+  return null;
 }
 
 /** Where a case goes when it is failed for a defect. */
@@ -249,10 +285,14 @@ function Finder({
   const [logInSpira, setLogInSpira] = useState(true);
   const [showUnaffected, setShowUnaffected] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [job, setJob] = useState<{ done: number; total: number; stopping: boolean } | null>(null);
+  const [job, setJob] = useState<{ done: number; total: number; stopping: boolean; creating?: boolean } | null>(null);
   const [outcome, setOutcome] = useState<RaiseOutcome | null>(null);
+  const [outcomeNotes, setOutcomeNotes] = useState<string[]>([]);
   const [retrying, setRetrying] = useState(false);
+  const [newCase, setNewCase] = useState<NewCaseForm | null>(null);
   const stopRef = useRef(false);
+  const { settings } = useSettings();
+  const caseTargets = useMemo(() => newCaseTargets(drafts), [drafts]);
 
   const searching = phase !== null;
   const incidentUrl = (incidentId: number) => (siteUrl ? `${siteUrl}/${projectId}/Incident/${incidentId}.aspx` : null);
@@ -264,9 +304,11 @@ function Finder({
     setError(null);
     setOutcome(null);
     setShowUnaffected(false);
+    setNewCase(null);
     setPhase({ stage: "reading", total: 0, modules: drafts.length });
+    let result: DefectSearch | null = null;
     try {
-      const result = await searchDefect(drafts, description, setPhase);
+      result = await searchDefect(drafts, description, setPhase);
       setSearch(result);
       setPicks(Object.fromEntries(result.cases.map((c) => [idOf(c), { on: c.match.verdict === "fails", stepLabel: c.match.stepLabel }])));
       setTitle(result.analysis.title);
@@ -275,6 +317,24 @@ function Finder({
       setError(errorMessage(err));
     } finally {
       setPhase(null);
+    }
+    // No existing case fails: the defect needs a test case of its own to be failed against.
+    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result);
+  }
+
+  async function draftNewCase(from: DefectSearch) {
+    setNewCase({ status: "drafting", error: null, reason: "", testCase: EMPTY_CASE, targets: [] });
+    try {
+      const s = await suggestNewCase(drafts, from);
+      setNewCase({
+        status: "ready",
+        error: null,
+        reason: s.reason,
+        testCase: { name: s.name, description: s.description, steps: s.steps, failingStep: s.failingStep },
+        targets: s.testSetKeys.filter((k) => caseTargets.some((t) => t.key === k)),
+      });
+    } catch (err) {
+      setNewCase({ status: "error", error: errorMessage(err), reason: "", testCase: EMPTY_CASE, targets: [] });
     }
   }
 
@@ -298,8 +358,11 @@ function Finder({
   const chosen = search ? search.cases.filter((c) => picks[idOf(c)]?.on) : [];
   const needsStep = chosen.filter((c) => c.steps.length > 0 && !picks[idOf(c)]?.stepLabel);
   const changedSince = search !== null && text.trim() !== search.description;
-  const canRaise = chosen.length > 0 && needsStep.length === 0 && !changedSince && title.trim().length >= 3 && !job;
-  const chosenModules = [...new Set(chosen.map((c) => c.target.module))];
+  const newTargets = newCase ? caseTargets.filter((t) => newCase.targets.includes(t.key)) : [];
+  const newBlocker = newCase ? newCaseProblem(newCase) : null;
+  const total = chosen.length + (newCase ? newTargets.length : 0);
+  const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && !job;
+  const chosenModules = [...new Set([...chosen.map((c) => c.target.module), ...newTargets.map((t) => t.module)])];
   const moving = chosen.filter((c) => columnOf(c) !== "defects");
   const recheck = [...new Set(moving.filter((c) => !draftsById.get(c.target.draftId) || !isCompleted(draftsById.get(c.target.draftId)!.status)).map((c) => c.target.module))];
 
@@ -309,22 +372,43 @@ function Finder({
     if (!search) return;
     setConfirming(false);
     stopRef.current = false;
-    setJob({ done: 0, total: chosen.length, stopping: false });
+    setOutcomeNotes([]);
+    setJob({ done: 0, total, stopping: false });
+    let extra: DefectPick[] = [];
+    let created: CreatedDefectCase | null = null;
+    const notes: string[] = [];
+    if (newCase && newTargets.length > 0) {
+      setJob((j) => j && { ...j, creating: true });
+      try {
+        const made = await createDefectTestCase({ targets: newTargets, testCase: newCase.testCase }, settings?.mappings ?? []);
+        extra = made.picks;
+        created = made.created;
+        notes.push(`New test case TC${made.created.testCaseId} "${made.created.name}" added to ${newTargets.map((t) => t.testSetName).join(", ")}, in the Defects column.`, ...made.problems);
+        setNewCase(null);
+      } catch (err) {
+        toast.error(`The test case was not created: ${errorMessage(err)}`);
+        setJob(null);
+        onChanged();
+        return;
+      }
+    }
     try {
       const out = await raiseDefect(
         {
-          picks: chosen.map((c) => ({ target: c.target, steps: c.steps, stepLabel: picks[idOf(c)]?.stepLabel ?? null })),
+          picks: [...chosen.map((c) => ({ target: c.target, steps: c.steps, stepLabel: picks[idOf(c)]?.stepLabel ?? null })), ...extra],
           description: search.description,
           title,
           expected: search.analysis.expected,
           passBefore,
           logIncident: logInSpira,
           fields,
+          created,
         },
         tester,
-        { onProgress: (done, total) => setJob((j) => (j ? { ...j, done, total } : j)), keepGoing: () => !stopRef.current },
+        { onProgress: (done, all) => setJob((j) => (j ? { ...j, done, total: all, creating: false } : j)), keepGoing: () => !stopRef.current },
       );
       setOutcome(out);
+      setOutcomeNotes(notes);
       if (out.record) {
         const done = new Set(out.record.cases.map((c) => `${c.draftId}|${c.testSetId}:${c.testSetTestCaseId}`));
         setPicks((prev) => Object.fromEntries(Object.entries(prev).map(([k, p]) => [k, done.has(k) ? { ...p, on: false } : p])));
@@ -334,7 +418,7 @@ function Finder({
         }
       }
     } catch (err) {
-      toast.error(errorMessage(err));
+      toast.error(created ? `TC${created.testCaseId} was created, but failing the cases stopped: ${errorMessage(err)}` : errorMessage(err));
     } finally {
       setJob(null);
       onChanged();
@@ -406,12 +490,17 @@ function Finder({
         {phase && (
           <div className="flex flex-col gap-1.5 rounded-xl bg-slate-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
             <span>{phaseText(phase)}</span>
-            <ProgressBar value={phase.stage === "reading" ? 1 : phase.done} max={phase.stage === "reading" ? 3 : Math.max(1, phase.total)} />
+            <ProgressBar
+              value={phase.stage === "reading" ? 1 : phase.stage === "widening" ? 2 : phase.done}
+              max={phase.stage === "reading" || phase.stage === "widening" ? 3 : Math.max(1, phase.total)}
+            />
           </div>
         )}
         {error && <Notice tone="danger" title="The search did not finish">{error}</Notice>}
 
-        {outcome && !job && <OutcomeNotice outcome={outcome} incidentUrl={incidentUrl} retrying={retrying} onRetry={(id) => void retryIncident(id)} onDismiss={() => setOutcome(null)} />}
+        {outcome && !job && (
+          <OutcomeNotice outcome={outcome} notes={outcomeNotes} incidentUrl={incidentUrl} retrying={retrying} onRetry={(id) => void retryIncident(id)} onDismiss={() => setOutcome(null)} />
+        )}
 
         {search && !searching && (
           <div className="flex flex-col gap-4">
@@ -423,9 +512,17 @@ function Finder({
               </p>
               {search.analysis.expected && <p className="mt-0.5 text-slate-600 dark:text-zinc-400">Expected: {search.analysis.expected}</p>}
               <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
-                Read {plural(search.searched, "case name")} in {plural(search.modules, "module")}, checked the steps of {plural(search.cases.length, "likely case")}. Suggested severity: {search.analysis.severity}.
+                Read {search.searched === search.total ? plural(search.total, "case name") : `${search.searched} of ${plural(search.total, "case name")}`} in{" "}
+                {plural(search.modules, "module")}
+                {search.widened ? ", looked again at the same screen, feature and journey," : ""} and checked the steps of {plural(search.cases.length, "likely case")}. Suggested
+                severity: {search.analysis.severity}.
               </p>
             </div>
+            {search.unreadError && (
+              <Notice tone="warning" title={`${plural(search.total - search.searched, "case name")} could not be read`} action={<Button size="sm" icon={RefreshCw} onClick={() => void find()}>Search again</Button>}>
+                Gemini did not answer for part of the cases ({search.unreadError}), so a case there may be missing. Search again to read every case.
+              </Notice>
+            )}
             {search.analysis.question && (
               <Notice tone="warning" title="To sharpen the search">
                 {search.analysis.question} Add the answer to the description and search again.
@@ -438,7 +535,9 @@ function Finder({
             )}
 
             {search.cases.length === 0 ? (
-              <p className="py-4 text-center text-sm text-slate-500">No case looks affected by this defect. Add the screen or action and search again.</p>
+              <p className="py-2 text-center text-sm text-slate-500">
+                No existing case meets this defect, including Out of Scope cases on drafts. Add it as a new test case below, so it can be failed and reported.
+              </p>
             ) : (
               groups.map((g) =>
                 g.cases.length === 0 ? null : (
@@ -483,7 +582,23 @@ function Finder({
               </div>
             )}
 
-            {search.cases.length > unaffected.length && (
+            {newCase ? (
+              <NewCasePanel
+                form={newCase}
+                targets={caseTargets}
+                disabled={!!job}
+                onChange={(change) => setNewCase((f) => (f ? { ...f, ...change } : f))}
+                onRetry={() => void draftNewCase(search)}
+                onRemove={() => setNewCase(null)}
+              />
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
+                <span className="text-slate-600 dark:text-zinc-400">None of these covers the defect? Add it as a new test case and fail it.</span>
+                <Button size="sm" icon={Plus} disabled={!!job} onClick={() => void draftNewCase(search)}>Add a new test case</Button>
+              </div>
+            )}
+
+            {(search.cases.length > unaffected.length || newCase) && (
               <div className="flex flex-col gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.03]">
                 <label className="flex flex-col gap-1 text-sm">
                   <span className="font-medium">Defect title</span>
@@ -508,12 +623,14 @@ function Finder({
                   <p className="text-xs text-slate-600 dark:text-zinc-400">
                     {needsStep.length > 0
                       ? `Choose the failing step for ${plural(needsStep.length, "ticked case")}.`
-                      : chosen.length
-                        ? `${plural(chosen.length, "case")} in ${chosenModules.join(", ")}. Your description becomes the actual result on each failing step${tester ? `, tested by ${tester}` : ""}.`
-                        : "Tick the cases to fail."}
+                      : newBlocker
+                        ? `New test case: ${newBlocker}`
+                        : total
+                          ? `${plural(total, "case")} in ${chosenModules.join(", ")}${newTargets.length ? ", including the new test case" : ""}. Your description becomes the actual result on each failing step${tester ? `, tested by ${tester}` : ""}.`
+                          : "Tick the cases to fail."}
                   </p>
                   <Button variant="danger" icon={Bug} disabled={!canRaise} onClick={() => setConfirming(true)}>
-                    Fail {plural(chosen.length, "case")}
+                    {newTargets.length && !chosen.length ? "Create & fail the new case" : `Fail ${plural(total, "case")}`}
                     {logInSpira ? " & log defect" : ""}
                   </Button>
                 </div>
@@ -525,7 +642,11 @@ function Finder({
         {job && (
           <Notice
             tone="info"
-            title={`Failing cases in Spira: ${job.done} of ${job.total}${job.stopping ? " (stopping after this batch)" : ""}`}
+            title={
+              job.creating
+                ? "Creating the test case in Spira and adding it to its test sets…"
+                : `Failing cases in Spira: ${job.done} of ${job.total}${job.stopping ? " (stopping after this batch)" : ""}`
+            }
             action={
               <Button
                 size="sm"
@@ -549,12 +670,12 @@ function Finder({
       <Dialog
         open={confirming}
         onClose={() => setConfirming(false)}
-        title={`Fail ${plural(chosen.length, "case")} for this defect?`}
+        title={`Fail ${plural(total, "case")} for this defect?`}
         footer={
           <>
             <Button onClick={() => setConfirming(false)}>Cancel</Button>
             <Button variant="danger" icon={Bug} onClick={() => void raise()}>
-              Fail {chosen.length}
+              {newTargets.length ? "Create & fail" : "Fail"} {total}
               {logInSpira ? " & log defect" : ""}
             </Button>
           </>
@@ -562,9 +683,19 @@ function Finder({
       >
         <div className="flex flex-col gap-3">
           <p>
-            This writes to Spira: {plural(chosen.length, "Failed test run")} in {plural(chosenModules.length, "module")}
-            {logInSpira ? ", and one incident linked to them" : ""}. It can be undone from the defect list below.
+            This writes to Spira: {newTargets.length > 0 && <>a new test case, added to {plural(newTargets.length, "test set")}; </>}
+            {plural(total, "Failed test run")} in {plural(chosenModules.length, "module")}
+            {logInSpira ? ", and one incident linked to them" : ""}. It can be undone from the defect list below{newTargets.length > 0 ? ", which also deletes the new test case" : ""}.
           </p>
+          {newCase && newTargets.length > 0 && (
+            <div className="rounded-lg border border-violet-200 px-3 py-2 text-sm dark:border-violet-400/20">
+              <p className="font-medium">New: {newCase.testCase.name}</p>
+              <p className="text-xs text-slate-600 dark:text-zinc-400">
+                In {newTargets.map((t) => `${t.testSetName} (${t.module})`).join(", ")}; goes to the Defects column, counts as In Scope, and fails at step{" "}
+                {newCase.testCase.failingStep}.
+              </p>
+            </div>
+          )}
           {moving.length > 0 && (
             <p className="text-sm">
               {plural(moving.length, "card")} move{moving.length === 1 ? "s" : ""} to the Defects column of {moving.length === 1 ? "its" : "their"} board, which keeps {moving.length === 1 ? "it" : "them"} in the test set.
@@ -599,6 +730,138 @@ function Finder({
         </div>
       </Dialog>
     </Section>
+  );
+}
+
+function NewCasePanel({
+  form,
+  targets,
+  disabled,
+  onChange,
+  onRetry,
+  onRemove,
+}: {
+  form: NewCaseForm;
+  targets: NewCaseTarget[];
+  disabled: boolean;
+  onChange: (change: Partial<NewCaseForm>) => void;
+  onRetry: () => void;
+  onRemove: () => void;
+}) {
+  const { testCase } = form;
+  const setCase = (change: Partial<NewDefectCase>) => onChange({ testCase: { ...testCase, ...change } });
+  const setStep = (index: number, change: Partial<NewDefectCase["steps"][number]>) =>
+    setCase({ steps: testCase.steps.map((s, i) => (i === index ? { ...s, ...change } : s)) });
+  const removeStep = (index: number) =>
+    setCase({
+      steps: testCase.steps.filter((_, i) => i !== index),
+      failingStep: Math.max(1, testCase.failingStep > index + 1 ? testCase.failingStep - 1 : Math.min(testCase.failingStep, testCase.steps.length - 1)),
+    });
+  const toggleTarget = (key: string, on: boolean) => {
+    const platform = targets.find((t) => t.key === key)?.platform;
+    // One test set per platform: ticking another for the same platform replaces it.
+    const others = form.targets.filter((k) => k !== key && (!on || targets.find((t) => t.key === k)?.platform !== platform));
+    onChange({ targets: on ? [...others, key].slice(-MAX_NEW_CASE_SETS) : others });
+  };
+  const modules = [...new Set(targets.map((t) => t.module))];
+
+  return (
+    <div className="flex flex-col gap-4 rounded-xl border border-violet-200 bg-violet-50/40 p-4 dark:border-violet-400/20 dark:bg-violet-500/[0.04]">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold">
+            <Sparkles className="size-4 text-violet-600 dark:text-violet-300" aria-hidden /> Add the defect as a new test case
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-600 dark:text-zinc-400">
+            No existing case covers it, so it gets one: created in Spira, added to the test set, placed in Defects (In Scope) on the board, and failed at the
+            step below. Undo deletes it again.
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" disabled={disabled} onClick={onRemove}>Don&apos;t add</Button>
+      </div>
+
+      {form.status === "drafting" && (
+        <p className="flex items-center gap-2 text-sm text-slate-600 dark:text-zinc-400"><Spinner className="size-4" /> Gemini is writing the test case and choosing its test set…</p>
+      )}
+      {form.status === "error" && (
+        <Notice
+          tone="warning"
+          title="Gemini could not draft it"
+          action={
+            <span className="flex gap-2">
+              <Button size="sm" icon={RefreshCw} onClick={onRetry}>Try again</Button>
+              <Button size="sm" onClick={() => onChange({ status: "ready", error: null })}>Write it myself</Button>
+            </span>
+          }
+        >
+          {form.error}
+        </Notice>
+      )}
+
+      {form.status === "ready" && (
+        <>
+          <fieldset className="flex flex-col gap-2" disabled={disabled}>
+            <legend className="text-sm font-medium">Test set</legend>
+            {form.reason && <p className="text-xs text-slate-600 dark:text-zinc-400">{form.reason}</p>}
+            <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+              {modules.map((name) => (
+                <div key={name} className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-zinc-400">{name}</span>
+                  {targets
+                    .filter((t) => t.module === name)
+                    .map((t) => (
+                      <label key={t.key} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="size-4 accent-violet-600" checked={form.targets.includes(t.key)} onChange={(e) => toggleTarget(t.key, e.target.checked)} />
+                        <span className="min-w-0 truncate">{t.testSetName}</span>
+                        <Badge>{t.platform}</Badge>
+                      </label>
+                    ))}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 dark:text-zinc-400">Each ticked test set gets the case and a Failed run. Tick only the platforms where the defect was seen.</p>
+          </fieldset>
+
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium">Name</span>
+            <input className="input" value={testCase.name} maxLength={255} disabled={disabled} onChange={(e) => setCase({ name: e.target.value })} />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium">Description</span>
+            <textarea className="input min-h-16" value={testCase.description} maxLength={4_000} disabled={disabled} onChange={(e) => setCase({ description: e.target.value })} />
+          </label>
+
+          <fieldset className="flex flex-col gap-2" disabled={disabled}>
+            <legend className="text-sm font-medium">Steps</legend>
+            <ol className="flex flex-col gap-2">
+              {testCase.steps.map((step, i) => (
+                <li key={i} className={clsx("flex flex-col gap-2 rounded-lg border p-2.5 sm:flex-row", testCase.failingStep === i + 1 ? "border-red-300 dark:border-red-400/40" : "border-slate-200 dark:border-white/10")}>
+                  <span className="w-6 shrink-0 pt-2 text-xs font-semibold text-slate-500">{i + 1}</span>
+                  <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-2">
+                    <textarea className="input min-h-14 text-sm" aria-label={`Step ${i + 1} action`} placeholder="Action" value={step.description} maxLength={2_000} onChange={(e) => setStep(i, { description: e.target.value })} />
+                    <textarea className="input min-h-14 text-sm" aria-label={`Step ${i + 1} expected result`} placeholder="Expected result" value={step.expectedResult} maxLength={2_000} onChange={(e) => setStep(i, { expectedResult: e.target.value })} />
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <input type="radio" name="failing-step" className="accent-red-600" checked={testCase.failingStep === i + 1} onChange={() => setCase({ failingStep: i + 1 })} />
+                      Fails here
+                    </label>
+                    {testCase.steps.length > 1 && (
+                      <Button size="sm" variant="ghost" onClick={() => removeStep(i)}>Remove</Button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {testCase.steps.length < MAX_NEW_CASE_STEPS && (
+              <Button size="sm" variant="ghost" icon={Plus} className="self-start" onClick={() => setCase({ steps: [...testCase.steps, { description: "", expectedResult: "" }] })}>
+                Add a step
+              </Button>
+            )}
+          </fieldset>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -686,12 +949,14 @@ function OptionSelect({ label, list, value, onChange }: { label: string; list: I
 
 function OutcomeNotice({
   outcome,
+  notes,
   incidentUrl,
   retrying,
   onRetry,
   onDismiss,
 }: {
   outcome: RaiseOutcome;
+  notes: string[];
   incidentUrl: (id: number) => string | null;
   retrying: boolean;
   onRetry: (defectId: string) => void;
@@ -708,6 +973,7 @@ function OutcomeNotice({
       action={<Button size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Button>}
     >
       <ul className="flex flex-col gap-1">
+        {notes.map((n) => <li key={n}>{n}</li>)}
         {outcome.incident && (
           <li>
             The incident is linked to the failed step of {plural(outcome.incident.linked.length, "run")}.{" "}
@@ -768,8 +1034,10 @@ function DefectLog({
   const [open, setOpen] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const [undoing, setUndoing] = useState<DefectRecord | null>(null);
-  const modules = useMemo(() => [...new Set(records.flatMap((r) => r.cases.map((c) => c.module)))].sort(), [records]);
-  const shown = moduleFilter === "all" ? records : records.filter((r) => r.cases.some((c) => c.module === moduleFilter));
+  const { settings } = useSettings();
+  const modulesOf = (r: DefectRecord) => [...new Set([...r.cases.map((c) => c.module), ...(r.created?.memberships.map((m) => m.module) ?? [])])];
+  const modules = useMemo(() => [...new Set(records.flatMap(modulesOf))].sort(), [records]);
+  const shown = moduleFilter === "all" ? records : records.filter((r) => modulesOf(r).includes(moduleFilter));
   const link = (path: string) => (siteUrl ? `${siteUrl}/${projectId}/${path}` : null);
 
   async function log(record: DefectRecord) {
@@ -789,9 +1057,12 @@ function DefectLog({
     setUndoing(null);
     setWorking(record.id);
     try {
-      const out = await undoDefect(record.id);
+      const out = await undoDefect(record.id, settings?.mappings ?? []);
       if (out.errors.length) toast.warning(`Partly undone: ${out.errors[0]}${out.errors.length > 1 ? ` (and ${out.errors.length - 1} more)` : ""}`);
-      else toast.success(`Undone: "${record.title}", its ${plural(record.cases.length, "run")} deleted from Spira and the cards moved back`);
+      else
+        toast.success(
+          `Undone: "${record.title}", its ${plural(record.cases.length, "run")}${record.created ? ` and test case TC${record.created.testCaseId}` : ""} deleted from Spira and the cards moved back`,
+        );
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -818,7 +1089,8 @@ function DefectLog({
       <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
         {shown.map((d) => {
           const url = d.incidentId ? link(`Incident/${d.incidentId}.aspx`) : null;
-          const inModules = [...new Set(d.cases.map((c) => c.module))];
+          const inModules = modulesOf(d);
+          const caseUrl = d.created ? link(`TestCase/${d.created.testCaseId}.aspx`) : null;
           const expanded = open === d.id;
           return (
             <li key={d.id} className="py-3">
@@ -830,6 +1102,7 @@ function DefectLog({
                     <span className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-400">
                       {plural(d.cases.length, "case")} failed {formatDateTime(d.at)}
                       {d.tester ? ` by ${d.tester}` : ""}
+                      {d.created && <Badge tone="brand">New TC{d.created.testCaseId}</Badge>}
                       {inModules.map((m) => <Badge key={m}>{m}</Badge>)}
                     </span>
                   </span>
@@ -842,11 +1115,11 @@ function DefectLog({
                   ) : (
                     <Badge tone="brand">IN:{d.incidentId}</Badge>
                   )
-                ) : (
+                ) : d.cases.length > 0 ? (
                   <Button size="sm" icon={Bug} busy={working === d.id} disabled={!!working} onClick={() => void log(d)} title="Logged with Spira's default type, priority and severity">
                     Log in Spira
                   </Button>
-                )}
+                ) : null}
                 <Button size="sm" variant="ghostDanger" icon={Undo2} disabled={!!working} onClick={() => setUndoing(d)}>
                   Undo
                 </Button>
@@ -854,6 +1127,19 @@ function DefectLog({
               {expanded && (
                 <div className="mt-2 ml-6 flex flex-col gap-2 text-xs">
                   <p className="whitespace-pre-wrap text-slate-600 dark:text-zinc-400">{d.description}</p>
+                  {d.created && (
+                    <p className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone="brand">Created for this defect</Badge>
+                      {caseUrl ? (
+                        <a href={caseUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 font-medium text-brand-700 hover:underline dark:text-brand-300">
+                          TC{d.created.testCaseId} {d.created.name} <ExternalLink className="size-3" aria-hidden />
+                        </a>
+                      ) : (
+                        <span>TC{d.created.testCaseId} {d.created.name}</span>
+                      )}
+                      <span className="text-slate-500">in {d.created.memberships.map((m) => m.module).join(", ")}</span>
+                    </p>
+                  )}
                   <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10">
                     {d.cases.map((c) => {
                       const runUrl = link(`TestRun/${c.testRunId}.aspx`);
@@ -906,7 +1192,8 @@ function DefectLog({
       >
         {undoing && (
           <p>
-            Deletes {undoing.incidentId ? `incident ${undoing.incidentId} and ` : ""}the {plural(undoing.cases.length, "Failed run")} recorded for &ldquo;{undoing.title}&rdquo;, then moves each card back to the column it came from (unless another defect still holds it). Each case then shows its previous result. Only what this app recorded is deleted.
+            Deletes {undoing.incidentId ? `incident ${undoing.incidentId} and ` : ""}the {plural(undoing.cases.length, "Failed run")} recorded for &ldquo;{undoing.title}&rdquo;, then moves each card back to the column it came from (unless another defect still holds it). Each case then shows its previous result.
+            {undoing.created && <> Test case TC{undoing.created.testCaseId}, created for this defect, is deleted too and its boards are recompared.</>} Only what this app recorded is deleted.
           </p>
         )}
       </Dialog>

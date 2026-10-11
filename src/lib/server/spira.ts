@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, RUNNER_NAME, runSignature, type RunStepSlot } from "@/lib/domain/execution";
-import { incidentSignature } from "@/lib/domain/defects";
+import { incidentSignature, testCaseSignature } from "@/lib/domain/defects";
 import { richText } from "@/lib/domain/text";
 import type { IncidentOptions, SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
 
@@ -586,6 +586,59 @@ export async function deleteLoggedIncident(projectId: number, incidentId: number
     throw new SpiraError(`Incident ${incidentId} was not logged by this app, so it was not deleted.`, 409);
   }
   await call("DELETE", `projects/${projectId}/incidents/${incidentId}`, `deleting incident ${incidentId}`);
+}
+
+/** The folder a test case is in (null for the root), so a new case can go next to its test set's cases. Read-only. */
+export async function getTestCaseFolderId(projectId: number, testCaseId: number): Promise<number | null> {
+  const what = `reading test case ${testCaseId}`;
+  const raw = parse(z.object({ TestCaseFolderId: z.number().int().nullish() }).passthrough(), await call("GET", `projects/${projectId}/test-cases/${testCaseId}`, what), what);
+  return raw.TestCaseFolderId && raw.TestCaseFolderId > 0 ? raw.TestCaseFolderId : null;
+}
+
+/** Creates a test case with the project's default type and status. A write: never retried. */
+export async function createTestCase(projectId: number, input: { name: string; description: string; folderId: number | null }): Promise<number> {
+  const what = "creating the test case";
+  const body = {
+    Name: input.name.slice(0, 255),
+    Description: textToHtml(input.description),
+    TestCaseFolderId: input.folderId,
+    TestCaseStatusId: 0,
+    TestCaseTypeId: null,
+  };
+  const raw = parse(z.object({ TestCaseId: id }).passthrough(), await call("POST", `projects/${projectId}/test-cases`, what, body), what);
+  return raw.TestCaseId;
+}
+
+/** Adds one step at the end of a test case. A write: never retried. */
+export async function addTestStep(projectId: number, testCaseId: number, step: { position: number; description: string; expectedResult: string }): Promise<void> {
+  await call("POST", `projects/${projectId}/test-cases/${testCaseId}/test-steps`, `adding step ${step.position} to test case ${testCaseId}`, {
+    TestCaseId: testCaseId,
+    Position: step.position,
+    Description: textToHtml(step.description),
+    ExpectedResult: textToHtml(step.expectedResult),
+  });
+}
+
+/** Adds a test case to the end of a test set and returns the new membership. A write: never retried. */
+export async function addToTestSet(projectId: number, testSetId: number, testCaseId: number): Promise<number> {
+  const what = `adding test case ${testCaseId} to test set ${testSetId}`;
+  const raw = await call("POST", `projects/${projectId}/test-sets/${testSetId}/test-case-mapping/${testCaseId}`, what, []);
+  const answered = mappingSchema.safeParse(raw);
+  const found = answered.success ? answered.data.find((m) => m.TestCaseId === testCaseId) : undefined;
+  if (found) return found.TestSetTestCaseId;
+  // Older servers answer without the mapping: read the membership instead.
+  for (const [membership, caseId] of await getMembership(projectId, testSetId)) if (caseId === testCaseId) return membership;
+  throw new SpiraError(`Spira did not add test case ${testCaseId} to test set ${testSetId}.`, 502);
+}
+
+/** Deletes a test case, but only one this app created for a defect: its description must carry the app's signature. */
+export async function deleteCreatedTestCase(projectId: number, testCaseId: number): Promise<void> {
+  const what = `reading test case ${testCaseId}`;
+  const raw = parse(z.object({ TestCaseId: id, Description: z.string().nullish() }).passthrough(), await call("GET", `projects/${projectId}/test-cases/${testCaseId}`, what), what);
+  if (!richText(raw.Description).includes(testCaseSignature(RUNNER_NAME))) {
+    throw new SpiraError(`Test case ${testCaseId} was not created by this app, so it was not deleted.`, 409);
+  }
+  await call("DELETE", `projects/${projectId}/test-cases/${testCaseId}`, `deleting test case ${testCaseId}`);
 }
 
 /** Removes one membership. The test case itself is not deleted. */

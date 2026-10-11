@@ -7,6 +7,7 @@ import type {
   ApplyAction,
   ApplyActionResult,
   Column,
+  DefectCaseCreated,
   DefectLogResult,
   ExecutionCaseInput,
   ExecutionResult,
@@ -21,9 +22,15 @@ import type {
   WorkbookRow,
   WorkflowContext,
 } from "@/lib/domain/types";
+import { testCaseSignature } from "@/lib/domain/defects";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
 import {
+  addTestStep,
+  addToTestSet,
   createIncident,
+  createTestCase,
+  deleteCreatedTestCase,
+  getTestCaseFolderId,
   createManualRunShells,
   deleteLoggedIncident,
   deleteRecordedTestRun,
@@ -642,6 +649,85 @@ export async function logDefect(input: {
     testRunStepIds: linked.map((l) => l.testRunStepId),
   });
   return { incidentId, linked, unlinked };
+}
+
+/**
+ * Creates a test case for a defect no existing case covers and adds it to the chosen test sets, each on
+ * a verified board of the same project. The case goes in the folder of the test set's first case and
+ * carries the app's signature, so only it can be deleted by undo. If any step fails, what was created is
+ * removed again and nothing is left behind. Writes are never retried.
+ */
+export async function createDefectCase(input: {
+  boards: Array<{ context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> }>;
+  testCase: { name: string; description: string; steps: Array<{ description: string; expectedResult: string }> };
+  targets: Array<{ board: number; testSetId: number }>;
+}): Promise<DefectCaseCreated> {
+  const projectId = input.boards[0].context.projectId;
+  if (input.boards.some((b) => b.context.projectId !== projectId)) throw new ApplyValidationError("Every test set must be in the same Spira project.");
+  const boards = input.boards.map((b) => verifyComparisons(b.context, b.testSets));
+  const seen = new Set<number>();
+  for (const target of input.targets) {
+    if (seen.has(target.testSetId)) throw new ApplyValidationError(`Test set ${target.testSetId} appears twice.`);
+    seen.add(target.testSetId);
+    if (!boards[target.board]?.some((s) => s.testSetId === target.testSetId)) {
+      throw new ApplyValidationError(`Test set ${target.testSetId} is not on the board that was sent.`);
+    }
+  }
+
+  const sibling = boards[input.targets[0].board].find((s) => s.testSetId === input.targets[0].testSetId)?.cards[0];
+  let folderId: number | null = null;
+  if (sibling) {
+    try {
+      folderId = await getTestCaseFolderId(projectId, sibling.testCaseId);
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+    }
+  }
+  const description = [input.testCase.description.trim(), testCaseSignature(RUNNER_NAME)].filter(Boolean).join("\n\n");
+  const testCaseId = await createTestCase(projectId, { name: input.testCase.name, description, folderId });
+  const memberships: DefectCaseCreated["memberships"] = [];
+  try {
+    for (const [index, step] of input.testCase.steps.entries()) await addTestStep(projectId, testCaseId, { position: index + 1, ...step });
+    for (const target of input.targets) {
+      memberships.push({ testSetId: target.testSetId, testSetTestCaseId: await addToTestSet(projectId, target.testSetId, testCaseId) });
+    }
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    const leftovers: string[] = [];
+    for (const m of memberships) {
+      await removeFromTestSet(projectId, m.testSetId, m.testSetTestCaseId).catch(() => leftovers.push(`membership ${m.testSetTestCaseId} in test set ${m.testSetId}`));
+    }
+    await deleteCreatedTestCase(projectId, testCaseId).catch(() => leftovers.push(`test case ${testCaseId}`));
+    throw new SpiraError(
+      `${error.message}${leftovers.length ? ` These could not be removed again; delete them in Spira: ${leftovers.join(", ")}.` : " Nothing was left in Spira."}`,
+      error.status,
+      error.upstream,
+    );
+  }
+  return { testCaseId, memberships };
+}
+
+/** Takes a test case this app created for a defect out of its test sets and deletes it; it is checked to be ours first. */
+export async function deleteDefectCase(input: {
+  projectId: number;
+  testCaseId: number;
+  memberships: Array<{ testSetId: number; testSetTestCaseId: number }>;
+}): Promise<{ ok: true; message: string | null }> {
+  try {
+    await deleteCreatedTestCase(input.projectId, input.testCaseId);
+  } catch (error) {
+    if (error instanceof SpiraError && error.upstream === 404) return { ok: true, message: "Already deleted in Spira." };
+    throw error;
+  }
+  for (const m of input.memberships) {
+    try {
+      await removeFromTestSet(input.projectId, m.testSetId, m.testSetTestCaseId);
+    } catch (error) {
+      // Deleting the test case already takes it out of its test sets; a membership that is gone is fine.
+      if (!(error instanceof SpiraError)) throw error;
+    }
+  }
+  return { ok: true, message: null };
 }
 
 /** Deletes an incident this app logged; it is checked to be ours first. */

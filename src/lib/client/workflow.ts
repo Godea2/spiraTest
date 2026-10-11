@@ -17,6 +17,7 @@ import type {
   AiBlockedVerdict,
   ApplyActionResult,
   BlockedAssessment,
+  Column,
   Draft,
   PreflightResult,
   SignOffResult,
@@ -49,6 +50,8 @@ export async function compareTestSet(
   draftId: string,
   testSetId: number,
   mappings: TestSetMapping[],
+  /** Columns for cards this app just added to the test set (see recordComparison). */
+  place: Record<string, Column> = {},
 ): Promise<Draft> {
   const draft = getDraft(draftId);
   if (!draft.testSetIds.includes(testSetId)) throw new Error(`Test set ${testSetId} is not part of this draft.`);
@@ -81,7 +84,7 @@ export async function compareTestSet(
     throw error;
   }
 
-  const updated = mutateDraft(draftId, (d) => recordComparison(d, comparison));
+  const updated = mutateDraft(draftId, (d) => recordComparison(d, comparison, place));
   logActivity({
     type: "compare.succeeded",
     message: `Compared ${comparison.testSetName} (${comparison.cards.length} cards).`,

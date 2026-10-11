@@ -10,6 +10,8 @@ import {
   MAX_DEFECT_POOL,
   MAX_DEFECT_SEARCH_CASES,
   MAX_DEFECT_VERIFY_BATCH,
+  MAX_NEW_CASE_CHOICES,
+  MAX_SHORTLIST,
   MAX_STEP_TEXT,
   MAX_VERIFY_STEPS,
   mergeCandidates,
@@ -23,8 +25,10 @@ import { currentStatus, executedSteps, RUNNER_NAME, runnableSteps, STATUS_LABEL,
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import type {
   Column,
+  CreatedDefectCase,
   DefectAnalysis,
   DefectCandidate,
+  DefectCaseCreated,
   DefectCaseRecord,
   DefectLogResult,
   DefectMatch,
@@ -33,6 +37,10 @@ import type {
   ExecutionCaseInput,
   ExecutionResult,
   IncidentOptions,
+  NewDefectCase,
+  NewDefectCaseSuggestion,
+  Platform,
+  TestSetMapping,
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { api, errorMessage } from "./api";
@@ -40,7 +48,7 @@ import { allDrafts, getDraft, mutateDraft } from "./drafts";
 import { recordResults, refreshExecution } from "./execution";
 import { readItem, writeItem } from "./storage";
 import { readTestCase } from "./test-cases";
-import { contextOf } from "./workflow";
+import { compareTestSet, contextOf } from "./workflow";
 
 // ---- defect log -------------------------------------------------------------
 
@@ -116,13 +124,22 @@ export interface DefectCase {
 export interface DefectSearch {
   description: string;
   analysis: DefectAnalysis;
-  /** Cases whose names Gemini read, and in how many modules. */
+  /** Cases whose names Gemini read, out of how many, and in how many modules. */
   searched: number;
+  total: number;
   modules: number;
+  /** Why some case names could not be read; null when every one was. */
+  unreadError: string | null;
+  /** The first look found nothing, so Gemini looked again at the same screen, feature and journey. */
+  widened: boolean;
   cases: DefectCase[];
 }
 
-export type SearchPhase = { stage: "reading"; total: number; modules: number } | { stage: "steps"; done: number; total: number } | { stage: "checking"; done: number; total: number };
+export type SearchPhase =
+  | { stage: "reading"; total: number; modules: number }
+  | { stage: "widening"; total: number }
+  | { stage: "steps"; done: number; total: number }
+  | { stage: "checking"; done: number; total: number };
 
 async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -162,42 +179,64 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   const modules = new Set(entries.map((e) => e.target.module)).size;
   onPhase({ stage: "reading", total: entries.length, modules });
 
-  const parts = chunk(entries, MAX_DEFECT_SEARCH_CASES);
-  const lists = await inPool(parts, 2, async (part) => {
-    try {
-      return await api<Shortlist>("/api/ai/defect/search", {
-        method: "POST",
-        body: {
-          description,
-          cases: part.map(({ target }) => {
-            const status = currentStatus(target.card, byId.get(target.draftId)?.execution);
-            return {
-              key: target.card.key,
-              module: target.module,
-              testSetName: target.testSetName,
-              scenario: clip(target.card.name, MAX_SCENARIO_TEXT),
-              ...(target.card.workbookScenario ? { workbookScenario: clip(target.card.workbookScenario, MAX_SCENARIO_TEXT) } : {}),
-              status: status ? STATUS_LABEL[status] : "Not Run",
-            };
-          }),
-        },
-      });
-    } catch (err) {
-      return err instanceof Error ? err : new Error(String(err));
-    }
-  });
-  const answered = lists.filter((l): l is Shortlist => !(l instanceof Error));
-  if (answered.length === 0) throw lists[0];
+  const shortlist = (part: typeof entries, broad: boolean) =>
+    api<Shortlist>("/api/ai/defect/search", {
+      method: "POST",
+      body: {
+        description,
+        ...(broad ? { broad: true } : {}),
+        cases: part.map(({ target }) => {
+          const status = currentStatus(target.card, byId.get(target.draftId)?.execution);
+          return {
+            key: target.card.key,
+            module: target.module,
+            testSetName: target.testSetName,
+            scenario: clip(target.card.name, MAX_SCENARIO_TEXT),
+            ...(target.card.workbookScenario ? { workbookScenario: clip(target.card.workbookScenario, MAX_SCENARIO_TEXT) } : {}),
+            status: status ? STATUS_LABEL[status] : "Not Run",
+          };
+        }),
+      },
+    });
+  // Every part is read; a part that fails is tried once more in two halves, so one slow answer does not
+  // silently leave cases out.
+  const readAll = (broad: boolean) =>
+    inPool(chunk(entries, MAX_DEFECT_SEARCH_CASES), 3, async (part): Promise<{ size: number; list: Shortlist | null; error: unknown }> => {
+      try {
+        return { size: part.length, list: await shortlist(part, broad), error: null };
+      } catch {
+        try {
+          const halves = await Promise.all(chunk(part, Math.ceil(part.length / 2)).map((half) => shortlist(half, broad)));
+          return { size: part.length, list: { analysis: halves[0].analysis, candidates: mergeCandidates(halves.map((h) => h.candidates), MAX_SHORTLIST * 2) }, error: null };
+        } catch (err) {
+          return { size: part.length, list: null, error: err };
+        }
+      }
+    });
+
+  const first = await readAll(false);
+  const answered = first.flatMap((p) => (p.list ? [p.list] : []));
+  if (answered.length === 0) throw first[0].error;
   const analysis = [...answered].sort((a, b) => b.candidates.length - a.candidates.length)[0].analysis;
-  const candidates = mergeCandidates(answered.map((l) => l.candidates), MAX_DEFECT_CANDIDATES);
-  const searched = parts.reduce((n, part, i) => n + (lists[i] instanceof Error ? 0 : part.length), 0);
+  const searched = first.reduce((n, p) => n + (p.list ? p.size : 0), 0);
+  const failedPart = first.find((p) => !p.list);
+  const unreadError = failedPart ? errorMessage(failedPart.error) : null;
+  let candidates = mergeCandidates(answered.map((l) => l.candidates), MAX_DEFECT_CANDIDATES);
+  let widened = false;
+  if (candidates.length === 0) {
+    onPhase({ stage: "widening", total: entries.length });
+    const wide = (await readAll(true)).flatMap((p) => (p.list ? [p.list.candidates] : []));
+    candidates = mergeCandidates(wide, MAX_DEFECT_CANDIDATES);
+    widened = true;
+  }
+  const result = { description, analysis, searched, total: entries.length, modules, unreadError, widened };
 
   const byKey = new Map(entries.map((e) => [e.key, e.target]));
   const picked = candidates.flatMap((candidate) => {
     const target = byKey.get(candidate.key);
     return target ? [{ target, candidate }] : [];
   });
-  if (picked.length === 0) return { description, analysis, searched, modules, cases: [] };
+  if (picked.length === 0) return { ...result, cases: [] };
 
   let read = 0;
   onPhase({ stage: "steps", done: 0, total: picked.length });
@@ -253,7 +292,127 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   const cases = loaded
     .map((l) => ({ target: l.target, steps: l.steps, candidate: l.candidate, match: matches.get(l.target.card.key)! }))
     .sort((a, b) => compareMatches(a.match, b.match));
-  return { description, analysis, searched, modules, cases };
+  return { ...result, cases };
+}
+
+// ---- new test case ----------------------------------------------------------
+
+/** A test set a new defect case can be added to: one on a searched board. */
+export interface NewCaseTarget {
+  key: string;
+  draftId: string;
+  module: string;
+  testSetId: number;
+  testSetName: string;
+  platform: Platform;
+}
+
+/** Every test set of the given drafts, once each (from a completed draft first, then the newest). */
+export function newCaseTargets(drafts: Draft[]): NewCaseTarget[] {
+  const ordered = [...drafts].sort((a, b) => Number(isCompleted(b.status)) - Number(isCompleted(a.status)) || b.updatedAt.localeCompare(a.updatedAt));
+  const seen = new Set<number>();
+  const out: NewCaseTarget[] = [];
+  for (const draft of ordered) {
+    for (const set of draft.testSets) {
+      if (seen.has(set.testSetId)) continue;
+      seen.add(set.testSetId);
+      out.push({ key: `${draft.id}|${set.testSetId}`, draftId: draft.id, module: draft.module, testSetId: set.testSetId, testSetName: set.testSetName, platform: set.platform });
+    }
+  }
+  return out.sort((a, b) => a.module.localeCompare(b.module) || a.testSetName.localeCompare(b.testSetName));
+}
+
+/**
+ * Gemini drafts the test case that would have caught a defect no existing case covers, and picks the
+ * test sets it belongs in. It sees each test set's cases closest in wording to the defect, to follow
+ * how cases there are named. Changes nothing.
+ */
+export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch, "description" | "analysis">): Promise<NewDefectCaseSuggestion> {
+  const byId = new Map(drafts.map((d) => [d.id, d]));
+  const wording = `${search.description} ${search.analysis.area}`;
+  const testSets = newCaseTargets(drafts)
+    .slice(0, MAX_NEW_CASE_CHOICES)
+    .map((t) => {
+      const cards = byId.get(t.draftId)?.testSets.find((s) => s.testSetId === t.testSetId)?.cards ?? [];
+      const examples = rankByWording(wording, cards.map((c) => ({ key: c.key, text: c.name })), 6).map((c) => clip(c.text, MAX_SCENARIO_TEXT));
+      return { key: t.key, module: t.module, testSetName: t.testSetName, platform: t.platform, examples };
+    });
+  if (testSets.length === 0) throw new Error("The chosen modules have no compared test sets.");
+  return api<NewDefectCaseSuggestion>("/api/ai/defect/new-case", {
+    method: "POST",
+    body: { description: search.description, analysis: { area: search.analysis.area, symptom: search.analysis.symptom, expected: search.analysis.expected }, testSets },
+  });
+}
+
+/**
+ * Creates the test case in Spira, adds it to each chosen test set, and puts it on each board straight
+ * into Defects (In Scope, executed), so it can be failed for the defect. Returns a pick per test set for
+ * raiseDefect. If Spira refuses part of it, nothing is left behind; if a board cannot be recompared
+ * afterwards, that is reported so it can be recompared before a live apply.
+ */
+export async function createDefectTestCase(
+  input: { targets: NewCaseTarget[]; testCase: NewDefectCase },
+  mappings: TestSetMapping[],
+): Promise<{ created: CreatedDefectCase; picks: DefectPick[]; problems: string[] }> {
+  if (input.targets.length === 0) throw new Error("Choose the test set the new case goes in.");
+  const draftIds = [...new Set(input.targets.map((t) => t.draftId))];
+  const drafts = draftIds.map((id) => getDraft(id));
+  const projectId = drafts[0].projectId;
+  if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Choose test sets of one Spira project.");
+  const boardOf = new Map(draftIds.map((id, i) => [id, i]));
+  const { name, description, steps, failingStep } = input.testCase;
+  const out = await api<DefectCaseCreated>("/api/execution/defect/case", {
+    method: "POST",
+    body: {
+      boards: drafts.map((d) => ({ context: contextOf(d), testSets: d.testSets, decisions: d.decisions })),
+      testCase: { name, description, steps },
+      targets: input.targets.map((t) => ({ board: boardOf.get(t.draftId)!, testSetId: t.testSetId })),
+    },
+  });
+  const created: CreatedDefectCase = {
+    testCaseId: out.testCaseId,
+    name,
+    memberships: out.memberships.map((m) => {
+      const target = input.targets.find((t) => t.testSetId === m.testSetId)!;
+      return { draftId: target.draftId, module: target.module, testSetId: m.testSetId, testSetTestCaseId: m.testSetTestCaseId };
+    }),
+  };
+  logActivity({
+    type: "defect.caseCreated",
+    message: `Created test case TC${created.testCaseId} "${name}" for a defect, in ${input.targets.map((t) => t.testSetName).join(", ")}.`,
+    module: input.targets.length === 1 ? input.targets[0].module : null,
+    details: { testCaseId: created.testCaseId, memberships: created.memberships },
+  });
+
+  const problems: string[] = [];
+  let caseSteps: RunnableStep[] = [];
+  try {
+    caseSteps = runnableSteps((await readTestCase(projectId, created.testCaseId)).steps);
+  } catch (err) {
+    problems.push(`Its steps could not be read back from Spira (${errorMessage(err)}), so the whole case is failed.`);
+  }
+  const stepLabel = (caseSteps[failingStep - 1] ?? caseSteps.at(-1))?.label ?? null;
+  const picks: DefectPick[] = [];
+  for (const m of created.memberships) {
+    const key = `${m.testSetId}:${m.testSetTestCaseId}`;
+    try {
+      const draft = await compareTestSet(m.draftId, m.testSetId, mappings, { [key]: "defects" });
+      const set = draft.testSets.find((s) => s.testSetId === m.testSetId);
+      const card = set?.cards.find((c) => c.key === key);
+      if (!set || !card) {
+        problems.push(`${m.module}: TC${created.testCaseId} is not in the test set yet. Recompare the board.`);
+        continue;
+      }
+      picks.push({
+        target: { draftId: draft.id, draftName: draft.name, module: draft.module, completed: isCompleted(draft.status), testSetName: set.testSetName, card, column: "defects" },
+        steps: caseSteps,
+        stepLabel,
+      });
+    } catch (err) {
+      problems.push(`${m.module}: the board could not be recompared (${errorMessage(err)}). Recompare it and move TC${created.testCaseId} to Defects before a live apply.`);
+    }
+  }
+  return { created, picks, problems };
 }
 
 let optionsRequest: { projectId: number; request: Promise<IncidentOptions> } | null = null;
@@ -314,7 +473,17 @@ const pickKey = (draftId: string, key: string) => `${draftId}|${key}`;
  * recorded moves back. Results go in batches per test set, like any other recording.
  */
 export async function raiseDefect(
-  input: { picks: DefectPick[]; description: string; title: string; expected: string; passBefore: boolean; logIncident: boolean; fields: IncidentFields },
+  input: {
+    picks: DefectPick[];
+    description: string;
+    title: string;
+    expected: string;
+    passBefore: boolean;
+    logIncident: boolean;
+    fields: IncidentFields;
+    /** A test case created for this defect: kept on the record so undo deletes it too. */
+    created?: CreatedDefectCase | null;
+  },
   tester: string,
   options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean } = {},
 ): Promise<RaiseOutcome> {
@@ -413,7 +582,26 @@ export async function raiseDefect(
   }
 
   const recordedPicks = picks.filter((p) => recordedKeys.has(pickKey(p.target.draftId, p.target.card.key)));
-  if (recordedPicks.length === 0) return { record: null, results, failed, moved, incident: null, incidentError: null };
+  const created = input.created ?? null;
+  if (recordedPicks.length === 0) {
+    if (!created) return { record: null, results, failed, moved, incident: null, incidentError: null };
+    // Nothing was failed, but the new test case is in Spira: keep it listed so it can be failed by hand or undone.
+    const record: DefectRecord = {
+      id: crypto.randomUUID(),
+      projectId: getDraft(created.memberships[0]?.draftId ?? picks[0].target.draftId).projectId,
+      at: new Date().toISOString(),
+      title,
+      description: description.trim(),
+      tester,
+      report: "",
+      incidentId: null,
+      linkedSteps: 0,
+      cases: [],
+      created,
+    };
+    saveDefect(record);
+    return { record, results, failed, moved, incident: null, incidentError: null };
+  }
 
   const first = recordedPicks.find((p) => p.steps.length > 0) ?? recordedPicks[0];
   const runOf = (p: DefectPick) => runs.get(pickKey(p.target.draftId, p.target.card.key))!;
@@ -456,6 +644,7 @@ export async function raiseDefect(
         from: from.get(pickKey(p.target.draftId, p.target.card.key)) ?? "inScope",
       }),
     ),
+    created,
   };
   saveDefect(record);
   const modules = [...new Set(record.cases.map((c) => c.module))];
@@ -515,9 +704,10 @@ export async function logIncident(defectId: string, fields: IncidentFields): Pro
 /**
  * Undoes a defect: deletes its incident and the runs recorded for it (each checked to be this app's),
  * moves each case back to the column it came from unless another defect still holds it, then reads the
- * cases' statuses again. Whatever could not be deleted stays listed so it can be retried.
+ * cases' statuses again. A test case created for the defect is deleted too (also checked to be this
+ * app's) and its boards recompared. Whatever could not be deleted stays listed so it can be retried.
  */
-export async function undoDefect(defectId: string): Promise<{ errors: string[] }> {
+export async function undoDefect(defectId: string, mappings: TestSetMapping[]): Promise<{ errors: string[] }> {
   const record = readStore().find((d) => d.id === defectId);
   if (!record) throw new Error("This defect is no longer in the list.");
   const errors: string[] = [];
@@ -579,11 +769,35 @@ export async function undoDefect(defectId: string): Promise<{ errors: string[] }
   }
 
   const remaining = record.cases.filter((c) => !deleted.has(c.testRunId));
-  if (!incidentId && remaining.length === 0) forgetDefect(defectId);
-  else saveDefect({ ...record, incidentId, cases: remaining });
+
+  // The test case created for the defect goes last, once none of its runs is left.
+  const made = record.created ?? null;
+  let created = made;
+  if (made && !remaining.some((c) => c.testCaseId === made.testCaseId)) {
+    try {
+      await api("/api/execution/defect/case/undo", {
+        method: "POST",
+        body: { projectId: record.projectId, testCaseId: made.testCaseId, memberships: made.memberships.map(({ testSetId, testSetTestCaseId }) => ({ testSetId, testSetTestCaseId })) },
+      });
+      created = null;
+      for (const m of made.memberships) {
+        try {
+          await compareTestSet(m.draftId, m.testSetId, mappings);
+        } catch (err) {
+          errors.push(`${m.module}: TC${made.testCaseId} was deleted, but the board could not be recompared (${errorMessage(err)}). Recompare it.`);
+        }
+      }
+    } catch (err) {
+      errors.push(`Test case ${made.testCaseId}: ${errorMessage(err)}`);
+    }
+  }
+
+  if (!incidentId && remaining.length === 0 && !created) forgetDefect(defectId);
+  else saveDefect({ ...record, incidentId, cases: remaining, created });
+  const deletedCase = record.created && !created ? ` and test case TC${record.created.testCaseId}` : "";
   logActivity({
     type: errors.length ? "defect.undoneWithErrors" : "defect.undone",
-    message: `Undid defect "${record.title}": ${deleted.size} run(s)${record.incidentId && !incidentId ? ` and incident ${record.incidentId}` : ""} deleted from Spira${errors.length ? `; ${errors.length} could not be deleted` : ""}.`,
+    message: `Undid defect "${record.title}": ${deleted.size} run(s)${record.incidentId && !incidentId ? `, incident ${record.incidentId}` : ""}${deletedCase} deleted from Spira${errors.length ? `; ${errors.length} could not be deleted` : ""}.`,
     details: { defectId, deleted: [...deleted], errors },
   });
   return { errors };

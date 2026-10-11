@@ -326,6 +326,35 @@ export interface DefectRecord {
   /** Failed run steps the incident is linked to. */
   linkedSteps: number;
   cases: DefectCaseRecord[];
+  /** A test case this app created in Spira for the defect, because no existing case covered it. */
+  created?: CreatedDefectCase | null;
+}
+
+export interface CreatedDefectCase {
+  testCaseId: number;
+  name: string;
+  memberships: Array<{ draftId: string; module: string; testSetId: number; testSetTestCaseId: number }>;
+}
+
+/** A test case written for a defect no existing case covers: what Gemini drafts and the tester edits. */
+export interface NewDefectCase {
+  name: string;
+  description: string;
+  steps: Array<{ description: string; expectedResult: string }>;
+  /** 1-based position of the step where the defect shows. */
+  failingStep: number;
+}
+
+export interface NewDefectCaseSuggestion extends NewDefectCase {
+  /** Test sets it belongs in (draft ID and test set ID joined by "|"), best first. */
+  testSetKeys: string[];
+  reason: string;
+}
+
+/** What creating a defect's test case did in Spira. */
+export interface DefectCaseCreated {
+  testCaseId: number;
+  memberships: Array<{ testSetId: number; testSetTestCaseId: number }>;
 }
 
 export interface IncidentOption {

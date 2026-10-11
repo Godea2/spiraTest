@@ -1,7 +1,17 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
-import { MAX_DEFECT_CANDIDATES, MAX_DEFECT_SEARCH_CASES, MAX_DEFECT_TEXT, MAX_DEFECT_VERIFY_BATCH, MAX_STEP_TEXT, MAX_VERIFY_STEPS } from "@/lib/domain/defects";
+import {
+  MAX_DEFECT_CANDIDATES,
+  MAX_DEFECT_SEARCH_CASES,
+  MAX_DEFECT_TEXT,
+  MAX_DEFECT_VERIFY_BATCH,
+  MAX_NEW_CASE_CHOICES,
+  MAX_NEW_CASE_SETS,
+  MAX_NEW_CASE_STEPS,
+  MAX_STEP_TEXT,
+  MAX_VERIFY_STEPS,
+} from "@/lib/domain/defects";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
@@ -220,11 +230,56 @@ export const defectSearchRequestSchema = z.object({
     )
     .min(1)
     .max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per search.`),
+  /** A second, wider look when the first found nothing: cases on the same screen, feature or journey. */
+  broad: z.boolean().optional(),
+});
+
+const analysisSchema = z.object({ area: z.string().max(200), symptom: z.string().max(600), expected: z.string().max(600) });
+
+export const defectNewCaseRequestSchema = z.object({
+  description: defectText,
+  analysis: analysisSchema,
+  testSets: z
+    .array(
+      z.object({
+        key: z.string().max(80),
+        module: moduleName,
+        testSetName: z.string().max(200),
+        platform: z.enum(PLATFORMS),
+        examples: z.array(z.string().max(MAX_SCENARIO_TEXT)).max(8),
+      }),
+    )
+    .min(1)
+    .max(MAX_NEW_CASE_CHOICES),
+});
+
+const newStepText = z.string().trim().max(2_000);
+
+export const defectCaseCreateRequestSchema = z.object({
+  boards: z.array(z.object({ context: contextSchema, testSets, decisions })).min(1).max(MAX_NEW_CASE_SETS),
+  testCase: z.object({
+    name: z.string().trim().min(5, "Give the test case a name.").max(255),
+    description: z.string().trim().max(4_000),
+    steps: z
+      .array(z.object({ description: newStepText.min(3, "Every step needs an action."), expectedResult: newStepText }))
+      .min(1, "Give the test case at least one step.")
+      .max(MAX_NEW_CASE_STEPS, `A new test case can have at most ${MAX_NEW_CASE_STEPS} steps.`),
+  }),
+  targets: z
+    .array(z.object({ board: z.number().int().min(0).max(MAX_NEW_CASE_SETS - 1), testSetId: id }))
+    .min(1, "Choose a test set.")
+    .max(MAX_NEW_CASE_SETS, `Add a new test case to at most ${MAX_NEW_CASE_SETS} test sets.`),
+});
+
+export const defectCaseUndoRequestSchema = z.object({
+  projectId: id,
+  testCaseId: id,
+  memberships: z.array(z.object({ testSetId: id, testSetTestCaseId: id })).max(MAX_NEW_CASE_SETS),
 });
 
 export const defectVerifyRequestSchema = z.object({
   description: defectText,
-  analysis: z.object({ area: z.string().max(200), symptom: z.string().max(600), expected: z.string().max(600) }),
+  analysis: analysisSchema,
   cases: z
     .array(
       z.object({

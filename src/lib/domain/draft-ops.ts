@@ -36,13 +36,21 @@ export function emptyApplyState(): DraftApplyState {
   };
 }
 
-export function recordComparison(draft: Draft, comparison: TestSetComparison): void {
+/**
+ * Stores a comparison, keeping decisions for cards that are still there. `place` puts cards this app
+ * just added to the test set straight into a column (a test case created for a defect goes to Defects
+ * rather than showing up as Out of Scope, which a live apply would remove).
+ */
+export function recordComparison(draft: Draft, comparison: TestSetComparison, place: Record<string, Column> = {}): void {
   const isRecompare = draft.testSets.some((set) => set.testSetId === comparison.testSetId);
   draft.testSets = [...draft.testSets.filter((set) => set.testSetId !== comparison.testSetId), comparison].sort(
     (a, b) => draft.testSetIds.indexOf(a.testSetId) - draft.testSetIds.indexOf(b.testSetId),
   );
   delete draft.compareErrors[String(comparison.testSetId)];
-  draft.decisions = preserveDecisions(draft.decisions, allCards(draft.testSets));
+  const placed = Object.fromEntries(
+    comparison.cards.filter((c) => place[c.key] && place[c.key] !== c.suggestion).map((c) => [c.key, place[c.key]]),
+  );
+  draft.decisions = preserveDecisions({ ...draft.decisions, ...placed }, allCards(draft.testSets));
   draft.apply.preflight = null;
   if (isRecompare) {
     draft.history.push({ at: comparison.comparedAt, label: `Recompared ${comparison.testSetName}`, changes: [] });

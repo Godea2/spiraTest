@@ -3,8 +3,8 @@ import { runSignature, type RunnableStep } from "./execution";
 import type { BlockedConfidence, Card, Column, DefectCandidate, DefectMatch, DefectRecord, DefectVerdict, Draft, ExecutionProgress, TestCaseStep } from "./types";
 
 export const MAX_DEFECT_TEXT = 4_000;
-/** Case names Gemini reads per request; a search sends several requests. */
-export const MAX_DEFECT_SEARCH_CASES = 400;
+/** Case names Gemini reads per request; a search sends several requests. Small enough to answer well inside the time limit. */
+export const MAX_DEFECT_SEARCH_CASES = 150;
 /** Case names read per search across every module; beyond this, cases are narrowed by wording first. */
 export const MAX_DEFECT_POOL = 2_400;
 /** Cases one request may pick from names. */
@@ -168,6 +168,17 @@ export interface IncidentCase {
 export function incidentSignature(runner: string): string {
   return `Logged ${runSignature(runner)}`;
 }
+
+/** Marks a test case this app created for a defect; undo only deletes test cases carrying it. */
+export function testCaseSignature(runner: string): string {
+  return `Added for a defect ${runSignature(runner)}`;
+}
+
+export const MAX_NEW_CASE_STEPS = 15;
+/** Test sets one new defect case can be added to (one per platform, usually). */
+export const MAX_NEW_CASE_SETS = 4;
+/** Test sets offered to Gemini when it suggests where a new case belongs. */
+export const MAX_NEW_CASE_CHOICES = 60;
 
 /**
  * The incident's description: what the tester saw, how to reproduce it (the steps of the first failed
