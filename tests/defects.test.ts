@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { countColumns } from "@/lib/domain/board";
 import {
   compareMatches,
   defectProgress,
+  defectTargets,
+  heldByOtherDefect,
   incidentDescription,
   incidentSignature,
   isGrounded,
+  mergeCandidates,
   pickBySeverity,
   rankByWording,
   settleDefectVerdicts,
@@ -12,8 +16,9 @@ import {
   type RawDefectVerdict,
   type VerifiedCase,
 } from "@/lib/domain/defects";
-import { executedSteps, fillRunSteps, invalidResult, runnableSteps, RUNNER_NAME } from "@/lib/domain/execution";
-import type { TestCaseStep } from "@/lib/domain/types";
+import { emptyApplyState, recordDefectMoves } from "@/lib/domain/draft-ops";
+import { executedSteps, executionCards, fillRunSteps, invalidResult, runnableSteps, RUNNER_NAME } from "@/lib/domain/execution";
+import type { Card, DefectRecord, Draft, TestCaseStep } from "@/lib/domain/types";
 
 const step = (description: string, expectedResult = "", sampleData = "", testStepId: number | null = null): TestCaseStep => ({
   testStepId,
@@ -178,5 +183,108 @@ describe("helpers", () => {
     const unnamed = [{ id: 7, name: "P1" }, { id: 8, name: "P2" }];
     expect(pickBySeverity(unnamed, "medium")?.id).toBe(8);
     expect(pickBySeverity([], "low")).toBeNull();
+  });
+
+  it("merges shortlists by relevance, taking each part in turn, without repeats", () => {
+    const c = (key: string, relevance: "high" | "medium" | "low") => ({ key, relevance, why: "" });
+    const merged = mergeCandidates(
+      [
+        [c("a1", "high"), c("a2", "high"), c("a3", "medium")],
+        [c("b1", "high"), c("a1", "high"), c("b2", "low")],
+      ],
+      4,
+    );
+    expect(merged.map((x) => x.key)).toEqual(["a1", "b1", "a2", "a3"]);
+  });
+});
+
+describe("searching across modules", () => {
+  const card = (testSetId: number, id: number, suggestion: Card["suggestion"]): Card => ({
+    key: `${testSetId}:${id}`,
+    testSetId,
+    testCaseId: id + 1000,
+    testSetTestCaseId: id,
+    name: `Case ${id}`,
+    tcId: null,
+    executionStatus: "Not Run",
+    executed: false,
+    suggestion,
+    reason: "",
+  });
+  const draft = (id: string, module: string, status: Draft["status"], cards: Card[], updatedAt = "2026-10-01", removed: number[] = []): Draft =>
+    ({
+      id,
+      name: module,
+      module,
+      projectId: 24,
+      status,
+      updatedAt,
+      testSets: [{ testSetId: cards[0].testSetId, testSetName: `TX${cards[0].testSetId}`, platform: "iOS", comparedAt: "", cards, missingFromSpira: [], baselineMembership: [], seal: "" }],
+      decisions: {},
+      history: [],
+      apply: { ...emptyApplyState(), removed: removed.length ? { [String(cards[0].testSetId)]: removed } : {} },
+    }) as unknown as Draft;
+
+  it("covers every case of a draft, but only what is still in Spira for a completed module", () => {
+    const onboarding = draft("d1", "Onboarding", "draft", [card(1, 1, "inScope"), card(1, 2, "outOfScope"), card(1, 3, "needsReview")]);
+    const home = draft("d2", "Home Screen", "applied", [card(2, 4, "inScope"), card(2, 5, "outOfScope"), card(2, 6, "blocked")], "2026-10-02", [5]);
+    const targets = defectTargets([onboarding, home]);
+    expect(targets.map((t) => `${t.module}:${t.card.testSetTestCaseId}:${t.column}`)).toEqual([
+      "Home Screen:4:inScope",
+      "Home Screen:6:blocked",
+      "Onboarding:1:inScope",
+      "Onboarding:2:outOfScope",
+      "Onboarding:3:needsReview",
+    ]);
+  });
+
+  it("leaves out cards a live apply removed, and searches a case on two drafts once, from the completed one", () => {
+    const applied = draft("d1", "Onboarding", "applied", [card(1, 1, "inScope"), card(1, 2, "inScope")], "2026-09-01", [2]);
+    const copy = draft("d2", "Onboarding", "draft", [card(1, 1, "inScope"), card(1, 2, "inScope")], "2026-10-05");
+    const targets = defectTargets([copy, applied]);
+    expect(targets.map((t) => `${t.draftId}:${t.card.testSetTestCaseId}`)).toEqual(["d1:1"]);
+  });
+
+  it("moves cards to Defects and back as one board step that asks for a new membership check", () => {
+    const d = draft("d1", "Onboarding", "draft", [card(1, 1, "inScope"), card(1, 2, "outOfScope")]);
+    d.apply.preflight = { ok: true } as Draft["apply"]["preflight"];
+    const changes = recordDefectMoves(d, [{ key: "1:1", to: "defects" }, { key: "1:2", to: "defects" }], "Defect", "2026-10-11T09:00:00Z");
+    expect(changes).toHaveLength(2);
+    expect(d.decisions).toEqual({ "1:1": "defects", "1:2": "defects" });
+    expect(d.apply.preflight).toBeNull();
+    expect(d.history).toEqual([{ at: "2026-10-11T09:00:00Z", label: "Defect", changes }]);
+    const cards = d.testSets[0].cards;
+    expect(executionCards(d).map((c) => c.key)).toEqual(["1:1", "1:2"]);
+    expect(countColumns(cards, d.decisions)).toMatchObject({ inScope: 0, defects: 2, outOfScope: 0 });
+
+    recordDefectMoves(d, [{ key: "1:1", to: "inScope" }, { key: "1:2", to: "outOfScope" }], "Undo", "2026-10-11T10:00:00Z");
+    expect(d.decisions).toEqual({});
+    expect(recordDefectMoves(d, [{ key: "1:1", to: "inScope" }], "Nothing", "x")).toEqual([]);
+    expect(d.history).toHaveLength(2);
+  });
+
+  it("keeps a case in Defects while another defect holds it", () => {
+    const record = (id: string, draftId: string, key: [number, number]) =>
+      ({ id, cases: [{ draftId, testSetId: key[0], testSetTestCaseId: key[1] }] }) as unknown as DefectRecord;
+    const records = [record("a", "d1", [1, 1]), record("b", "d1", [1, 1]), record("c", "d2", [1, 2])];
+    expect(heldByOtherDefect(records, "a", "d1", "1:1")).toBe(true);
+    expect(heldByOtherDefect(records, "c", "d2", "1:2")).toBe(false);
+    expect(heldByOtherDefect(records, "a", "d2", "1:1")).toBe(false);
+  });
+
+  it("groups the failed cases by module in the incident when they span modules", () => {
+    const text = incidentDescription({
+      runner: RUNNER_NAME,
+      tester: "Ada",
+      description: "Balance shows 0.00 after login.",
+      expected: "",
+      reproduce: [],
+      failAt: null,
+      cases: [
+        { testCaseId: 1, name: "Login", module: "Onboarding", stepLabel: null, stepText: "", testRunId: 901 },
+        { testCaseId: 2, name: "Balance card", module: "Home Screen", stepLabel: "3", stepText: "View balance", testRunId: 902 },
+      ],
+    });
+    expect(text).toContain("Failed test cases (2 in 2 modules):\nOnboarding:\n- TC1 Login (test run 901)\nHome Screen:\n- TC2 Balance card, step 3: View balance (test run 902)");
   });
 });

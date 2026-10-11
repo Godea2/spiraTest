@@ -370,6 +370,7 @@ export function Review({ id }: { id: string }) {
               <tr>
                 <th className="py-2 pr-4 font-medium">Test set</th>
                 <th className="py-2 pr-4 text-right font-medium">In Scope</th>
+                <th className="py-2 pr-4 text-right font-medium">Defects</th>
                 <th className="py-2 pr-4 text-right font-medium">Blocked</th>
                 <th className="py-2 pr-4 text-right font-medium">Remove</th>
                 <th className="py-2 pr-4 text-right font-medium">Needs Review</th>
@@ -384,6 +385,7 @@ export function Review({ id }: { id: string }) {
                       <span className="font-medium">{set.testSetName}</span> <Badge className="ml-1">{set.platform}</Badge>
                     </td>
                     <td className="py-2.5 pr-4 text-right tabular-nums">{counts.inScope}</td>
+                    <td className={clsx("py-2.5 pr-4 text-right tabular-nums", counts.defects > 0 && "font-semibold text-violet-600 dark:text-violet-400")} title="Kept in the test set and run as Failed">{counts.defects}</td>
                     <td className="py-2.5 pr-4 text-right font-semibold text-orange-600 tabular-nums dark:text-orange-400">{counts.blocked}</td>
                     <td className="py-2.5 pr-4 text-right tabular-nums">
                       <span className="font-semibold text-red-600 dark:text-red-400">{actions.length}</span>
@@ -391,7 +393,7 @@ export function Review({ id }: { id: string }) {
                     </td>
                     <td className={clsx("py-2.5 pr-4 text-right tabular-nums", counts.needsReview && "font-semibold text-amber-600 dark:text-amber-400")}>{counts.needsReview}</td>
                     <td className="py-2.5 text-right">
-                      {(actions.length > 0 || done > 0 || counts.blocked > 0) && (
+                      {(actions.length > 0 || done > 0 || counts.blocked > 0 || counts.defects > 0) && (
                         <Button size="sm" variant="ghost" aria-expanded={expanded === set.testSetId} onClick={() => setExpanded(expanded === set.testSetId ? null : set.testSetId)}>
                           {expanded === set.testSetId ? "Hide" : "Show"} cases
                         </Button>
@@ -400,7 +402,8 @@ export function Review({ id }: { id: string }) {
                   </tr>
                   {expanded === set.testSetId && (
                     <tr>
-                      <td colSpan={6} className="pb-3">
+                      <td colSpan={7} className="pb-3">
+                        <CaseList title="Defects (kept)" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "defects")} hits={hits} />
                         <CaseList title="Blocked" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "blocked")} hits={hits} review={draft.blockedReview} />
                         <CaseList title="Remove" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope" && !removedIn(draft, set.testSetId).has(c.testSetTestCaseId))} hits={hits} />
                         <CaseList title="Already removed" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope" && removedIn(draft, set.testSetId).has(c.testSetTestCaseId))} hits={hits} />

@@ -1,6 +1,6 @@
 import "server-only";
 import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
-import { allCards, diffMembership, effectiveColumn, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
+import { allCards, diffMembership, effectiveColumn, intendedMembership, isExecutedColumn, normalizeDecisions } from "@/lib/domain/board";
 import { expectedTestSetStatus, fillRunSteps, invalidResult, runNote, runReport, TEST_SET_STATUS_NAMES } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
@@ -423,7 +423,7 @@ export async function recordExecutions(input: {
     seen.add(c.testSetTestCaseId);
     const card = set.cards.find((k) => k.testSetTestCaseId === c.testSetTestCaseId);
     if (!card || card.testCaseId !== c.testCaseId) throw new ApplyValidationError(`TC${c.testCaseId} is not on this board.`);
-    if (effectiveColumn(card, decisions) !== "inScope") throw new ApplyValidationError(`TC${c.testCaseId} is not In Scope, so it is not executed here.`);
+    if (!isExecutedColumn(effectiveColumn(card, decisions))) throw new ApplyValidationError(`TC${c.testCaseId} is not In Scope, so it is not executed here.`);
     const invalid = invalidResult(c.status, c.comment, c.steps);
     if (invalid) throw new ApplyValidationError(`TC${c.testCaseId}: ${invalid}`);
   }
@@ -581,35 +581,38 @@ export async function recordExecutions(input: {
 }
 
 /**
- * Logs one defect as a Spira incident linked to the failed step of each given run. Only runs of In
- * Scope cases on a verified board are used, and each run is read back first: it must be a manual run
- * this app recorded for that test case, with a Failed step. Runs that do not qualify are reported and
- * left out; when none qualifies nothing is created. The incident is a write and is never retried.
+ * Logs one defect as a Spira incident linked to the failed step of each given run. A defect can span
+ * modules, so the runs come from one or more boards of the same Spira project. Only runs of cases In
+ * Scope or in Defects on a verified board are used, and each run is read back first: it must be a
+ * manual run this app recorded for that test case, with a Failed step. Runs that do not qualify are
+ * reported and left out; when none qualifies nothing is created. The incident is a write and is never
+ * retried.
  */
 export async function logDefect(input: {
-  context: WorkflowContext;
-  testSets: TestSetComparison[];
-  decisions: Record<string, Column>;
+  boards: Array<{ context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> }>;
   defect: { name: string; description: string; typeId: number | null; priorityId: number | null; severityId: number | null };
-  runs: Array<{ testRunId: number; testCaseId: number; testSetId: number; testSetTestCaseId: number }>;
+  runs: Array<{ board: number; testRunId: number; testCaseId: number; testSetId: number; testSetTestCaseId: number }>;
 }): Promise<DefectLogResult> {
-  const ctx = input.context;
-  const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
+  const projectId = input.boards[0].context.projectId;
+  if (input.boards.some((b) => b.context.projectId !== projectId)) throw new ApplyValidationError("Every module of a defect must be in the same Spira project.");
+  const boards = input.boards.map((b) => ({ context: b.context, ...verifiedBoard(b.context, b.testSets, b.decisions) }));
   const seen = new Set<number>();
   for (const run of input.runs) {
     if (seen.has(run.testRunId)) throw new ApplyValidationError(`Test run ${run.testRunId} appears twice.`);
     seen.add(run.testRunId);
-    const card = sets.find((s) => s.testSetId === run.testSetId)?.cards.find((c) => c.testSetTestCaseId === run.testSetTestCaseId);
-    if (!card || card.testCaseId !== run.testCaseId) throw new ApplyValidationError(`TC${run.testCaseId} is not on this board.`);
-    if (effectiveColumn(card, decisions) !== "inScope") throw new ApplyValidationError(`TC${run.testCaseId} is not In Scope.`);
+    const board = boards[run.board];
+    if (!board) throw new ApplyValidationError(`Test run ${run.testRunId} names a module that was not sent.`);
+    const card = board.sets.find((s) => s.testSetId === run.testSetId)?.cards.find((c) => c.testSetTestCaseId === run.testSetTestCaseId);
+    if (!card || card.testCaseId !== run.testCaseId) throw new ApplyValidationError(`TC${run.testCaseId} is not on the ${board.context.module} board.`);
+    if (!isExecutedColumn(effectiveColumn(card, board.decisions))) throw new ApplyValidationError(`TC${run.testCaseId} is not In Scope or in Defects.`);
   }
 
   const linked: DefectLogResult["linked"] = [];
   const unlinked: DefectLogResult["unlinked"] = [];
-  let releaseId = ctx.releaseId;
+  let releaseId: number | null = null;
   const reads = await inPool(input.runs, 3, async (run) => {
     try {
-      return { run, steps: await getRecordedRunSteps(ctx.projectId, run.testRunId), error: null };
+      return { run, steps: await getRecordedRunSteps(projectId, run.testRunId), error: null };
     } catch (error) {
       if (!(error instanceof SpiraError)) throw error;
       return { run, steps: null, error: error.message };
@@ -626,14 +629,14 @@ export async function logDefect(input: {
       unlinked.push({ testRunId: run.testRunId, message: `Test run ${run.testRunId} has no Failed step.` });
     } else {
       linked.push({ testRunId: run.testRunId, testRunStepId: steps.failedStepIds[0] });
-      releaseId ??= steps.releaseId;
+      releaseId ??= boards[run.board].context.releaseId ?? steps.releaseId;
     }
   }
   if (linked.length === 0) {
     throw new ApplyValidationError(`No run could be linked, so no incident was logged. ${unlinked.map((u) => u.message).join(" ")}`.trim());
   }
 
-  const incidentId = await createIncident(ctx.projectId, {
+  const incidentId = await createIncident(projectId, {
     ...input.defect,
     releaseId,
     testRunStepIds: linked.map((l) => l.testRunStepId),

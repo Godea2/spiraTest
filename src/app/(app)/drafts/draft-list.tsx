@@ -17,6 +17,7 @@ type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
 
 const SCOPE_COLOR: Record<(typeof COLUMNS)[number], string> = {
   inScope: "bg-emerald-500",
+  defects: "bg-violet-500",
   blocked: "bg-orange-500",
   outOfScope: "bg-slate-400 dark:bg-zinc-500",
   needsReview: "bg-amber-400",
@@ -29,7 +30,7 @@ function ScopeBar({ counts }: { counts: DraftSummary["counts"] }) {
       <div className="flex h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/[0.06]" aria-hidden>
         {total > 0 && COLUMNS.map((c) => counts[c] > 0 && <span key={c} className={SCOPE_COLOR[c]} style={{ width: `${(counts[c] / total) * 100}%` }} />)}
       </div>
-      <dl className="mt-3 grid grid-cols-4 gap-2 text-xs">
+      <dl className="mt-3 grid grid-cols-3 gap-2 text-xs sm:grid-cols-5">
         {COLUMNS.map((c) => (
           <div key={c} className="min-w-0">
             <dt className="flex items-center gap-1.5 truncate text-slate-500 dark:text-zinc-400">
@@ -207,7 +208,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
                       <div className="min-w-0 flex-1">
                         <p className="text-xs text-slate-500 dark:text-zinc-400">Execution</p>
                         <p className="text-sm font-semibold tabular-nums">
-                          {d.execution ? `${d.execution.executed} / ${d.execution.total} executed` : `${d.counts.inScope} In Scope to run`}
+                          {d.execution ? `${d.execution.executed} / ${d.execution.total} executed` : `${d.counts.inScope + d.counts.defects} In Scope to run`}
                         </p>
                       </div>
                       <ButtonLink href={`/drafts/${d.id}/execute`} size="sm" variant="primary" icon={Play}>

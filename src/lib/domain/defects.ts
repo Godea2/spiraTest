@@ -1,11 +1,16 @@
+import { effectiveColumn, isCompleted } from "./board";
 import { runSignature, type RunnableStep } from "./execution";
-import type { BlockedConfidence, DefectMatch, DefectVerdict, ExecutionProgress, TestCaseStep } from "./types";
+import type { BlockedConfidence, Card, Column, DefectCandidate, DefectMatch, DefectRecord, DefectVerdict, Draft, ExecutionProgress, TestCaseStep } from "./types";
 
 export const MAX_DEFECT_TEXT = 4_000;
-/** Cases whose names Gemini reads per search; larger drafts are narrowed by wording first. */
-export const MAX_DEFECT_SEARCH_CASES = 600;
-/** Cases picked from names for a closer look at their steps. */
-export const MAX_DEFECT_CANDIDATES = 30;
+/** Case names Gemini reads per request; a search sends several requests. */
+export const MAX_DEFECT_SEARCH_CASES = 400;
+/** Case names read per search across every module; beyond this, cases are narrowed by wording first. */
+export const MAX_DEFECT_POOL = 2_400;
+/** Cases one request may pick from names. */
+export const MAX_SHORTLIST = 30;
+/** Cases picked from names, across requests, for a closer look at their steps; also the most one defect links. */
+export const MAX_DEFECT_CANDIDATES = 40;
 /** Cases whose steps are checked per request. */
 export const MAX_DEFECT_VERIFY_BATCH = 8;
 export const MAX_VERIFY_STEPS = 120;
@@ -78,6 +83,7 @@ export interface RawDefectVerdict {
 
 export interface VerifiedCase {
   key: string;
+  module?: string;
   name: string;
   steps: Array<{ label: string; description: string; expectedResult: string; sampleData: string }>;
 }
@@ -152,6 +158,7 @@ export function defectComment(title: string): string {
 export interface IncidentCase {
   testCaseId: number;
   name: string;
+  module?: string;
   stepLabel: string | null;
   stepText: string;
   testRunId: number;
@@ -186,9 +193,13 @@ export function incidentDescription(input: {
     }
     lines.push("");
   }
-  lines.push(`Failed test cases (${input.cases.length}):`);
-  for (const c of input.cases) {
-    lines.push(`- TC${c.testCaseId} ${c.name}${c.stepLabel ? `, step ${c.stepLabel}${c.stepText ? `: ${c.stepText}` : ""}` : ""} (test run ${c.testRunId})`);
+  const modules = [...new Set(input.cases.map((c) => c.module ?? ""))];
+  lines.push(`Failed test cases (${input.cases.length}${modules.length > 1 ? ` in ${modules.length} modules` : ""}):`);
+  for (const name of modules) {
+    if (modules.length > 1) lines.push(`${name || "Other"}:`);
+    for (const c of input.cases.filter((x) => (x.module ?? "") === name)) {
+      lines.push(`- TC${c.testCaseId} ${c.name}${c.stepLabel ? `, step ${c.stepLabel}${c.stepText ? `: ${c.stepText}` : ""}` : ""} (test run ${c.testRunId})`);
+    }
   }
   lines.push("", `Found by ${input.tester.trim() || "an unnamed tester"}. ${incidentSignature(input.runner)}`);
   return lines.join("\n").slice(0, 20_000);
@@ -199,6 +210,67 @@ export function stepsToReproduce(steps: RunnableStep[], failLabel: string | null
   if (!failLabel) return [];
   const at = steps.findIndex((s) => s.label === failLabel);
   return at < 0 ? [] : steps.slice(0, at + 1);
+}
+
+/** A case a defect search may consider: a board card still in its Spira test set, with where it sits. */
+export interface DefectTarget {
+  draftId: string;
+  draftName: string;
+  module: string;
+  completed: boolean;
+  testSetName: string;
+  card: Card;
+  column: Column;
+}
+
+/**
+ * Every case of the given drafts that is still in its test set in Spira: before live apply that includes
+ * Out of Scope and Needs Review cards (a defect can be found there too); cards a live apply removed are
+ * left out. A membership on more than one draft is searched once, from a completed draft first, then
+ * the most recently updated.
+ */
+export function defectTargets(drafts: Draft[]): DefectTarget[] {
+  const ordered = [...drafts].sort((a, b) => Number(isCompleted(b.status)) - Number(isCompleted(a.status)) || b.updatedAt.localeCompare(a.updatedAt));
+  // A membership a live apply removed is gone from Spira, whichever draft it is on.
+  const seen = new Set(drafts.flatMap((d) => Object.entries(d.apply.removed).flatMap(([setId, ids]) => ids.map((id) => `${setId}:${id}`))));
+  const out: DefectTarget[] = [];
+  for (const draft of ordered) {
+    const completed = isCompleted(draft.status);
+    for (const set of draft.testSets) {
+      for (const card of set.cards) {
+        const column = effectiveColumn(card, draft.decisions);
+        if ((completed && column === "outOfScope") || seen.has(card.key)) continue;
+        seen.add(card.key);
+        out.push({ draftId: draft.id, draftName: draft.name, module: draft.module, completed, testSetName: set.testSetName, card, column });
+      }
+    }
+  }
+  return out;
+}
+
+const RELEVANCE: Record<BlockedConfidence, number> = { high: 0, medium: 1, low: 2 };
+
+/**
+ * Joins the shortlists of several requests (each read part of the cases): most relevant first, then
+ * taking each list's picks in turn so no part crowds out the others, without repeats, up to `limit`.
+ */
+export function mergeCandidates(lists: DefectCandidate[][], limit: number): DefectCandidate[] {
+  const ranked = lists.flatMap((list, part) => list.map((c, rank) => ({ c, part, rank })));
+  ranked.sort((a, b) => RELEVANCE[a.c.relevance] - RELEVANCE[b.c.relevance] || a.rank - b.rank || a.part - b.part);
+  const seen = new Set<string>();
+  const out: DefectCandidate[] = [];
+  for (const { c } of ranked) {
+    if (out.length >= limit) break;
+    if (seen.has(c.key)) continue;
+    seen.add(c.key);
+    out.push(c);
+  }
+  return out;
+}
+
+/** Whether another defect still holds this case, so undoing one defect leaves it in Defects. */
+export function heldByOtherDefect(records: DefectRecord[], exceptId: string, draftId: string, key: string): boolean {
+  return records.some((r) => r.id !== exceptId && r.cases.some((c) => c.draftId === draftId && `${c.testSetId}:${c.testSetTestCaseId}` === key));
 }
 
 /** The Spira list entry that best fits a severity Gemini suggested: by name ("Critical", "1 - High"), else by rank. */

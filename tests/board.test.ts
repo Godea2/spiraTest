@@ -81,8 +81,14 @@ describe("apply planning", () => {
     expect(intendedMembership(set, { "1:4": "outOfScope" })).toEqual([1, 3]);
   });
 
+  it("keeps an Out of Scope card moved to Defects in its test set", () => {
+    expect(removalActions(set, { "1:2": "defects" })).toEqual([]);
+    expect(intendedMembership(set, { "1:2": "defects" })).toEqual([1, 2, 3, 4]);
+  });
+
   it("counts follow decisions", () => {
-    expect(countColumns(cards, { "1:3": "inScope" })).toEqual({ inScope: 3, blocked: 0, outOfScope: 1, needsReview: 0, total: 4 });
+    expect(countColumns(cards, { "1:3": "inScope" })).toEqual({ inScope: 3, defects: 0, blocked: 0, outOfScope: 1, needsReview: 0, total: 4 });
+    expect(countColumns(cards, { "1:2": "defects" })).toMatchObject({ defects: 1, outOfScope: 0 });
     expect(countColumns(cards, { "1:1": "blocked" })).toMatchObject({ inScope: 1, blocked: 1, needsReview: 1 });
   });
 

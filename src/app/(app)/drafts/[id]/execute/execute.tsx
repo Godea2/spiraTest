@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { Check, ChevronLeft, Download, ExternalLink, ListChecks, Play, RefreshCw, Search, Square, UserRound } from "lucide-react";
+import { Bug, Check, ChevronLeft, Download, ExternalLink, ListChecks, Play, RefreshCw, Search, Square, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -20,7 +20,7 @@ import {
 import { formatDateTime } from "@/lib/client/format";
 import { useDraft } from "@/lib/client/use-draft";
 import { exportExecution } from "@/lib/client/exports";
-import { cardKey, isCompleted } from "@/lib/domain/board";
+import { cardKey, effectiveColumn, isCompleted } from "@/lib/domain/board";
 import {
   confirmInSpira,
   currentStatus,
@@ -33,7 +33,6 @@ import {
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
-import { DefectFinder } from "./defect-finder";
 import { MarkMenu } from "./mark-menu";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
@@ -138,6 +137,7 @@ export function Execute({ id }: { id: string }) {
   const allVisibleSelected = visible.length > 0 && visibleSelected.length === visible.length;
   const setName = (testSetId: number) => draft.testSets.find((s) => s.testSetId === testSetId)?.testSetName ?? `TX${testSetId}`;
   const releaseText = draft.releaseLabel || draft.releaseId;
+  const defectCount = cards.filter((c) => effectiveColumn(c, draft.decisions) === "defects").length;
 
   async function checkSpira() {
     setSync({ checking: true, errors: [] });
@@ -345,10 +345,11 @@ export function Execute({ id }: { id: string }) {
           </span>
         }
         title={`Execute: ${draft.name}`}
-        description="Run the In Scope cases. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
+        description="Run the In Scope cases, including those in Defects. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
         actions={
           <>
             <ButtonLink href={`/drafts/${draft.id}`} variant="ghost">Board</ButtonLink>
+            <ButtonLink href={`/defects?draft=${encodeURIComponent(draft.id)}`} icon={Bug}>Find defects</ButtonLink>
             <Button icon={Download} onClick={() => void exportExecution(draft, spira?.siteUrl ?? null)}>Report</Button>
             <Button icon={RefreshCw} onClick={() => void checkSpira()} busy={sync.checking}>Check Spira again</Button>
           </>
@@ -505,17 +506,11 @@ export function Execute({ id }: { id: string }) {
         </div>
       </Section>
 
-      <DefectFinder
-        draft={draft}
-        cards={setTab === "all" ? cards : cards.filter((c) => c.testSetId === setTab)}
-        scopeLabel={setTab === "all" ? (draft.testSets.length > 1 ? "all test sets" : setName(draft.testSets[0]?.testSetId ?? 0)) : setName(setTab)}
-        tester={tester.trim()}
-        disabled={bulkRunning}
-        onChange={setDraft}
-        onBusy={markBusy}
-      />
-
-      <Section icon={ListChecks} title="In Scope cases" description={`${plural(counts.total, "case")} from ${plural(draft.testSets.length, "test set")}${releaseText ? `, recorded against release ${releaseText}` : ""}.`}>
+      <Section
+        icon={ListChecks}
+        title="In Scope cases"
+        description={`${plural(counts.total, "case")} from ${plural(draft.testSets.length, "test set")}${defectCount ? `, ${defectCount} of them in Defects` : ""}${releaseText ? `, recorded against release ${releaseText}` : ""}.`}
+      >
         <div className="mb-4 flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[14rem] flex-1 sm:max-w-sm">
@@ -631,6 +626,9 @@ export function Execute({ id }: { id: string }) {
                     </a>
                   )}
                   {inProgress && <Badge tone="brand">In progress</Badge>}
+                  {effectiveColumn(card, draft.decisions) === "defects" && (
+                    <Badge tone="danger" className="shrink-0"><Bug aria-hidden /> Defect</Badge>
+                  )}
                   <StatusChip status={status} className="shrink-0" />
                   <span className="flex shrink-0 gap-1">
                     <Button size="sm" variant="ghost" icon={Check} title="Record Passed for the whole case" aria-label={`Pass TC${card.testCaseId}`} onClick={() => void quickPass(card)} busy={working} disabled={working || bulkRunning}>

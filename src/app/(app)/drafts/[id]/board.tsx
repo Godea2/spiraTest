@@ -13,6 +13,7 @@ import {
 import clsx from "clsx";
 import {
   Ban,
+  Bug,
   Check,
   CheckCircle2,
   ChevronLeft,
@@ -72,7 +73,7 @@ import { CardDetail } from "./card-detail";
 import { KeywordPanel } from "./keyword-panel";
 
 const AUTOSAVE_MS = 30_000;
-const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "blocked", "3": "outOfScope", "4": "needsReview" };
+const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "blocked", "3": "outOfScope", "4": "needsReview", "5": "defects" };
 
 type StatusFilter = "all" | "executed" | "notExecuted" | "manual" | "keyword";
 type Confirm = { title: string; body: React.ReactNode; confirmLabel: string; danger?: boolean; run: () => void } | null;
@@ -146,7 +147,7 @@ export function Board({ id }: { id: string }) {
   }, [cards, setFilter, statusFilter, search, decisions, hits]);
 
   const byColumn = useMemo(() => {
-    const grouped: Record<Column, Card[]> = { inScope: [], blocked: [], outOfScope: [], needsReview: [] };
+    const grouped: Record<Column, Card[]> = { inScope: [], defects: [], blocked: [], outOfScope: [], needsReview: [] };
     for (const card of filtered) grouped[effectiveColumn(card, decisions)].push(card);
     return grouped;
   }, [filtered, decisions]);
@@ -471,6 +472,10 @@ export function Board({ id }: { id: string }) {
     if (await save()) router.push(`/drafts/${id}/review`);
   }
 
+  async function findDefects() {
+    if (await save()) router.push(`/defects?draft=${encodeURIComponent(id)}`);
+  }
+
   // ---- render ---------------------------------------------------------------
   if (loadError && !draft) {
     return <Notice tone="danger" title="This draft could not be opened" action={<ButtonLink href="/drafts" size="sm">Back to drafts</ButtonLink>}>{loadError}</Notice>;
@@ -480,7 +485,7 @@ export function Board({ id }: { id: string }) {
       <div className="flex flex-col gap-6" aria-busy="true">
         <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading board…</div>
         <div className="skeleton h-24" />
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           {COLUMNS.map((c) => <div key={c} className="skeleton h-80 rounded-2xl" />)}
         </div>
       </div>
@@ -532,6 +537,7 @@ export function Board({ id }: { id: string }) {
               confirmLabel: "Recompare",
               run: () => void runRecompare(draft.testSetIds),
             })} disabled={!!recompare?.running}>Recompare</Button>
+            <Button size="sm" icon={Bug} onClick={() => void findDefects()} disabled={!complete} title="Find the cases a defect affects, here and in other modules">Find defects</Button>
             {isCompleted(draft.status) ? (
               <>
                 <Button size="sm" icon={ClipboardCheck} onClick={goToReview} disabled={!complete}>Review</Button>
@@ -570,13 +576,14 @@ export function Board({ id }: { id: string }) {
       {recompare?.error && <Notice tone="danger" title="Recompare stopped" action={<Button size="sm" onClick={() => setRecompare(null)}>Dismiss</Button>}>{recompare.error}</Notice>}
       {counts.needsReview > 0 && complete && (
         <Notice tone="warning">
-          {counts.needsReview} card{counts.needsReview === 1 ? "" : "s"} in Needs Review. Move each to In Scope, Blocked or Out of Scope before a live apply.
+          {counts.needsReview} card{counts.needsReview === 1 ? "" : "s"} in Needs Review. Move each to In Scope, Defects, Blocked or Out of Scope before a live apply.
         </Notice>
       )}
 
-      <dl className="surface grid grid-cols-2 gap-x-4 gap-y-5 px-5 py-5 sm:grid-cols-3 sm:px-6 xl:grid-cols-6">
+      <dl className="surface grid grid-cols-2 gap-x-4 gap-y-5 px-5 py-5 sm:grid-cols-4 sm:px-6 xl:grid-cols-7">
         <Stat label="Total cards" value={counts.total} icon={Layers} />
         <Stat label="In Scope" value={counts.inScope} icon={CheckCircle2} tone="success" />
+        <Stat label="Defects" value={counts.defects} icon={Bug} tone={counts.defects ? "violet" : undefined} hint="kept, run as Failed" />
         <Stat label="Blocked" value={counts.blocked} icon={Ban} tone={counts.blocked ? "orange" : undefined} hint="not implemented" />
         <Stat label="Out of Scope" value={counts.outOfScope} icon={MinusCircle} tone={counts.outOfScope ? "danger" : undefined} hint="to remove" />
         <Stat label="Needs Review" value={counts.needsReview} icon={CircleHelp} tone={counts.needsReview ? "warning" : undefined} />
@@ -631,7 +638,7 @@ export function Board({ id }: { id: string }) {
         </div>
         <p className="hidden items-center gap-1.5 text-xs text-slate-500 lg:flex dark:text-zinc-500">
           <Keyboard className="size-3.5" aria-hidden />
-          Click a card for its full details and test steps. Drag cards between columns, or focus a card and press <kbd className="kbd">Enter</kbd> to open, <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
+          Click a card for its full details and test steps. Drag cards between columns, or focus a card and press <kbd className="kbd">Enter</kbd> to open, <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> <kbd className="kbd">5</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
         </p>
       </div>
 
@@ -661,7 +668,7 @@ export function Board({ id }: { id: string }) {
       </AnimatePresence>
 
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDrag(null)}>
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           {COLUMNS.map((column) => (
             <BoardColumn
               key={column}

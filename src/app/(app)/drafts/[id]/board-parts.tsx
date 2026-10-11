@@ -2,7 +2,7 @@
 
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import clsx from "clsx";
-import { Ban, CheckCircle2, CircleHelp, Hand, MinusCircle, Tag, type LucideIcon } from "lucide-react";
+import { Ban, Bug, CheckCircle2, CircleHelp, Hand, MinusCircle, Tag, type LucideIcon } from "lucide-react";
 import { memo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { COLUMN_LABELS, COLUMNS, type BlockedAssessment, type Card, type Column } from "@/lib/domain/types";
 
@@ -48,9 +48,18 @@ export const COLUMN_STYLE: Record<
     chip: "bg-amber-50 text-amber-800 ring-amber-200/70 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/20",
     tint: "from-amber-500/[0.08]",
   },
+  defects: {
+    dot: "bg-violet-500",
+    ring: "ring-violet-500/50",
+    key: "5",
+    icon: Bug,
+    accent: "text-violet-600 dark:text-violet-400",
+    chip: "bg-violet-50 text-violet-700 ring-violet-200/70 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/20",
+    tint: "from-violet-500/[0.07]",
+  },
 };
 
-const SHORT: Record<Column, string> = { inScope: "In", blocked: "Blocked", outOfScope: "Out", needsReview: "Review" };
+const SHORT: Record<Column, string> = { inScope: "In", defects: "Defects", blocked: "Blocked", outOfScope: "Out", needsReview: "Review" };
 
 export function AssessmentBadge({ assessment, className }: { assessment: BlockedAssessment; className?: string }) {
   const ai = assessment.source === "ai";
@@ -238,7 +247,7 @@ export function BoardColumn({
         {cards.length === 0 && (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 px-3 py-10 text-center text-xs text-slate-500 dark:border-white/10 dark:text-zinc-500">
             <Icon className="size-5 opacity-50" aria-hidden />
-            Drop cards here
+            {column === "defects" ? "Cases a defect was found in. They stay in the test set and are run as Failed." : "Drop cards here"}
           </div>
         )}
         {cards.length > limit && (

@@ -1,11 +1,11 @@
-import { allCards, cardKey, normalizeDecisions, preserveDecisions, removalActions } from "./board";
+import { allCards, cardKey, moveCards, normalizeDecisions, preserveDecisions, removalActions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
 import { emptyExecution, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, STATUS_LABEL } from "./execution";
 import type {
   ApplyActionResult,
   BlockedAssessment,
+  CardChange,
   Column,
-  DefectRecord,
   Draft,
   DraftApplyState,
   ExecutionProgress,
@@ -234,17 +234,21 @@ export function recordExecutionUndo(draft: Draft, deletedRunIds: number[]): void
   draft.execution.runs = draft.execution.runs.filter((run) => !deleted.has(run.testRunId));
 }
 
-/** Keeps a defect raised here, or replaces it when it is already kept (for example once its incident is logged). */
-export function recordDefect(draft: Draft, defect: DefectRecord): void {
-  const execution = draft.execution ?? emptyExecution();
-  execution.defects = [...(execution.defects ?? []).filter((d) => d.id !== defect.id), defect];
-  draft.execution = execution;
-}
-
-/** Forgets a defect whose incident and runs were deleted from Spira. */
-export function removeDefect(draft: Draft, defectId: string): void {
-  if (!draft.execution?.defects) return;
-  draft.execution.defects = draft.execution.defects.filter((d) => d.id !== defectId);
+/**
+ * Moves cards for a defect (to Defects, or back where they were on undo) as one step in the board's
+ * history. Like any board edit it clears the last membership check. Returns the moves made.
+ */
+export function recordDefectMoves(draft: Draft, moves: Array<{ key: string; to: Column }>, label: string, at: string): CardChange[] {
+  const cards = allCards(draft.testSets);
+  let decisions = draft.decisions;
+  const changes: CardChange[] = [];
+  for (const to of new Set(moves.map((m) => m.to))) {
+    const out = moveCards(cards, decisions, moves.filter((m) => m.to === to).map((m) => m.key), to);
+    decisions = out.decisions;
+    changes.push(...out.changes);
+  }
+  if (changes.length > 0) recordBoardEdits(draft, { decisions, history: [...draft.history, { at, label, changes }] });
+  return changes;
 }
 
 export function sortedEntries<T>(record: Record<string, T>): Array<[string, T]> {

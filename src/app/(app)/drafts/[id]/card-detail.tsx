@@ -22,7 +22,7 @@ import {
 } from "@/lib/domain/types";
 import { COLUMN_STYLE } from "./board-parts";
 
-const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "blocked", "3": "outOfScope", "4": "needsReview" };
+const KEY_TO_COLUMN: Record<string, Column> = { "1": "inScope", "2": "blocked", "3": "outOfScope", "4": "needsReview", "5": "defects" };
 const LONG_FIELD = /step|data|expected|precondition|pre-condition|description|note|comment/i;
 const MAX_WORKBOOK_ROWS = 5;
 

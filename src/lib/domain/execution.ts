@@ -1,4 +1,4 @@
-import { cardKey, effectiveColumn } from "./board";
+import { cardKey, effectiveColumn, isExecutedColumn } from "./board";
 import type {
   Card,
   Draft,
@@ -84,9 +84,9 @@ export function emptyProgress(): ExecutionProgress {
   return { steps: {}, status: null, comment: "" };
 }
 
-/** In Scope cards: the cases to execute. */
+/** In Scope cards, including those with a defect: the cases to execute. */
 export function executionCards(draft: Draft): Card[] {
-  return draft.testSets.flatMap((set) => set.cards.filter((card) => effectiveColumn(card, draft.decisions) === "inScope"));
+  return draft.testSets.flatMap((set) => set.cards.filter((card) => isExecutedColumn(effectiveColumn(card, draft.decisions))));
 }
 
 export interface RunnableStep {

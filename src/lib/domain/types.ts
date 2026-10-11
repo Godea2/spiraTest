@@ -1,8 +1,10 @@
-export const COLUMNS = ["inScope", "blocked", "outOfScope", "needsReview"] as const;
+/** Defects: In Scope cases with a defect found against them. They stay in their test set and are executed (as Failed). */
+export const COLUMNS = ["inScope", "defects", "blocked", "outOfScope", "needsReview"] as const;
 export type Column = (typeof COLUMNS)[number];
 
 export const COLUMN_LABELS: Record<Column, string> = {
   inScope: "In Scope",
+  defects: "Defects",
   blocked: "Blocked",
   outOfScope: "Out of Scope",
   needsReview: "Needs Review",
@@ -251,8 +253,8 @@ export interface DraftExecution {
   checkedAt: string | null;
   /** Each test set's own status in Spira, keyed by test set ID; expectedId is set when its cases call for another. */
   testSets?: Record<string, TestSetStatusState>;
-  /** Defects raised here from a description, newest last. */
-  defects?: DefectRecord[];
+  /** Defects kept here before they moved to their own list; moved there when the Defects page first loads. */
+  defects?: unknown[];
 }
 
 export const DEFECT_SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -294,9 +296,24 @@ export interface DefectMatch {
   reason: string;
 }
 
-/** A defect logged here: the cases failed for it and the Spira incident linked to their runs. */
+/** One case failed for a defect: where it lives, its run, and the board column it was in before. */
+export interface DefectCaseRecord {
+  draftId: string;
+  module: string;
+  testSetId: number;
+  testCaseId: number;
+  testSetTestCaseId: number;
+  name: string;
+  testRunId: number;
+  stepLabel: string | null;
+  /** Column the card was in before it moved to Defects; restored on undo. */
+  from: Column;
+}
+
+/** A defect found here: the cases failed for it, across modules, and the Spira incident linked to their runs. */
 export interface DefectRecord {
   id: string;
+  projectId: number;
   at: string;
   title: string;
   description: string;
@@ -306,7 +323,7 @@ export interface DefectRecord {
   incidentId: number | null;
   /** Failed run steps the incident is linked to. */
   linkedSteps: number;
-  cases: Array<{ testSetId: number; testCaseId: number; testSetTestCaseId: number; testRunId: number; stepLabel: string | null }>;
+  cases: DefectCaseRecord[];
 }
 
 export interface IncidentOption {
@@ -375,6 +392,7 @@ export interface TestSetUpkeep {
 
 export interface ColumnCounts {
   inScope: number;
+  defects: number;
   blocked: number;
   outOfScope: number;
   needsReview: number;

@@ -435,6 +435,7 @@ const statTones = {
   warning: { value: "text-amber-600 dark:text-amber-400", icon: "bg-amber-50 text-amber-600 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/20" },
   success: { value: "text-emerald-600 dark:text-emerald-400", icon: "bg-emerald-50 text-emerald-600 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-400/20" },
   orange: { value: "text-orange-600 dark:text-orange-400", icon: "bg-orange-50 text-orange-600 ring-orange-100 dark:bg-orange-500/10 dark:text-orange-300 dark:ring-orange-400/20" },
+  violet: { value: "text-violet-600 dark:text-violet-400", icon: "bg-violet-50 text-violet-600 ring-violet-100 dark:bg-violet-500/10 dark:text-violet-300 dark:ring-violet-400/20" },
   neutral: { value: "", icon: "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-white/[0.06] dark:text-zinc-300 dark:ring-white/10" },
 } as const;
 

@@ -20,12 +20,17 @@ export function effectiveColumn(card: Card, decisions: Record<string, Column>): 
   return decisions[card.key] ?? card.suggestion;
 }
 
+/** Columns whose cases are executed: In Scope, and In Scope cases with a defect. */
+export const EXECUTED_COLUMNS: ReadonlySet<Column> = new Set<Column>(["inScope", "defects"]);
+
+export const isExecutedColumn = (column: Column): boolean => EXECUTED_COLUMNS.has(column);
+
 export function allCards(testSets: TestSetComparison[]): Card[] {
   return testSets.flatMap((set) => set.cards);
 }
 
 export function countColumns(cards: Card[], decisions: Record<string, Column>): ColumnCounts {
-  const counts: ColumnCounts = { inScope: 0, blocked: 0, outOfScope: 0, needsReview: 0, total: 0 };
+  const counts: ColumnCounts = { inScope: 0, defects: 0, blocked: 0, outOfScope: 0, needsReview: 0, total: 0 };
   for (const card of cards) {
     counts[effectiveColumn(card, decisions)] += 1;
     counts.total += 1;

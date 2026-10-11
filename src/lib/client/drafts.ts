@@ -31,16 +31,21 @@ export function getDraft(id: string): Draft {
   return draft;
 }
 
-export function listDrafts(): DraftSummary[] {
+/** Every draft in full, most recently updated first. */
+export function allDrafts(): Draft[] {
   return keysWithPrefix(PREFIX)
     .map((key) => readItem<Draft>(key))
     .filter((draft): draft is Draft => draft !== null)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function listDrafts(): DraftSummary[] {
+  return allDrafts()
     .map((draft) => {
       if (!draft.execution) return summarizeDraft(draft);
       const counts = executionCounts(executionCards(draft), draft.execution);
       return { ...summarizeDraft(draft), execution: { executed: counts.total - counts.notRun, total: counts.total } };
-    })
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    });
 }
 
 /**

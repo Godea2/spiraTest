@@ -43,7 +43,7 @@ import { AssessmentBadge, COLUMN_STYLE } from "./board-parts";
 type Scan = { done: number; total: number; ai: boolean; deep: boolean };
 type View = "changes" | "blocked" | "notBlocked" | "all";
 
-const REPORT_COLUMNS: Column[] = ["inScope", "blocked", "needsReview", "outOfScope"];
+const REPORT_COLUMNS: Column[] = ["inScope", "defects", "blocked", "needsReview", "outOfScope"];
 
 /**
  * Not-implemented features, one keyword list per test set in the draft. Filter finds In Scope and Blocked

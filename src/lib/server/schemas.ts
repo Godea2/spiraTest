@@ -203,13 +203,15 @@ export const executionRecordRequestSchema = z.object({
 const defectText = z.string().trim().min(10, "Describe the defect in a sentence or two.").max(MAX_DEFECT_TEXT);
 const stepText = z.string().max(MAX_STEP_TEXT);
 
+const moduleName = z.string().trim().min(1).max(200);
+
 export const defectSearchRequestSchema = z.object({
-  module: z.string().trim().min(1).max(200),
   description: defectText,
   cases: z
     .array(
       z.object({
         key: z.string().max(64),
+        module: moduleName,
         testSetName: z.string().max(200),
         scenario: z.string().max(MAX_SCENARIO_TEXT),
         workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
@@ -221,13 +223,13 @@ export const defectSearchRequestSchema = z.object({
 });
 
 export const defectVerifyRequestSchema = z.object({
-  module: z.string().trim().min(1).max(200),
   description: defectText,
   analysis: z.object({ area: z.string().max(200), symptom: z.string().max(600), expected: z.string().max(600) }),
   cases: z
     .array(
       z.object({
         key: z.string().max(64),
+        module: moduleName.optional(),
         name: z.string().max(2_000),
         steps: z
           .array(z.object({ label: z.string().max(20), description: stepText, expectedResult: stepText, sampleData: stepText }))
@@ -240,10 +242,14 @@ export const defectVerifyRequestSchema = z.object({
 
 const optionalId = id.nullable();
 
+/** Boards (one per module) a defect can span; each run names the board it belongs to. */
+export const MAX_DEFECT_BOARDS = 20;
+
 export const defectLogRequestSchema = z.object({
-  context: contextSchema,
-  testSets,
-  decisions,
+  boards: z
+    .array(z.object({ context: contextSchema, testSets, decisions }))
+    .min(1)
+    .max(MAX_DEFECT_BOARDS, `A defect can span at most ${MAX_DEFECT_BOARDS} modules.`),
   defect: z.object({
     name: z.string().trim().min(3, "Give the defect a title.").max(255),
     description: z.string().trim().min(10).max(20_000),
@@ -252,7 +258,7 @@ export const defectLogRequestSchema = z.object({
     severityId: optionalId,
   }),
   runs: z
-    .array(z.object({ testRunId: id, testCaseId: id, testSetId: id, testSetTestCaseId: id }))
+    .array(z.object({ board: z.number().int().min(0).max(MAX_DEFECT_BOARDS - 1), testRunId: id, testCaseId: id, testSetId: id, testSetTestCaseId: id }))
     .min(1)
     .max(MAX_DEFECT_CANDIDATES, `Link at most ${MAX_DEFECT_CANDIDATES} runs to one defect.`),
 });

@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { MAX_DEFECT_CANDIDATES, settleDefectVerdicts, type VerifiedCase } from "@/lib/domain/defects";
+import { MAX_SHORTLIST, settleDefectVerdicts, type VerifiedCase } from "@/lib/domain/defects";
 import { DEFECT_SEVERITIES, type AiBlockedVerdict, type AiStatus, type DefectAnalysis, type DefectCandidate, type DefectMatch } from "@/lib/domain/types";
 
 // Server-only client for the Gemini Interactions API. The key is sent as a header and never
@@ -269,6 +269,7 @@ export async function reviewBlockedCases(module: string, cases: BlockedReviewCas
 
 export interface DefectSearchCase {
   key: string;
+  module: string;
   testSetName: string;
   scenario: string;
   workbookScenario?: string;
@@ -276,8 +277,9 @@ export interface DefectSearchCase {
 }
 
 const SHORTLIST_INSTRUCTION = `You are a senior QA test analyst on a mobile app release. A tester found a defect in the build and describes it
-in their own words. You get that description and the test cases of the release (key, scenario name, sometimes the release
-workbook's wording, test set, latest result).
+in their own words. You get that description and test cases of the release from several modules (key, module, test set,
+scenario name, sometimes the release workbook's wording, latest result). The defect may affect cases in more than one module:
+a defect in a shared screen or rule (login, account picker, balances, network list) shows up wherever that screen is used.
 
 1. Read the defect: which screen, field, flow or rule misbehaves, what happens, and what should happen.
 2. Pick the cases whose execution runs into the defect: the case exercises the broken behaviour, so following it the tester
@@ -291,7 +293,7 @@ workbook's wording, test set, latest result).
 relevance: "high" when the name leaves no doubt the case meets the defect, "medium" when it very likely does, "low" when it
 may and only the steps can tell. Steps are read next for every candidate, so include "low" ones rather than miss a case.
 why: one short sentence naming what in the case meets the defect.
-Return at most ${MAX_DEFECT_CANDIDATES} candidates, most relevant first, copying keys exactly. Return none if nothing is affected.
+Return at most ${MAX_SHORTLIST} candidates, most relevant first, copying keys exactly. Return none if nothing is affected.
 
 Also describe the defect for a bug report:
 - title: at most 12 words, "<screen or feature>: <what goes wrong>", specific, no "bug" or "issue".
@@ -350,21 +352,17 @@ const shortlistSchema = z.object({
 });
 
 /** Reads a defect description and picks, from case names alone, the cases it may make fail. Changes nothing. */
-export async function shortlistDefectCases(
-  module: string,
-  description: string,
-  cases: DefectSearchCase[],
-): Promise<{ analysis: DefectAnalysis; candidates: DefectCandidate[] }> {
+export async function shortlistDefectCases(description: string, cases: DefectSearchCase[]): Promise<{ analysis: DefectAnalysis; candidates: DefectCandidate[] }> {
   const parsed = await generate(
     {
       system: SHORTLIST_INSTRUCTION,
       schema: SHORTLIST_SCHEMA,
       thinking: "medium",
       input: {
-        module,
         defect: description,
         cases: cases.map((c) => ({
           key: c.key,
+          module: c.module,
           testSet: c.testSetName,
           scenario: c.scenario,
           ...(c.workbookScenario && c.workbookScenario !== c.scenario ? { workbookScenario: c.workbookScenario } : {}),
@@ -376,7 +374,7 @@ export async function shortlistDefectCases(
   );
   const known = new Set(cases.map((c) => c.key));
   const seen = new Set<string>();
-  const candidates = parsed.candidates.filter((c) => known.has(c.key) && !seen.has(c.key) && seen.add(c.key)).slice(0, MAX_DEFECT_CANDIDATES);
+  const candidates = parsed.candidates.filter((c) => known.has(c.key) && !seen.has(c.key) && seen.add(c.key)).slice(0, MAX_SHORTLIST);
   const { defect } = parsed;
   return {
     analysis: { ...defect, title: defect.title || defect.symptom.slice(0, 120) || description.trim().slice(0, 120), question: defect.question || null },
@@ -443,17 +441,17 @@ const verifySchema = z.object({
  * Checks each case's steps against the defect and says whether, and at which step, it fails. Every
  * verdict is checked against the case as sent before it is returned (see settleDefectVerdicts).
  */
-export async function verifyDefectCases(module: string, description: string, analysis: Pick<DefectAnalysis, "area" | "symptom" | "expected">, cases: VerifiedCase[]): Promise<DefectMatch[]> {
+export async function verifyDefectCases(description: string, analysis: Pick<DefectAnalysis, "area" | "symptom" | "expected">, cases: VerifiedCase[]): Promise<DefectMatch[]> {
   const parsed = await generate(
     {
       system: VERIFY_INSTRUCTION,
       schema: VERIFY_SCHEMA,
       thinking: "medium",
       input: {
-        module,
         defect: { description, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected },
         cases: cases.map((c) => ({
           key: c.key,
+          ...(c.module ? { module: c.module } : {}),
           name: c.name,
           steps: c.steps.map((s) => ({
             label: s.label,
