@@ -41,6 +41,7 @@ const cardSchema = z.object({
   suggestion: column,
   reason: z.string().max(2_000),
   description: z.string().max(MAX_STEP_TEXT).optional(),
+  workbookText: z.string().max(MAX_STEP_TEXT).optional(),
 });
 
 const comparisonSchema = testSetRef.extend({

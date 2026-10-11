@@ -16,7 +16,7 @@ import {
   MAX_APPLY_BATCH,
   removalActions,
 } from "@/lib/domain/board";
-import { draftKeywords, keywordHits } from "@/lib/domain/keywords";
+import { keywordHits } from "@/lib/domain/keywords";
 import type {
   ApplyAction,
   ApplyActionResult,
@@ -102,7 +102,7 @@ export function Review({ id }: { id: string }) {
   }, [draft]);
 
   const hits = useMemo(
-    () => (draft ? keywordHits(allCards(draft.testSets), draftKeywords(draft), draft.stepText) : new Map<string, string[]>()),
+    () => (draft ? keywordHits(allCards(draft.testSets), draft.testSetKeywords, draft.stepText) : new Map<string, string[]>()),
     [draft],
   );
 

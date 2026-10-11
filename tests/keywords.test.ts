@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBoard } from "@/lib/domain/apply-rules";
 import { emptyApplyState, recordSignOffResults, recordSignOffUndo } from "@/lib/domain/draft-ops";
-import { blockMatchingCards, keywordHits, matchKeywords, parseKeywords, plainText } from "@/lib/domain/keywords";
+import { blockMatchingCards, keywordHits, keywordReport, matchKeywords, parseKeywords, plainText } from "@/lib/domain/keywords";
+import { reconcileTestSet } from "@/lib/domain/matching";
 import type { Card, Draft, SignOffResult, TestSetComparison } from "@/lib/domain/types";
 
 function card(id: number, suggestion: Card["suggestion"], name = `Case ${id}`, description?: string): Card {
@@ -24,8 +25,15 @@ describe("keyword matching", () => {
   it("matches whole words regardless of case", () => {
     expect(matchKeywords("Verify NIN on signup", ["nin"])).toEqual(["nin"]);
     expect(matchKeywords("nin-based lookup", ["nin"])).toEqual(["nin"]);
+    expect(matchKeywords("BVN/NIN toggle", ["nin", "bvn"])).toEqual(["nin", "bvn"]);
     expect(matchKeywords("User is running the app", ["nin"])).toEqual([]);
     expect(matchKeywords("Beginning of flow", ["nin"])).toEqual([]);
+  });
+
+  it("matches plurals and possessives of a keyword", () => {
+    expect(matchKeywords("Guests cannot pay", ["guest"])).toEqual(["guest"]);
+    expect(matchKeywords("The guest's profile", ["guest"])).toEqual(["guest"]);
+    expect(matchKeywords("Guestbook", ["guest"])).toEqual([]);
   });
 
   it("matches multi-word keywords across spaces, hyphens and underscores", () => {
@@ -42,22 +50,29 @@ describe("keyword matching", () => {
     expect(parseKeywords("nin, bvn;google\n NIN ,")).toEqual(["nin", "bvn", "google"]);
   });
 
-  it("turns Spira HTML into plain words", () => {
+  it("turns Spira HTML into plain words, including numeric entities", () => {
     expect(plainText("<p>Enter&nbsp;<b>BVN</b> &amp; submit</p><script>x()</script>")).toBe("Enter BVN & submit");
+    expect(plainText("Secure&#80;ass and &#x47;oogle")).toBe("SecurePass and Google");
     expect(plainText(null)).toBe("");
   });
 
-  it("searches the name, description and step text", () => {
-    const cards = [card(1, "inScope", "Login with BVN"), card(2, "inScope", "Plain", "Uses <b>NIN</b> check"), card(3, "inScope"), card(4, "inScope")];
-    const hits = keywordHits(cards, { all: ["bvn", "nin", "google"] }, { "1003": "Step: tap Google button" });
-    expect(Object.fromEntries(hits)).toEqual({ "1:1": ["bvn"], "1:2": ["nin"], "1:3": ["google"] });
+  it("searches the name, description, step text and workbook row", () => {
+    const cards = [
+      card(1, "inScope", "Login with BVN"),
+      card(2, "inScope", "Plain", "Uses NIN check"),
+      card(3, "inScope"),
+      { ...card(4, "inScope"), workbookText: "TC-ONB-004\nPay as guest" },
+      card(5, "inScope"),
+    ];
+    const hits = keywordHits(cards, { "1": ["bvn", "nin", "google", "guest"] }, { "1003": "Step: tap Google button" });
+    expect(Object.fromEntries(hits)).toEqual({ "1:1": ["bvn"], "1:2": ["nin"], "1:3": ["google"], "1:4": ["guest"] });
   });
 
-  it("applies a test set's own keywords only to that test set, on top of the shared ones", () => {
+  it("applies a test set's keywords only to that test set", () => {
     const android = card(1, "inScope", "Google sign in with BVN");
     const ios = { ...card(2, "inScope", "Google sign in with BVN"), key: "2:2", testSetId: 2 };
-    const hits = keywordHits([android, ios], { all: ["bvn"], byTestSet: { "2": ["google"] } }, {});
-    expect(Object.fromEntries(hits)).toEqual({ "1:1": ["bvn"], "2:2": ["bvn", "google"] });
+    const hits = keywordHits([android, ios], { "2": ["google"] }, {});
+    expect(Object.fromEntries(hits)).toEqual({ "2:2": ["google"] });
   });
 });
 
@@ -65,21 +80,41 @@ describe("moving matching cards to Blocked", () => {
   const cards = [card(1, "inScope", "BVN check"), card(2, "outOfScope", "BVN legacy"), card(3, "needsReview", "BVN maybe"), card(4, "inScope", "Other")];
 
   it("moves only In Scope cards and records each change", () => {
-    const { decisions, changes } = blockMatchingCards(cards, {}, { all: ["bvn"] }, {});
+    const { decisions, changes } = blockMatchingCards(cards, {}, { "1": ["bvn"] }, {});
     expect(changes).toEqual([{ key: "1:1", from: "inScope", to: "blocked" }]);
     expect(decisions).toEqual({ "1:1": "blocked" });
   });
 
-  it("does nothing without keywords or when already blocked", () => {
-    expect(blockMatchingCards(cards, {}, { all: [] }, {}).changes).toEqual([]);
-    expect(blockMatchingCards(cards, { "1:1": "blocked" }, { all: ["bvn"] }, {}).changes).toEqual([]);
+  it("does nothing without keywords, for other test sets, or when already blocked", () => {
+    expect(blockMatchingCards(cards, {}, {}, {}).changes).toEqual([]);
+    expect(blockMatchingCards(cards, {}, { "9": ["bvn"] }, {}).changes).toEqual([]);
+    expect(blockMatchingCards(cards, { "1:1": "blocked" }, { "1": ["bvn"] }, {}).changes).toEqual([]);
   });
 
-  it("uses keywords linked to the card's test set", () => {
-    expect(blockMatchingCards(cards, {}, { all: [], byTestSet: { "1": ["other"] } }, {}).changes).toEqual([
-      { key: "1:4", from: "inScope", to: "blocked" },
+  it("reports where each keyword was found, by current column", () => {
+    const { decisions } = blockMatchingCards(cards, {}, { "1": ["bvn", "google"] }, {});
+    const report = keywordReport(cards, decisions, { "1": ["bvn", "google"] }, {});
+    const keys = (cs: Card[]) => cs.map((c) => c.key);
+    expect(report.map((r) => [r.keyword, keys(r.byColumn.inScope), keys(r.byColumn.blocked), keys(r.byColumn.outOfScope), keys(r.byColumn.needsReview)])).toEqual([
+      ["bvn", [], ["1:1"], ["1:2"], ["1:3"]],
+      ["google", [], [], [], []],
     ]);
-    expect(blockMatchingCards(cards, {}, { all: [], byTestSet: { "9": ["other"] } }, {}).changes).toEqual([]);
+  });
+});
+
+describe("workbook text on cards", () => {
+  it("copies the matched workbook row onto the card so keywords in it are found", () => {
+    const rows = [
+      { sheet: "In-Scope", rowNumber: 2, scope: "inScope" as const, values: { "TC ID": "TC-ONB-001", "Test Scenario": "Sign up", Notes: "NIN flow" } },
+    ];
+    const cases = [
+      { testSetTestCaseId: 1, testCaseId: 11, name: "TC-ONB-001 Sign up", executionStatus: "Not Run", executed: false, customText: [] },
+      { testSetTestCaseId: 2, testCaseId: 12, name: "Unrelated", executionStatus: "Not Run", executed: false, customText: [] },
+    ];
+    const { cards } = reconcileTestSet(1, rows, cases);
+    expect(cards[0].workbookText).toBe("TC-ONB-001\nSign up\nNIN flow");
+    expect(cards[1].workbookText).toBeUndefined();
+    expect(Object.fromEntries(keywordHits(cards, { "1": ["nin"] }, {}))).toEqual({ "1:1": ["nin"] });
   });
 });
 

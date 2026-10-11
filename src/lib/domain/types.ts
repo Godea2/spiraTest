@@ -38,8 +38,10 @@ export interface Card {
   executed: boolean;
   suggestion: Column;
   reason: string;
-  /** Plain-text test case description, searched for not-implemented keywords. */
+  /** Plain-text test case description and custom fields, searched for not-implemented keywords. */
   description?: string;
+  /** Text of the matched workbook row, searched for not-implemented keywords. */
+  workbookText?: string;
 }
 
 export interface MissingRow {
@@ -167,14 +169,12 @@ export interface Draft {
   decisions: Record<string, Column>;
   history: HistoryEntry[];
   apply: DraftApplyState;
-  /** Features not built yet in any test set; In Scope cards mentioning one are moved to Blocked. */
-  keywords?: string[];
-  /** Extra keywords for one test set, keyed by test set ID. */
+  /** Features not built yet, keyed by test set ID; In Scope cards mentioning one are moved to Blocked. */
   testSetKeywords?: Record<string, string[]>;
   /** Plain text of each test case's steps, keyed by test case ID, read from Spira for keyword matching. */
   stepText?: Record<string, string>;
-  /** Set once keywords have been applied automatically, so they are not re-applied on every load. */
-  keywordsAppliedAt?: string | null;
+  /** When Filter last read the steps from Spira and applied the keywords. */
+  keywordsFilteredAt?: string | null;
 }
 
 export interface ColumnCounts {
@@ -206,12 +206,6 @@ export interface TestSetRef {
   platform: Platform;
 }
 
-export interface TestSetKeywords {
-  testSetId: number;
-  testSetName: string;
-  keywords: string[];
-}
-
 export interface TestSetMapping extends TestSetRef {
   id: string;
   module: string;
@@ -225,10 +219,6 @@ export interface AppSettings {
   releaseLabel: string;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
-  /** Not-implemented keywords for every test set, copied into each new draft, e.g. "nin", "bvn". */
-  keywords: string[];
-  /** Extra not-implemented keywords that apply to one Spira test set only. */
-  testSetKeywords: TestSetKeywords[];
   updatedAt: string | null;
 }
 

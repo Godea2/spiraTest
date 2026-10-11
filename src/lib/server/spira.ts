@@ -229,8 +229,13 @@ const testStepSchema = z.array(
     Description: z.string().nullish(),
     ExpectedResult: z.string().nullish(),
     SampleData: z.string().nullish(),
+    Precondition: z.string().nullish(),
+    LinkedTestCaseId: z.number().int().nullish(),
   }),
 );
+
+/** How deep linked test cases are followed when reading steps; Spira allows links inside links. */
+const LINKED_STEP_DEPTH = 3;
 
 const recordedRunSchema = z.object({ TestRunId: id });
 const automatedRunSchema = z.object({
@@ -313,6 +318,7 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
   return [...membership].map(([testSetTestCaseId, testCaseId]) => {
     const details = byMembership.get(testSetTestCaseId) ?? byTestCase.get(testCaseId);
     const statusId = details?.ExecutionStatusId ?? null;
+    const customText = (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean);
     return {
       testSetTestCaseId,
       testCaseId,
@@ -320,21 +326,31 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
       executionStatus: details?.ExecutionStatusName ?? (statusId ? EXECUTION_STATUS_NAMES[statusId] : null) ?? "Not Run",
       executionStatusId: statusId,
       executed: statusId !== null && EXECUTED_STATUS_IDS.has(statusId),
-      customText: (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean),
-      description: plainText(details?.Description).slice(0, MAX_STEP_TEXT),
+      customText,
+      description: [plainText(details?.Description), ...customText.map(plainText)].filter(Boolean).join("\n").slice(0, MAX_STEP_TEXT),
     };
   });
 }
 
-/** Plain text of a test case's steps (description, expected result, sample data). Read-only. */
+/**
+ * Plain text of a test case's steps: description, expected result, sample data and precondition,
+ * plus the steps of any test case a step links to. Read-only.
+ */
 export async function getTestStepText(projectId: number, testCaseId: number): Promise<string> {
-  const what = `reading the steps of test case ${testCaseId}`;
-  const steps = parse(testStepSchema, await call("GET", `projects/${projectId}/test-cases/${testCaseId}/test-steps`, what), what);
-  return steps
-    .flatMap((s) => [s.Description, s.ExpectedResult, s.SampleData].map(plainText))
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, MAX_STEP_TEXT);
+  const parts: string[] = [];
+  const visited = new Set<number>();
+  async function read(id: number, depth: number): Promise<void> {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const what = `reading the steps of test case ${id}`;
+    const steps = parse(testStepSchema, await call("GET", `projects/${projectId}/test-cases/${id}/test-steps`, what), what);
+    for (const s of steps) {
+      parts.push(...[s.Precondition, s.Description, s.ExpectedResult, s.SampleData].map(plainText).filter(Boolean));
+      if (s.LinkedTestCaseId && s.LinkedTestCaseId > 0 && depth < LINKED_STEP_DEPTH) await read(s.LinkedTestCaseId, depth + 1);
+    }
+  }
+  await read(testCaseId, 0);
+  return parts.join("\n").slice(0, MAX_STEP_TEXT);
 }
 
 /** Name the app records as the runner, and checks before deleting a run on undo. */

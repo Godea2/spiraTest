@@ -250,10 +250,6 @@ export function CompareWorkspace() {
         rows: matchedRows,
         testSetIds: ids,
         testSetRefs: refs,
-        keywords: settings.keywords,
-        testSetKeywords: Object.fromEntries(
-          settings.testSetKeywords.filter((k) => ids.includes(k.testSetId)).map((k) => [String(k.testSetId), k.keywords]),
-        ),
       });
       setDraft(created);
       setStatuses(Object.fromEntries(ids.map((id) => [id, "pending" as SetStatus])));

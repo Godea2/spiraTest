@@ -33,7 +33,7 @@ Use a dedicated Spira service account with access to the project and permission 
 | Dry run | `GET …/test-case-mapping`; nothing is changed |
 | Live apply | `GET …/test-case-mapping`, then `DELETE projects/{p}/test-sets/{t}/test-cases/{test_set_test_case_id}` per case |
 | Verify | `GET …/test-case-mapping` |
-| Keyword check (board) | `GET projects/{p}/test-cases/{tc}/test-steps` per case that is not Out of Scope (read only) |
+| Keyword filter (board) | `GET projects/{p}/test-cases/{tc}/test-steps` per case in a test set with keywords, plus the steps of linked test cases (read only) |
 | Record results | `GET …/test-sets/{t}` and `…/test-cases` (current status), then `POST projects/{p}/test-runs/record` per Blocked or Passed case |
 | Undo sign-off | `GET projects/{p}/test-runs/{id}/automated` (checks the runner name and test case), then `DELETE projects/{p}/test-runs/{id}` |
 
@@ -41,7 +41,7 @@ Live apply removes a test case from a test set; the test case itself is never de
 
 ### Blocked cases and sign-off
 
-List features that are not built yet (for example `nin, bvn, google`) under **Settings → Not implemented yet**: one list for every test set, and with **Link a test set**, extra keywords for a single Spira test set (for example `google` only for Onboarding-IOS). Each new draft copies the shared list and the lists of the test sets it compares, and they can be changed per test set on the board. When the board opens, the steps of every case that is not Out of Scope are read from Spira, and In Scope cases whose name, description or step text (description, expected result, sample data) mention a keyword as a whole word move to **Blocked**. The move is in the change history and can be undone.
+On the board, **Not implemented yet** has one keyword list per test set in the draft (for example `nin, bvn, google` for Onboarding-IOS). **Filter** reads the steps of every case in those test sets from Spira again, then checks each case's name, description and custom property text, every step's description, expected result, sample data and precondition (following linked test cases), and the workbook row it matched. Keywords match whole words and their plural, ignoring case, so `nin` matches `NIN` and `BVN/NIN` but not `running`. In Scope cases that mention a keyword of their test set move to **Blocked**; the move is in the change history and can be undone. A table then shows, for every keyword, how many cases mention it in each column, and lists them, so a keyword found only in Out of Scope cases shows that the workbook left those cases out.
 
 On **Review & apply**, a live apply removes Out of Scope cases, then records an automated test run with status **Blocked** for each Blocked case. Ticking **Also mark In Scope cases as Passed** (off by default, with its own confirmation) records **Passed** runs for In Scope cases too. Runs use the draft's release, or the test set's release when the draft has none. Cases that already have a result in Spira are skipped and listed. The IDs of recorded runs are kept in the draft so **Undo sign-off** can delete exactly those runs.
 

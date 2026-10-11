@@ -39,7 +39,7 @@ import {
   type Draft,
   type HistoryEntry,
 } from "@/lib/domain/types";
-import { blockMatchingCards, draftKeywords, keywordHits } from "@/lib/domain/keywords";
+import { blockMatchingCards, keywordHits } from "@/lib/domain/keywords";
 import { BoardCard, BoardColumn } from "./board-parts";
 import { KeywordPanel } from "./keyword-panel";
 
@@ -101,8 +101,8 @@ export function Board({ id }: { id: string }) {
   const counts = useMemo(() => countColumns(cards, decisions), [cards, decisions]);
   const missingCount = draft?.testSets.reduce((n, s) => n + s.missingFromSpira.length, 0) ?? 0;
   const hits = useMemo(
-    () => keywordHits(cards, { all: draft?.keywords ?? [], byTestSet: draft?.testSetKeywords }, draft?.stepText),
-    [cards, draft?.keywords, draft?.testSetKeywords, draft?.stepText],
+    () => keywordHits(cards, draft?.testSetKeywords, draft?.stepText),
+    [cards, draft?.testSetKeywords, draft?.stepText],
   );
   const pendingBlocks = useMemo(
     () => cards.filter((c) => hits.has(c.key) && effectiveColumn(c, decisions) === "inScope").length,
@@ -263,7 +263,7 @@ export function Board({ id }: { id: string }) {
 
   const blockMatches = useCallback(
     (d: Draft) => {
-      const { decisions: next, changes, hits: found } = blockMatchingCards(cards, stateRef.current.decisions, draftKeywords(d), d.stepText);
+      const { decisions: next, changes, hits: found } = blockMatchingCards(cards, stateRef.current.decisions, d.testSetKeywords, d.stepText);
       if (changes.length === 0) return 0;
       const mentioned = [...new Set(changes.flatMap((c) => found.get(c.key) ?? []))];
       setDecisions(next);

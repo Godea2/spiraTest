@@ -56,7 +56,7 @@ export function purgeMockData(): number {
 
 export type NewDraft = Pick<
   Draft,
-  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds" | "testSetRefs" | "keywords" | "testSetKeywords"
+  "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds" | "testSetRefs"
 >;
 
 export function createDraft(input: NewDraft): Draft {
@@ -72,8 +72,8 @@ export function createDraft(input: NewDraft): Draft {
     decisions: {},
     history: [],
     apply: emptyApplyState(),
+    testSetKeywords: {},
     stepText: {},
-    keywordsAppliedAt: null,
   };
   writeItem(keyFor(draft.id), draft);
   logActivity({
