@@ -4,6 +4,7 @@ import {
   compareMatches,
   defectProgress,
   defectTargets,
+  failedForDefect,
   heldByOtherDefect,
   incidentDescription,
   incidentSignature,
@@ -11,8 +12,11 @@ import {
   mergeCandidates,
   pickBySeverity,
   rankByWording,
+  sameNameCases,
   settleDefectVerdicts,
+  similarDefects,
   stepsToReproduce,
+  wordingSimilarity,
   type RawDefectVerdict,
   type VerifiedCase,
 } from "@/lib/domain/defects";
@@ -270,6 +274,31 @@ describe("searching across modules", () => {
     expect(heldByOtherDefect(records, "a", "d1", "1:1")).toBe(true);
     expect(heldByOtherDefect(records, "c", "d2", "1:2")).toBe(false);
     expect(heldByOtherDefect(records, "a", "d2", "1:1")).toBe(false);
+  });
+
+  it("finds a defect raised before from a reworded description, but not a different one", () => {
+    const raised = (id: string, description: string) => ({ id, description, cases: [] }) as unknown as DefectRecord;
+    const records = [
+      raised("mtn", 'MTN missing from the Data network provider list. An MTN number defaults to "Common".'),
+      raised("otp", "Unable to login, the OTP never arrives by SMS."),
+    ];
+    expect(similarDefects(records, "MTN is missing from the data network provider list; an MTN number defaults to Common").map((m) => m.record.id)).toEqual(["mtn"]);
+    expect(similarDefects(records, "Airtime purchase fails with a timeout for Glo numbers")).toEqual([]);
+    expect(similarDefects(records, "MTN")).toEqual([]);
+    expect(wordingSimilarity("same words here", "Same words, here!")).toBe(1);
+  });
+
+  it("knows which defect already failed a membership, in any draft", () => {
+    const records = [{ id: "a", cases: [{ draftId: "d1", testSetId: 1, testSetTestCaseId: 7 }] }] as unknown as DefectRecord[];
+    expect(failedForDefect(records, 1, 7)?.id).toBe("a");
+    expect(failedForDefect(records, 1, 8)).toBeNull();
+    expect(failedForDefect(records, 2, 7)).toBeNull();
+  });
+
+  it("flags a new test case named like an existing one, but not one that differs in its key word", () => {
+    const cases = [{ name: "Verify MTN appears in the Data network provider list" }, { name: "Verify a transaction receipt downloads" }];
+    expect(sameNameCases("Verify that MTN appears in the data network provider list", cases)).toEqual([cases[0]]);
+    expect(sameNameCases("Verify Glo appears in the Data network provider list", cases)).toEqual([]);
   });
 
   it("groups the failed cases by module in the incident when they span modules", () => {

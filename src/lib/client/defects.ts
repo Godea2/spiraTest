@@ -15,7 +15,9 @@ import {
   MAX_STEP_TEXT,
   MAX_VERIFY_STEPS,
   mergeCandidates,
+  failedForDefect,
   rankByWording,
+  sameNameCases,
   stepsToReproduce,
   type DefectTarget,
   type VerifiedCase,
@@ -473,6 +475,34 @@ export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch,
 }
 
 /**
+ * Existing cases a new defect test case would repeat by name: cases in its chosen test sets, and test cases
+ * created for earlier defects of the project. Closest first, each with a label naming it and where it is.
+ */
+export function newCaseDuplicates(
+  projectId: number,
+  targets: Array<Pick<NewCaseTarget, "draftId" | "testSetId">>,
+  name: string,
+  records: DefectRecord[] = listDefects(projectId),
+): Array<{ testCaseId: number; label: string }> {
+  const existing: Array<{ name: string; testCaseId: number; label: string }> = [];
+  for (const t of targets) {
+    let draft: Draft;
+    try {
+      draft = getDraft(t.draftId);
+    } catch {
+      continue;
+    }
+    const set = draft.testSets.find((s) => s.testSetId === t.testSetId);
+    for (const c of set?.cards ?? []) existing.push({ name: c.name, testCaseId: c.testCaseId, label: `TC${c.testCaseId} "${clip(c.name, 80)}" in ${set!.testSetName}` });
+  }
+  for (const r of records) {
+    if (r.created) existing.push({ name: r.created.name, testCaseId: r.created.testCaseId, label: `TC${r.created.testCaseId}, created for "${clip(r.title, 60)}",` });
+  }
+  const seen = new Set<number>();
+  return sameNameCases(name, existing).filter((c) => !seen.has(c.testCaseId) && seen.add(c.testCaseId));
+}
+
+/**
  * Creates the test case in Spira, adds it to each chosen test set, and puts it on each board straight
  * into Defects (In Scope, executed), so it can be failed for the defect. Returns a pick per test set for
  * raiseDefect. If Spira refuses part of it, nothing is left behind; if a board cannot be updated
@@ -487,6 +517,8 @@ export async function createDefectTestCase(
   const drafts = draftIds.map((id) => getDraft(id));
   const projectId = drafts[0].projectId;
   if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Choose test sets of one Spira project.");
+  const repeated = newCaseDuplicates(projectId, input.targets, input.testCase.name)[0];
+  if (repeated) throw new Error(`${repeated.label} already has this name, so the test case was not created again.`);
   const boardOf = new Map(draftIds.map((id, i) => [id, i]));
   const { name, description, steps, failingStep, statusId } = input.testCase;
   const out = await api<DefectCaseCreated>("/api/execution/defect/case", {
@@ -599,6 +631,12 @@ export function defectCaseInput(pick: Pick<DefectPick, "steps" | "stepLabel"> & 
 
 const pickKey = (draftId: string, key: string) => `${draftId}|${key}`;
 
+/** Why a case cannot be failed again: the defect that already failed it. */
+export function alreadyFailedMessage(record: DefectRecord): string {
+  const incident = record.incidentId ? `, incident ${record.incidentId}` : "";
+  return `Already failed for "${clip(record.title, 80)}" (${new Date(record.at).toLocaleDateString()}${incident}). Undo that defect to fail it again.`;
+}
+
 /**
  * Fails every picked case in Spira for one defect, in whatever module it is, then logs the defect as
  * one incident linked to the failed step of each recorded run. Each case first moves to its board's
@@ -620,14 +658,21 @@ export async function raiseDefect(
   tester: string,
   options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean } = {},
 ): Promise<RaiseOutcome> {
-  const { picks, description } = input;
+  const { description } = input;
   const title = input.title.trim();
-  for (const p of picks) defectCaseInput({ ...p, testCaseId: p.target.card.testCaseId, testSetTestCaseId: p.target.card.testSetTestCaseId }, description, title, input.passBefore);
+  for (const p of input.picks) defectCaseInput({ ...p, testCaseId: p.target.card.testCaseId, testSetTestCaseId: p.target.card.testSetTestCaseId }, description, title, input.passBefore);
+  const failed: RaiseOutcome["failed"] = [];
+  // A case another defect already failed is not failed again: its run and incident are there already.
+  const known = readStore();
+  const picks = input.picks.filter((p) => {
+    const held = failedForDefect(known, p.target.card.testSetId, p.target.card.testSetTestCaseId);
+    if (held) failed.push({ target: p.target, message: alreadyFailedMessage(held) });
+    return !held;
+  });
   const byDraft = new Map<string, DefectPick[]>();
   for (const p of picks) byDraft.set(p.target.draftId, [...(byDraft.get(p.target.draftId) ?? []), p]);
 
   const results: ExecutionResult[] = [];
-  const failed: RaiseOutcome["failed"] = [];
   const moved: RaiseOutcome["moved"] = [];
   const from = new Map<string, Column>();
   const recordedKeys = new Set<string>();

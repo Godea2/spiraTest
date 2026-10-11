@@ -10,9 +10,11 @@ import { Badge, Button, ButtonLink, Dialog, EmptyState, Notice, PageHeader, Prog
 import { errorMessage } from "@/lib/client/api";
 import {
   adoptDraftDefects,
+  alreadyFailedMessage,
   createDefectTestCase,
   listDefects,
   logIncident,
+  newCaseDuplicates,
   newCaseTargets,
   raiseDefect,
   readAutoNewCase,
@@ -37,7 +39,7 @@ import { allDrafts } from "@/lib/client/drafts";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { effectiveColumn, isCompleted } from "@/lib/domain/board";
-import { defectTargets, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity } from "@/lib/domain/defects";
+import { defectTargets, failedForDefect, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity, similarDefects } from "@/lib/domain/defects";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
 import {
   COLUMN_LABELS,
@@ -287,6 +289,7 @@ export function DefectWorkspace({ from }: { from: string | null }) {
               aiOn={aiOn}
               aiKnown={!!ai}
               siteUrl={spira?.siteUrl ?? null}
+              records={records}
               onChanged={refresh}
             />
           )}
@@ -307,6 +310,7 @@ function Finder({
   aiOn,
   aiKnown,
   siteUrl,
+  records,
   onChanged,
 }: {
   projectId: number;
@@ -317,6 +321,8 @@ function Finder({
   aiOn: boolean;
   aiKnown: boolean;
   siteUrl: string | null;
+  /** Defects already raised in this project, newest first. */
+  records: DefectRecord[];
   onChanged: () => void;
 }) {
   const [text, setText] = useState("");
@@ -346,9 +352,16 @@ function Finder({
   const { settings } = useSettings();
   const caseTargets = useMemo(() => newCaseTargets(drafts), [drafts]);
 
+  const [differentFrom, setDifferentFrom] = useState<string | null>(null);
+
   const searching = phase !== null;
   const incidentUrl = (incidentId: number) => (siteUrl ? `${siteUrl}/${projectId}/Incident/${incidentId}.aspx` : null);
   const idOf = (c: DefectCase) => `${c.target.draftId}|${c.target.card.key}`;
+  /** The defect that already failed this case, which then cannot be failed again. */
+  const heldOf = (c: DefectCase) => failedForDefect(records, c.target.card.testSetId, c.target.card.testSetTestCaseId);
+  // Defects raised before that this description looks like, unless the tester said it is a different one.
+  const similar = useMemo(() => similarDefects(records, text), [records, text]);
+  const repeats = similar.length > 0 && similar[0].record.id !== differentFrom ? similar : [];
 
   async function find() {
     const description = text.trim();
@@ -370,7 +383,11 @@ function Finder({
       setSearch(s);
       setPicks((prev) => {
         const next = { ...prev };
-        for (const c of s.cases) next[idOf(c)] ??= { on: c.match.verdict === "fails", stepLabel: c.match.stepLabel };
+        for (const c of s.cases) {
+          // Ticked only when it fails and failing it adds something: not failed for a defect here already, nor Failed in Spira now.
+          const failedNow = currentStatus(c.target.card, draftsById.get(c.target.draftId)?.execution) === "failed";
+          next[idOf(c)] ??= { on: c.match.verdict === "fails" && !heldOf(c) && !failedNow, stepLabel: c.match.stepLabel };
+        }
         return next;
       });
       if (!shown) {
@@ -391,7 +408,11 @@ function Finder({
     // No existing case fails ("might be affected" ones are unconfirmed), or Gemini could not finish: the defect
     // gets a test case of its own to be failed against. With the option on, its confirmation opens as soon as
     // it is drafted, but only after a complete search, so a case Gemini could not check is not overlooked.
-    if (result && !result.cases.some((c) => c.match.verdict === "fails")) void draftNewCase(result, autoNewCase && result.complete ? run : null);
+    // A description that repeats a defect raised before never opens it on its own.
+    const repeatsNow = similarDefects(records, description).filter((m) => m.record.id !== differentFrom);
+    if (result && !result.cases.some((c) => c.match.verdict === "fails")) {
+      void draftNewCase(result, autoNewCase && result.complete && repeatsNow.length === 0 ? run : null);
+    }
   }
 
   async function draftNewCase(from: DefectSearch, confirmFor: number | null = null) {
@@ -407,7 +428,8 @@ function Finder({
         targets: s.testSetKeys.filter((k) => caseTargets.some((t) => t.key === k)),
       };
       setNewCase(form);
-      if (confirmFor !== null && form.targets.length > 0 && !newCaseProblem(form)) {
+      const repeated = newCaseDuplicates(projectId, caseTargets.filter((t) => form.targets.includes(t.key)), form.testCase.name, records).length > 0;
+      if (confirmFor !== null && form.targets.length > 0 && !newCaseProblem(form) && !repeated) {
         // Spira's lists first, so the incident fields and the case's status are settled before confirming.
         await optionsLoad.current;
         if (searchRun.current === confirmFor) {
@@ -438,11 +460,26 @@ function Finder({
     const card = draft?.testSets.flatMap((s) => s.cards).find((k) => k.key === c.target.card.key);
     return draft && card ? effectiveColumn(card, draft.decisions) : c.target.column;
   };
-  const chosen = search ? search.cases.filter((c) => picks[idOf(c)]?.on) : [];
+  const chosen = search ? search.cases.filter((c) => picks[idOf(c)]?.on && !heldOf(c)) : [];
   const needsStep = chosen.filter((c) => c.steps.length > 0 && !picks[idOf(c)]?.stepLabel);
   const changedSince = search !== null && text.trim() !== search.description;
   const newTargets = newCase ? caseTargets.filter((t) => newCase.targets.includes(t.key)) : [];
-  const newBlocker = newCase ? newCaseProblem(newCase) : null;
+  const newName = newCase?.status === "ready" ? newCase.testCase.name : "";
+  const newTargetKeys = newTargets.map((t) => t.key).join(",");
+  // A new test case must not repeat one: by name in its test sets, or as the case created for the same defect before.
+  const newRepeat = useMemo(
+    () => (newName.trim().length >= 5 ? (newCaseDuplicates(projectId, caseTargets.filter((t) => newTargetKeys.split(",").includes(t.key)), newName, records)[0] ?? null) : null),
+    [projectId, caseTargets, newTargetKeys, newName, records],
+  );
+  const createdBefore = repeats.find((m) => m.record.created)?.record ?? null;
+  const newDuplicate = !newCase
+    ? null
+    : newRepeat
+      ? `${newRepeat.label} already has this name. Fail that case instead, or rename this one if it tests something else.`
+      : createdBefore?.created
+        ? `TC${createdBefore.created.testCaseId} was already created for "${clip(createdBefore.title, 80)}". If this is a different defect, say so above.`
+        : null;
+  const newBlocker = newCase ? (newCaseProblem(newCase) ?? newDuplicate) : null;
   const total = chosen.length + (newCase ? newTargets.length : 0);
   const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && !job && !searching;
   const chosenModules = [...new Set([...chosen.map((c) => c.target.module), ...newTargets.map((t) => t.module)])];
@@ -579,6 +616,45 @@ function Finder({
             label="When no case fails, add the defect as a new test case"
             description="Gemini drafts the test case, and the confirmation to create it in Spira, add it to its test sets and fail it opens on its own. Nothing is written until you confirm; cases that only might be affected are left for you to check."
           />
+          {repeats.length > 0 && !job && (
+            <Notice
+              tone="warning"
+              title="This looks like a defect already raised"
+              action={
+                <Button size="sm" onClick={() => setDifferentFrom(repeats[0].record.id)}>
+                  It&apos;s a different defect
+                </Button>
+              }
+            >
+              <ul className="flex flex-col gap-0.5">
+                {repeats.slice(0, 2).map(({ record }) => {
+                  const url = record.incidentId ? incidentUrl(record.incidentId) : null;
+                  return (
+                    <li key={record.id}>
+                      <span className="font-medium">&quot;{clip(record.title, 90)}&quot;</span> · {formatDateTime(record.at)} · {plural(record.cases.length, "case")} failed
+                      {record.incidentId && (
+                        <>
+                          {" "}
+                          ·{" "}
+                          {url ? (
+                            <a href={url} target="_blank" rel="noreferrer" className="underline">
+                              IN:{record.incidentId}
+                            </a>
+                          ) : (
+                            `IN:${record.incidentId}`
+                          )}
+                        </>
+                      )}
+                      {record.created && <> · TC{record.created.testCaseId} created for it</>}
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-1">
+                Its failed cases cannot be failed again and its test case is not created twice, so searching only adds what is new. If this is another defect, say so and its new test case can be created.
+              </p>
+            </Notice>
+          )}
         </div>
 
         {phase && (
@@ -669,6 +745,7 @@ function Finder({
                           column={columnOf(c)}
                           pick={picks[idOf(c)] ?? { on: false, stepLabel: null }}
                           onPick={(change) => setPick(idOf(c), change)}
+                          heldBy={heldOf(c)}
                           disabled={!!job}
                         />
                       ))}
@@ -694,6 +771,11 @@ function Finder({
               </div>
             )}
 
+            {newCase && newDuplicate && (
+              <Notice tone="warning" title="This test case would be a duplicate">
+                {newDuplicate}
+              </Notice>
+            )}
             {newCase ? (
               <NewCasePanel
                 form={newCase}
@@ -1013,7 +1095,24 @@ function NewCasePanel({
   );
 }
 
-function CaseRow({ item, draft, column, pick, onPick, disabled }: { item: DefectCase; draft: Draft | null; column: Column; pick: Pick; onPick: (change: Partial<Pick>) => void; disabled: boolean }) {
+function CaseRow({
+  item,
+  draft,
+  column,
+  pick,
+  onPick,
+  heldBy,
+  disabled,
+}: {
+  item: DefectCase;
+  draft: Draft | null;
+  column: Column;
+  pick: Pick;
+  onPick: (change: Partial<Pick>) => void;
+  /** The defect that already failed this case; it cannot be failed again. */
+  heldBy: DefectRecord | null;
+  disabled: boolean;
+}) {
   const { target, steps, match } = item;
   const { card } = target;
   const status = currentStatus(card, draft?.execution);
@@ -1021,9 +1120,10 @@ function CaseRow({ item, draft, column, pick, onPick, disabled }: { item: Defect
   const style = COLUMN_STYLE[column];
   const ColumnIcon = style.icon;
   const note = moveNote(column, target.completed);
+  const on = pick.on && !heldBy;
   return (
-    <li className="flex gap-3 py-3">
-      <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-red-600" aria-label={`Fail TC${card.testCaseId}`} checked={pick.on} disabled={disabled || !draft} onChange={(e) => onPick({ on: e.target.checked })} />
+    <li className={clsx("flex gap-3 py-3", heldBy && "opacity-70")}>
+      <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-red-600" aria-label={`Fail TC${card.testCaseId}`} checked={on} disabled={disabled || !draft || !!heldBy} onChange={(e) => onPick({ on: e.target.checked })} />
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-xs text-slate-500">TC{card.testCaseId}</span>
@@ -1054,7 +1154,7 @@ function CaseRow({ item, draft, column, pick, onPick, disabled }: { item: Defect
               className={clsx("input h-8 py-0 text-xs", pick.on && !pick.stepLabel && "ring-2 ring-amber-400")}
               aria-label={`Failing step of TC${card.testCaseId}`}
               value={pick.stepLabel ?? ""}
-              disabled={disabled}
+              disabled={disabled || !!heldBy}
               onChange={(e) => onPick({ stepLabel: e.target.value || null, ...(e.target.value ? { on: true } : {}) })}
             >
               <option value="">Choose the failing step</option>
@@ -1069,10 +1169,15 @@ function CaseRow({ item, draft, column, pick, onPick, disabled }: { item: Defect
         ) : (
           <p className="text-xs text-slate-500 dark:text-zinc-400">No steps in Spira: the whole case is recorded as Failed with your description.</p>
         )}
-        {pick.on && note && <p className="text-xs text-violet-700 dark:text-violet-300">{note}</p>}
-        {pick.on && status === "passed" && <p className="text-xs text-amber-700 dark:text-amber-300">Passed in Spira now; this records a newer Failed run.</p>}
-        {pick.on && status === "failed" && <p className="text-xs text-slate-500">Already Failed in Spira; a new run is added and linked to this defect.</p>}
-        {pick.on && status && status !== "passed" && status !== "failed" && <p className="text-xs text-slate-500">{STATUS_LABEL[status]} in Spira now; this records a newer Failed run.</p>}
+        {heldBy && <p className="text-xs font-medium text-amber-700 dark:text-amber-300">{alreadyFailedMessage(heldBy)}</p>}
+        {on && note && <p className="text-xs text-violet-700 dark:text-violet-300">{note}</p>}
+        {on && status === "passed" && <p className="text-xs text-amber-700 dark:text-amber-300">Passed in Spira now; this records a newer Failed run.</p>}
+        {!heldBy && status === "failed" && (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            Already Failed in Spira, so it is not ticked: tick it only if this is a different defect, and a new Failed run is added for it.
+          </p>
+        )}
+        {on && status && status !== "passed" && status !== "failed" && <p className="text-xs text-slate-500">{STATUS_LABEL[status]} in Spira now; this records a newer Failed run.</p>}
         {!draft && <p className="text-xs text-red-600">Its draft was deleted.</p>}
       </div>
     </li>

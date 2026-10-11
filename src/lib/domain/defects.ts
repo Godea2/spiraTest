@@ -288,6 +288,47 @@ export function mergeCandidates(lists: DefectCandidate[][], limit: number): Defe
   return out;
 }
 
+/** How alike two texts are by their word stems: 0 shares nothing, 1 uses the same words. */
+export function wordingSimilarity(a: string, b: string): number {
+  const x = stems(a);
+  const y = stems(b);
+  if (x.size === 0 || y.size === 0) return normalizeText(a) !== "" && normalizeText(a) === normalizeText(b) ? 1 : 0;
+  let shared = 0;
+  for (const s of x) if (y.has(s)) shared += 1;
+  return (2 * shared) / (x.size + y.size);
+}
+
+/** Descriptions at least this alike are flagged as possibly the same defect raised again. */
+export const SAME_DEFECT_SIMILARITY = 0.6;
+/**
+ * A new test case named at least this much like an existing case in its test set repeats it. High on
+ * purpose: "MTN is listed" and "Glo is listed" differ by one word and are different cases.
+ */
+export const SAME_CASE_NAME_SIMILARITY = 0.9;
+
+/** Defects raised before that a description most likely repeats, closest first. */
+export function similarDefects(records: DefectRecord[], description: string): Array<{ record: DefectRecord; similarity: number }> {
+  if (normalizeText(description).length < 10) return [];
+  return records
+    .map((record) => ({ record, similarity: wordingSimilarity(description, record.description) }))
+    .filter((m) => m.similarity >= SAME_DEFECT_SIMILARITY)
+    .sort((a, b) => b.similarity - a.similarity);
+}
+
+/** The defect whose failed run this test set membership already carries, if one still holds it. */
+export function failedForDefect(records: DefectRecord[], testSetId: number, testSetTestCaseId: number): DefectRecord | null {
+  return records.find((r) => r.cases.some((c) => c.testSetId === testSetId && c.testSetTestCaseId === testSetTestCaseId)) ?? null;
+}
+
+/** Existing cases a new test case's name repeats (the same or nearly the same words), closest first. */
+export function sameNameCases<T extends { name: string }>(name: string, cases: T[]): T[] {
+  return cases
+    .map((c) => ({ c, similarity: wordingSimilarity(name, c.name) }))
+    .filter((m) => m.similarity >= SAME_CASE_NAME_SIMILARITY)
+    .sort((a, b) => b.similarity - a.similarity)
+    .map((m) => m.c);
+}
+
 /** Whether another defect still holds this case, so undoing one defect leaves it in Defects. */
 export function heldByOtherDefect(records: DefectRecord[], exceptId: string, draftId: string, key: string): boolean {
   return records.some((r) => r.id !== exceptId && r.cases.some((c) => c.draftId === draftId && `${c.testSetId}:${c.testSetTestCaseId}` === key));

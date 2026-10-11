@@ -6,8 +6,10 @@ const calls = vi.hoisted(() => ({ api: vi.fn(), readTestCase: vi.fn() }));
 vi.mock("@/lib/client/api", async (importOriginal) => ({ ...(await importOriginal<object>()), api: calls.api }));
 vi.mock("@/lib/client/test-cases", () => ({ readTestCase: calls.readTestCase }));
 
-const { searchDefect } = await import("@/lib/client/defects");
+const { newCaseDuplicates, raiseDefect, searchDefect } = await import("@/lib/client/defects");
 const { emptyApplyState } = await import("@/lib/domain/draft-ops");
+const { defectTargets } = await import("@/lib/domain/defects");
+const { writeItem } = await import("@/lib/client/storage");
 
 const card = (id: number): Card => ({
   key: `1:${id}`,
@@ -124,6 +126,43 @@ describe("searchDefect", () => {
     });
     const unmatched = await searchDefect([draft], "MTN missing from the Data network provider list again", () => {});
     expect(unmatched).toMatchObject({ understood: true, complete: false, searched: 0, cases: [], unreadError: 'Matching cases to "Sign-in": No Gemini model answered.' });
+  });
+
+  it("never fails a case again that a defect already failed, and never repeats a test case created for one", async () => {
+    const earlier = {
+      id: "old",
+      projectId: 24,
+      at: "2026-10-11T20:00:00.000Z",
+      title: "Sign-in: OTP never arrives",
+      description: "Unable to login, not getting otp",
+      tester: "Ada",
+      report: "",
+      incidentId: 259,
+      linkedSteps: 1,
+      cases: [{ draftId: "d1", module: "Onboarding", testSetId: 1, testCaseId: 1001, testSetTestCaseId: 1, name: "Case 1", testRunId: 9, stepLabel: "1", from: "inScope" }],
+      created: { testCaseId: 6579, name: "Verify downloading a transaction receipt downloads the receipt file", memberships: [] },
+    };
+    writeItem("defects", [earlier]);
+
+    const target = defectTargets([draft]).find((t) => t.card.key === "1:1")!;
+    const out = await raiseDefect(
+      {
+        picks: [{ target, steps: [], stepLabel: null }],
+        description: "Unable to login again, OTP not received",
+        title: "OTP not received",
+        expected: "",
+        passBefore: true,
+        logIncident: true,
+        fields: { typeId: null, priorityId: null, severityId: null },
+      },
+      "Ada",
+    );
+    expect(out.record).toBeNull();
+    expect(out.failed.map((f) => f.message)).toEqual([expect.stringMatching(/^Already failed for "Sign-in: OTP never arrives" \(.*incident 259\)\. Undo that defect/)]);
+    expect(calls.api).not.toHaveBeenCalled();
+
+    expect(newCaseDuplicates(24, [], "Verify that downloading a transaction receipt downloads the receipt file").map((d) => d.testCaseId)).toEqual([6579]);
+    expect(newCaseDuplicates(24, [], "Verify sharing a transaction receipt by email")).toEqual([]);
   });
 
   it("asks once more after a short wait when every Gemini model was busy, but not twice", async () => {
