@@ -182,11 +182,8 @@ export function KeywordPanel({
               {ai && <Badge>{aiOn ? `Reviewed by ${ai.model}` : "Keyword match only"}</Badge>}
             </div>
             <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
-              Add keywords for features that are not built yet. Filter checks only the <strong className="font-medium text-slate-800 dark:text-zinc-200">test scenario</strong>{" "}
-              (the Spira name and the workbook scenario), never steps or test data.{" "}
-              {aiOn
-                ? "Gemini then judges whether each matching case really depends on the feature, and you choose which suggestions to apply. Deep check also asks about cases whose scenario names no keyword."
-                : "Every match is suggested as Blocked for you to review. Add GEMINI_API_KEY on the server to have the AI judge each case."}
+              Add keywords for features that are not built yet.
+              {!aiOn && " Every match is suggested as Blocked for you to review. Add GEMINI_API_KEY on the server to have the AI judge each case."}
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
