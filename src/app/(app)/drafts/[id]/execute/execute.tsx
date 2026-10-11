@@ -38,6 +38,8 @@ export function Execute({ id }: { id: string }) {
   const [setTab, setSetTab] = useState<number | "all">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openKey, setOpenKey] = useState<string | null>(null);
+  /** Cases of a "Run all" session, fixed when it starts so saving a case does not reorder the run. */
+  const [queue, setQueue] = useState<{ keys: string[]; runsBefore: number } | null>(null);
   const [sync, setSync] = useState<{ checking: boolean; errors: string[] }>({ checking: false, errors: [] });
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [confirmBulk, setConfirmBulk] = useState(false);
@@ -83,7 +85,8 @@ export function Execute({ id }: { id: string }) {
   if (!draft) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading…</div>;
 
   const executed = counts.total - counts.notRun;
-  const openIndex = openKey ? visible.findIndex((c) => c.key === openKey) : -1;
+  const nav = queue ? queue.keys.flatMap((key) => cards.filter((c) => c.key === key)) : visible;
+  const openIndex = openKey ? nav.findIndex((c) => c.key === openKey) : -1;
   const openCard = openKey ? (cards.find((c) => c.key === openKey) ?? null) : null;
   const visibleSelected = visible.filter((c) => selected.has(c.key));
   const allVisibleSelected = visible.length > 0 && visibleSelected.length === visible.length;
@@ -180,6 +183,27 @@ export function Execute({ id }: { id: string }) {
     }
     if (recorded) toast.success(`Recorded ${plural(recorded, "Passed result")} in Spira`);
     if (problems.length) toast.error(`${plural(problems.length, "case")} not recorded: ${problems[0]}`);
+  }
+
+  /** Runs the selected cases, or every listed case, one after another; picks up at the first one not finished. */
+  function runAll() {
+    const targets = visibleSelected.length ? visibleSelected : visible;
+    if (targets.length === 0) return;
+    const start = targets.find((c) => draft!.execution?.progress[c.key] || currentStatus(c, draft!.execution) === null) ?? targets[0];
+    setQueue({ keys: targets.map((c) => c.key), runsBefore: draft!.execution?.runs.length ?? 0 });
+    setSelected(new Set());
+    setOpenKey(start.key);
+  }
+
+  function closeRunner() {
+    setOpenKey(null);
+    setQueue(null);
+  }
+
+  function finishRun() {
+    const recorded = (getDraft(id).execution?.runs.length ?? 0) - (queue?.runsBefore ?? 0);
+    closeRunner();
+    toast.success(recorded > 0 ? `Run finished: ${plural(recorded, "result")} recorded in Spira` : "Run finished");
   }
 
   const toggle = (key: string) =>
@@ -315,6 +339,16 @@ export function Execute({ id }: { id: string }) {
               />
               {visibleSelected.length ? `${visibleSelected.length} selected` : `Select all ${visible.length}`}
             </label>
+            <Button
+              size="sm"
+              variant="primary"
+              icon={Play}
+              onClick={runAll}
+              disabled={bulkRunning}
+              title="Open the cases one after another, step by step; Save & next moves on"
+            >
+              {visibleSelected.length ? `Run ${visibleSelected.length} selected` : `Run all ${visible.length}`}
+            </Button>
             {visibleSelected.length > 0 && (
               <Button size="sm" icon={Check} onClick={() => setConfirmBulk(true)} busy={bulkRunning} disabled={bulkRunning}>
                 Mark {visibleSelected.length} Passed
@@ -369,10 +403,11 @@ export function Execute({ id }: { id: string }) {
         card={openCard}
         draft={draft}
         tester={tester.trim()}
-        position={openIndex >= 0 ? { index: openIndex, total: visible.length } : null}
-        onClose={() => setOpenKey(null)}
-        onPrev={openIndex > 0 ? () => setOpenKey(visible[openIndex - 1].key) : null}
-        onNext={openIndex >= 0 && openIndex < visible.length - 1 ? () => setOpenKey(visible[openIndex + 1].key) : null}
+        position={openIndex >= 0 ? { index: openIndex, total: nav.length } : null}
+        onClose={closeRunner}
+        onPrev={openIndex > 0 ? () => setOpenKey(nav[openIndex - 1].key) : null}
+        onNext={openIndex >= 0 && openIndex < nav.length - 1 ? () => setOpenKey(nav[openIndex + 1].key) : null}
+        onFinish={queue ? finishRun : null}
         onChange={setDraft}
       />
 

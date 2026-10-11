@@ -86,6 +86,7 @@ export function Runner({
   onClose,
   onPrev,
   onNext,
+  onFinish,
   onChange,
 }: {
   card: Card | null;
@@ -95,6 +96,8 @@ export function Runner({
   onClose: () => void;
   onPrev: (() => void) | null;
   onNext: (() => void) | null;
+  /** Ends a run of several cases; offered on the last one instead of Save & next. */
+  onFinish: (() => void) | null;
   onChange: (draft: Draft) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -131,6 +134,7 @@ export function Runner({
           onClose={onClose}
           onPrev={onPrev}
           onNext={onNext}
+          onFinish={onFinish}
           onChange={onChange}
         />
       )}
@@ -146,6 +150,7 @@ function Content({
   onClose,
   onPrev,
   onNext,
+  onFinish,
   onChange,
 }: {
   card: Card;
@@ -155,6 +160,8 @@ function Content({
   onClose: () => void;
   onPrev: (() => void) | null;
   onNext: (() => void) | null;
+  /** Ends a run of several cases; offered on the last one instead of Save & next. */
+  onFinish: (() => void) | null;
   onChange: (draft: Draft) => void;
 }) {
   const { spira } = useSettings();
@@ -259,6 +266,7 @@ function Content({
       discardPending();
       setProgress(emptyProgress());
       if (andNext && onNext) onNext();
+      else if (andNext && onFinish) onFinish();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -492,7 +500,7 @@ function Content({
             </span>
             <Button onClick={() => void save(false)} disabled={!status || !!blocker || saving}>Save</Button>
             <Button variant="primary" onClick={() => void save(true)} disabled={!status || !!blocker || saving} busy={saving}>
-              {onNext ? "Save & next" : "Save to Spira"}
+              {onNext ? "Save & next" : onFinish ? "Save & finish" : "Save to Spira"}
             </Button>
           </span>
         </div>
