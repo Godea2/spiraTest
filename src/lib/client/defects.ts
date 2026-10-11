@@ -1,6 +1,7 @@
 import { chunk, effectiveColumn, isCompleted, MAX_APPLY_BATCH } from "@/lib/domain/board";
 import {
   compareMatches,
+  DEFECT_VERIFY_PARALLEL,
   defectComment,
   defectProgress,
   defectTargets,
@@ -192,6 +193,8 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   const analysis = await api<DefectAnalysis>("/api/ai/defect/understand", {
     method: "POST",
     body: { description, modules: [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })) },
+  }).catch((err: unknown) => {
+    throw new Error(`Working out the feature: ${errorMessage(err)}`);
   });
   const reading = { feature: analysis.feature, related: analysis.related, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected };
 
@@ -224,7 +227,7 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
     }
   });
   const answered = parts.flatMap((p) => (p.candidates ? [p.candidates] : []));
-  if (answered.length === 0) throw parts[0].error;
+  if (answered.length === 0) throw new Error(`Matching cases to "${analysis.feature || analysis.area}": ${errorMessage(parts[0].error)}`);
   const searched = parts.reduce((n, p) => n + (p.candidates ? p.size : 0), 0);
   const failedPart = parts.find((p) => !p.candidates);
   const unreadError = failedPart ? errorMessage(failedPart.error) : null;
@@ -272,7 +275,7 @@ export async function searchDefect(drafts: Draft[], description: string, onPhase
   let checked = 0;
   onPhase({ stage: "checking", done: 0, total: toCheck.length });
   let lastError: unknown = null;
-  await inPool(chunk(toCheck, MAX_DEFECT_VERIFY_BATCH), 3, async (batch) => {
+  await inPool(chunk(toCheck, MAX_DEFECT_VERIFY_BATCH), DEFECT_VERIFY_PARALLEL, async (batch) => {
     try {
       const out = await api<{ matches: DefectMatch[] }>("/api/ai/defect/verify", {
         method: "POST",

@@ -57,6 +57,15 @@ const EXAMPLE = 'For example: On the Login screen, "Continue with phone number" 
 
 type Pick = { on: boolean; stepLabel: string | null };
 
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(since);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className="shrink-0 text-slate-400 tabular-nums">{Math.max(0, Math.round((now - since) / 1000))}s</span>;
+}
+
 function phaseText(phase: SearchPhase): string {
   if (phase.stage === "understanding") return `Gemini is working out which feature the defect is in (${plural(phase.modules, "module")} to search)…`;
   if (phase.stage === "reading") return `Gemini is matching ${plural(phase.total, "case")} in ${plural(phase.modules, "module")} to ${phase.feature ? `"${phase.feature}"` : "the defect"}…`;
@@ -311,6 +320,7 @@ function Finder({
   const [phase, setPhase] = useState<SearchPhase | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<DefectSearch | null>(null);
+  const [timing, setTiming] = useState<{ startedAt: number; tookMs: number | null } | null>(null);
   const [picks, setPicks] = useState<Record<string, Pick>>({});
   const [title, setTitle] = useState("");
   const [options, setOptions] = useState<IncidentOptions | null>(null);
@@ -341,9 +351,12 @@ function Finder({
     setShowUnaffected(false);
     setNewCase(null);
     setPhase({ stage: "understanding", modules: drafts.length });
+    const startedAt = Date.now();
+    setTiming({ startedAt, tookMs: null });
     let result: DefectSearch | null = null;
     try {
       result = await searchDefect(drafts, description, setPhase);
+      setTiming({ startedAt, tookMs: Date.now() - startedAt });
       setSearch(result);
       setPicks(Object.fromEntries(result.cases.map((c) => [idOf(c), { on: c.match.verdict === "fails", stepLabel: c.match.stepLabel }])));
       setTitle(result.analysis.title);
@@ -524,7 +537,10 @@ function Finder({
 
         {phase && (
           <div className="flex flex-col gap-1.5 rounded-xl bg-slate-50 px-4 py-3 text-sm dark:bg-white/[0.03]">
-            <span>{phaseText(phase)}</span>
+            <span className="flex items-baseline justify-between gap-3">
+              <span>{phaseText(phase)}</span>
+              {timing && <Elapsed since={timing.startedAt} />}
+            </span>
             <ProgressBar
               value={phase.stage === "understanding" ? 1 : phase.stage === "reading" ? 2 : phase.done}
               max={phase.stage === "understanding" || phase.stage === "reading" ? 3 : Math.max(1, phase.total)}
@@ -554,8 +570,8 @@ function Finder({
               )}
               <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
                 Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
-                {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}. Suggested severity:{" "}
-                {search.analysis.severity}.
+                {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
+                {timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}. Suggested severity: {search.analysis.severity}.
               </p>
             </div>
             {search.unreadError && (

@@ -16,12 +16,14 @@ export const MAX_SHORTLIST = 24;
 export const MAX_DEFECT_CHECKS = 24;
 /** The most runs one defect links (picked cases and a new test case in each of its test sets). */
 export const MAX_DEFECT_CANDIDATES = 40;
-/** Cases whose steps are checked per request. */
-export const MAX_DEFECT_VERIFY_BATCH = 8;
+/** Cases whose steps are checked per request: small, so each answer is quick and the requests run side by side. */
+export const MAX_DEFECT_VERIFY_BATCH = 6;
+/** Step-check requests sent at once. */
+export const DEFECT_VERIFY_PARALLEL = 4;
 /** Other names and related screens Gemini gives for a defect's feature. */
 export const MAX_RELATED_TERMS = 16;
-export const MAX_VERIFY_STEPS = 120;
-export const MAX_STEP_TEXT = 600;
+export const MAX_VERIFY_STEPS = 60;
+export const MAX_STEP_TEXT = 400;
 
 /** Lower case, straight quotes, and every run of punctuation or spaces as one space. */
 export function normalizeText(text: string): string {

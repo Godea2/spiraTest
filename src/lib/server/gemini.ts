@@ -19,9 +19,12 @@ export const GEMINI_ENV = { apiKey: "GEMINI_API_KEY", model: "GEMINI_MODEL" } as
 
 const DEFAULT_MODEL = "gemini-3.8-flash";
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
-/** The route may run for 60s; Gemini gets at most this long in total, so a slow answer ends in a clear error. */
-const BUDGET_MS = 50_000;
-const ATTEMPT_MS = 35_000;
+/**
+ * The route may run for 60s; Gemini gets at most this long in total, so a slow answer ends in a clear
+ * error. A timed-out attempt is not retried, so one attempt may use nearly all of it.
+ */
+const BUDGET_MS = 54_000;
+const ATTEMPT_MS = 52_000;
 const MIN_ATTEMPT_MS = 5_000;
 const ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -204,23 +207,31 @@ async function interact(body: unknown, apiKey: string, model: string): Promise<u
 
 /** One structured answer from Gemini: the system instruction and input in, JSON matching the schema out. */
 async function generate<T extends z.ZodType>(
-  request: { system: string; input: unknown; schema: object; thinking: "low" | "medium" | "high" },
+  request: { task: string; system: string; input: unknown; schema: object; thinking: "low" | "medium" | "high" },
   parser: T,
 ): Promise<z.infer<T>> {
   const { apiKey, model } = readConfig();
   if (!apiKey) throw new AiError(`AI review is not configured. Set ${GEMINI_ENV.apiKey} on the server.`, 503);
-  const raw = await interact(
-    {
+  const input = JSON.stringify(request.input);
+  const started = Date.now();
+  let raw: unknown;
+  try {
+    raw = await interact(
+      {
+        model,
+        system_instruction: request.system,
+        input,
+        response_format: { type: "text", mime_type: "application/json", schema: request.schema },
+        generation_config: { thinking_level: request.thinking },
+        store: false,
+      },
+      apiKey,
       model,
-      system_instruction: request.system,
-      input: JSON.stringify(request.input),
-      response_format: { type: "text", mime_type: "application/json", schema: request.schema },
-      generation_config: { thinking_level: request.thinking },
-      store: false,
-    },
-    apiKey,
-    model,
-  );
+    );
+  } finally {
+    // Timings only, never content: shows in the server logs which step is slow.
+    console.info(`gemini ${request.task}: ${Date.now() - started} ms, ${input.length} chars in, thinking ${request.thinking}`);
+  }
 
   const interaction = interactionSchema.safeParse(raw);
   const text = interaction.success
@@ -243,6 +254,7 @@ async function generate<T extends z.ZodType>(
 export async function reviewBlockedCases(module: string, cases: BlockedReviewCase[]): Promise<AiBlockedVerdict[]> {
   const parsed = await generate(
     {
+      task: `blocked review (${cases.length} cases)`,
       system: SYSTEM_INSTRUCTION,
       schema: RESPONSE_SCHEMA,
       thinking: "low",
@@ -331,7 +343,7 @@ export interface DefectModuleOutline {
 /** Works out which feature a defect is in, the other names it goes by, and a bug report reading of it. Changes nothing. */
 export async function understandDefect(description: string, modules: DefectModuleOutline[]): Promise<DefectAnalysis> {
   const parsed = await generate(
-    { system: UNDERSTAND_INSTRUCTION, schema: UNDERSTAND_SCHEMA, thinking: "low", input: { defect: description, modules } },
+    { task: "defect understand", system: UNDERSTAND_INSTRUCTION, schema: UNDERSTAND_SCHEMA, thinking: "low", input: { defect: description, modules } },
     understandSchema,
   );
   const seen = new Set<string>();
@@ -414,6 +426,7 @@ export async function shortlistDefectCases(description: string, analysis: Defect
   });
   const parsed = await generate(
     {
+      task: `defect match (${cases.length} cases)`,
       system: SHORTLIST_INSTRUCTION,
       schema: SHORTLIST_SCHEMA,
       thinking: "low",
@@ -497,9 +510,10 @@ export async function verifyDefectCases(
 ): Promise<DefectMatch[]> {
   const parsed = await generate(
     {
+      task: `defect step check (${cases.length} cases)`,
       system: VERIFY_INSTRUCTION,
       schema: VERIFY_SCHEMA,
-      thinking: "medium",
+      thinking: "low",
       input: {
         defect: { description, feature: analysis.feature, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected },
         cases: cases.map((c) => ({
@@ -589,9 +603,10 @@ export async function draftDefectCase(
 ): Promise<NewDefectCaseSuggestion> {
   const parsed = await generate(
     {
+      task: "defect new case",
       system: NEW_CASE_INSTRUCTION,
       schema: NEW_CASE_SCHEMA,
-      thinking: "medium",
+      thinking: "low",
       input: { defect: { description, feature: analysis.feature, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected }, testSets },
     },
     newCaseSchema,
