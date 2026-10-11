@@ -208,6 +208,8 @@ export interface DraftSummary {
   status: DraftStatus;
   createdAt: string;
   updatedAt: string;
+  /** When Spira was last verified to match the board; null until the draft is completed. */
+  completedAt: string | null;
   testSetIds: number[];
   comparedTestSetIds: number[];
   complete: boolean;

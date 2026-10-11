@@ -14,6 +14,7 @@ import {
   countColumns,
   effectiveColumn,
   isComparisonComplete,
+  isCompleted,
   MAX_APPLY_BATCH,
   removalActions,
 } from "@/lib/domain/board";
@@ -169,6 +170,7 @@ export function Review({ id }: { id: string }) {
     workCount === 0 && "There is nothing to apply.",
     spira.preflight && !spira.preflight.ok && "Spira does not match this board. Recompare the board first.",
   ].filter(Boolean) as string[];
+  const nothingLeft = liveBlockers.length === 1 && workCount === 0;
   const alreadyRemoved = plan.reduce((n, p) => n + p.alreadyRemoved, 0);
   const setName = (testSetId: number) => draft.testSets.find((s) => s.testSetId === testSetId)?.testSetName ?? `Test set ${testSetId}`;
 
@@ -497,7 +499,16 @@ export function Review({ id }: { id: string }) {
 
         {mode === "live" && (
           <div className="mt-5 flex flex-col gap-4">
-            {liveBlockers.length > 0 ? (
+            {nothingLeft ? (
+              <Notice
+                tone="success"
+                title="Nothing left to apply"
+                action={isCompleted(draft.status) ? <ButtonLink href="/completed" size="sm">Go to Completed</ButtonLink> : undefined}
+              >
+                Spira already matches this board.
+                {passCount > 0 && " To record Passed results for the In Scope cases, tick the option above."}
+              </Notice>
+            ) : liveBlockers.length > 0 ? (
               <Notice tone="danger" title="Live apply is blocked" action={<ButtonLink href={`/drafts/${draft.id}`} size="sm">Open board</ButtonLink>}>
                 <ul className="list-disc pl-5">{liveBlockers.map((b) => <li key={b}>{b}</li>)}</ul>
               </Notice>
@@ -792,11 +803,16 @@ function RunPanel({
                 .join(" ")}
             </Notice>
           ) : removalsOk && signFailed === 0 ? (
-            <Notice tone="success" title="Applied">
+            <Notice
+              tone="success"
+              title="Applied"
+              action={isCompleted(draft.status) ? <ButtonLink href="/completed" size="sm">Go to Completed</ButtonLink> : undefined}
+            >
               {[
                 hasRemovals && "Spira membership now matches the reviewed board.",
                 hasSignOff &&
                   `Recorded ${signCount("recorded", "blocked")} Blocked and ${signCount("recorded", "passed")} Passed result(s); ${signCount("skipped")} skipped.`,
+                isCompleted(draft.status) && "This draft has moved to Completed.",
               ]
                 .filter(Boolean)
                 .join(" ")}

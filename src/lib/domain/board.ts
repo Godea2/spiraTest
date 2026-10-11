@@ -5,6 +5,7 @@ import type {
   Column,
   ColumnCounts,
   Draft,
+  DraftStatus,
   DraftSummary,
   TestSetComparison,
 } from "./types";
@@ -154,6 +155,9 @@ export function isComparisonComplete(draft: Pick<Draft, "testSetIds" | "testSets
   return draft.testSetIds.length > 0 && draft.testSetIds.every((id) => compared.has(id));
 }
 
+/** A draft is completed once a live apply was verified: Spira matches the reviewed board. */
+export const isCompleted = (status: DraftStatus): boolean => status === "applied";
+
 export function summarizeDraft(draft: Draft): DraftSummary {
   const cards = allCards(draft.testSets);
   return {
@@ -163,6 +167,7 @@ export function summarizeDraft(draft: Draft): DraftSummary {
     status: draft.status,
     createdAt: draft.createdAt,
     updatedAt: draft.updatedAt,
+    completedAt: isCompleted(draft.status) ? (draft.apply.verification?.at ?? draft.apply.lastLiveRunAt ?? draft.updatedAt) : null,
     testSetIds: draft.testSetIds,
     comparedTestSetIds: draft.testSets.map((set) => set.testSetId),
     complete: isComparisonComplete(draft),

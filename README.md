@@ -43,6 +43,8 @@ Live apply removes a test case from a test set; the test case itself is never de
 
 Opening **Review & apply** reads each test set's membership from Spira (read only, also on **Check Spira again** and before every run). Out of Scope cases that are already gone from Spira, for example removed by an earlier run that reported an error, are counted as removed, so the remove figure only counts what is still in Spira. Any other difference (cases added in Spira, or In Scope and Blocked cases removed outside the app) is listed and blocks live apply until the board is recompared.
 
+Once a live apply is verified (Spira matches the reviewed board), the draft moves from **Drafts** to **Completed**. A draft applied with errors stays under Drafts until a retry succeeds. Completed drafts can still be opened, and their board and review work as before.
+
 ### Blocked cases and sign-off
 
 On the board, **Not implemented yet** has one keyword list per test set in the draft (for example `nin, bvn, google` for Onboarding-IOS). Only the **test scenario** is searched: the Spira test case name and the Test Scenario cell of the workbook row it matched. Test steps and test data are deliberately ignored, because a step that enters a BVN does not make a case depend on BVN verification. Keywords match whole words and their plural, ignoring case, so `nin` matches `NIN` and `BVN/NIN` but not `running`.

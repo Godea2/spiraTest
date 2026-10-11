@@ -53,6 +53,7 @@ import {
   countColumns,
   effectiveColumn,
   isComparisonComplete,
+  isCompleted,
   moveCards,
 } from "@/lib/domain/board";
 import {
@@ -502,8 +503,8 @@ export function Board({ id }: { id: string }) {
       <PageHeader
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
-            <Link href="/drafts" className="inline-flex items-center gap-1 transition hover:text-slate-900 dark:hover:text-white">
-              <ChevronLeft className="size-4" aria-hidden /> Drafts
+            <Link href={isCompleted(draft.status) ? "/completed" : "/drafts"} className="inline-flex items-center gap-1 transition hover:text-slate-900 dark:hover:text-white">
+              <ChevronLeft className="size-4" aria-hidden /> {isCompleted(draft.status) ? "Completed" : "Drafts"}
             </Link>
             <span className="text-slate-300 dark:text-zinc-700">/</span>
             {draft.module}

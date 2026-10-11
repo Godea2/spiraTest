@@ -9,6 +9,7 @@ import {
   moveCards,
   preserveDecisions,
   removalActions,
+  summarizeDraft,
 } from "@/lib/domain/board";
 import { adoptSpiraRemovals, emptyApplyState } from "@/lib/domain/draft-ops";
 import type { Card, Draft, PreflightResult, TestSetComparison } from "@/lib/domain/types";
@@ -121,6 +122,13 @@ describe("syncing with Spira", () => {
     const draft = draftWith([2], []);
     expect(adoptSpiraRemovals(draft, check([1, 3], [9]))).toBe(0);
     expect(draft.apply.removed["1"]).toEqual([2]);
+  });
+
+  it("a verified live apply moves the draft to Completed", () => {
+    const draft = { ...draftWith([], []), id: "d", name: "D", module: "M", createdAt: "", updatedAt: "u", testSetIds: [1], status: "applied" } as Draft;
+    draft.apply.verification = { at: "v", ok: true, sets: [] };
+    expect(summarizeDraft(draft).completedAt).toBe("v");
+    expect(summarizeDraft({ ...draft, status: "appliedWithErrors" }).completedAt).toBeNull();
   });
 
   it("ignores test sets that could not be read", () => {

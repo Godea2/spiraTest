@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import {
   Activity,
+  CircleCheckBig,
   GitCompareArrows,
   KanbanSquare,
   LogOut,
@@ -30,6 +31,7 @@ import { useSettings } from "./settings-context";
 const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean }> = [
   { href: "/", label: "Compare", icon: GitCompareArrows, match: (p) => p === "/" },
   { href: "/drafts", label: "Drafts", icon: KanbanSquare, match: (p) => p.startsWith("/drafts") },
+  { href: "/completed", label: "Completed", icon: CircleCheckBig, match: (p) => p.startsWith("/completed") },
   { href: "/activity", label: "Activity", icon: Activity, match: (p) => p.startsWith("/activity") },
   { href: "/settings", label: "Settings", icon: Settings2, match: (p) => p.startsWith("/settings") },
 ];

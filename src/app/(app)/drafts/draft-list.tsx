@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, Copy, FolderOpen, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,6 +10,7 @@ import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeade
 import { errorMessage } from "@/lib/client/api";
 import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/client/drafts";
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
+import { isCompleted } from "@/lib/domain/board";
 import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
 
 type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
@@ -43,8 +44,24 @@ function ScopeBar({ counts }: { counts: DraftSummary["counts"] }) {
   );
 }
 
-export function DraftList() {
+type Bucket = "drafts" | "completed";
+
+const BUCKET_TEXT: Record<Bucket, { title: string; description: string; search: string }> = {
+  drafts: {
+    title: "Drafts",
+    description: "Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later. Once a live apply is verified, the draft moves to Completed.",
+    search: "Search drafts by name or module",
+  },
+  completed: {
+    title: "Completed",
+    description: "Drafts whose test sets have been cleaned up in Spira: the live apply was verified and Spira matches the reviewed board.",
+    search: "Search completed by name or module",
+  },
+};
+
+export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
   const router = useRouter();
+  const text = BUCKET_TEXT[bucket];
   const [drafts, setDrafts] = useState<DraftSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -74,11 +91,20 @@ export function DraftList() {
     };
   }, []);
 
+  const inBucket = useMemo(
+    () =>
+      drafts
+        ?.filter((d) => isCompleted(d.status) === (bucket === "completed"))
+        .sort((a, b) => (bucket === "completed" ? (b.completedAt ?? "").localeCompare(a.completedAt ?? "") : 0)) ?? null,
+    [drafts, bucket],
+  );
+  const otherCount = drafts && inBucket ? drafts.length - inBucket.length : 0;
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!drafts) return [];
-    return q ? drafts.filter((d) => `${d.name} ${d.module}`.toLowerCase().includes(q)) : drafts;
-  }, [drafts, query]);
+    if (!inBucket) return [];
+    return q ? inBucket.filter((d) => `${d.name} ${d.module}`.toLowerCase().includes(q)) : inBucket;
+  }, [inBucket, query]);
 
   async function run(id: string, task: () => Promise<void>) {
     setBusy(id);
@@ -111,20 +137,32 @@ export function DraftList() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Drafts"
-        description="Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later."
+        title={text.title}
+        description={text.description}
         actions={<ButtonLink href="/" variant="primary" icon={Plus}>New comparison</ButtonLink>}
       />
       {error && <Notice tone="danger">{error}</Notice>}
 
-      {drafts === null && !error ? (
+      {inBucket === null && !error ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2].map((i) => <div key={i} className="skeleton h-44 rounded-2xl" />)}
         </div>
-      ) : drafts && drafts.length === 0 ? (
-        <EmptyState icon={FolderOpen} title="No drafts yet" action={<ButtonLink href="/" variant="primary" icon={Plus}>Start a comparison</ButtonLink>}>
-          Upload the scope workbook to compare a module with its Spira test sets.
-        </EmptyState>
+      ) : inBucket && inBucket.length === 0 ? (
+        bucket === "completed" ? (
+          <EmptyState icon={CircleCheckBig} title="Nothing completed yet" action={<ButtonLink href="/drafts" icon={KanbanSquare}>Open drafts</ButtonLink>}>
+            A draft moves here once its live apply is verified and Spira matches the reviewed board.
+          </EmptyState>
+        ) : (
+          <EmptyState
+            icon={FolderOpen}
+            title={otherCount ? "No open drafts" : "No drafts yet"}
+            action={<ButtonLink href="/" variant="primary" icon={Plus}>Start a comparison</ButtonLink>}
+          >
+            {otherCount
+              ? <>All your drafts are applied. They are under <Link href="/completed" className="font-medium underline underline-offset-2">Completed</Link>.</>
+              : "Upload the scope workbook to compare a module with its Spira test sets."}
+          </EmptyState>
+        )
       ) : (
         <>
           <div className="relative max-w-sm">
@@ -132,8 +170,8 @@ export function DraftList() {
             <input
               type="search"
               className="input pl-9"
-              placeholder="Search drafts by name or module"
-              aria-label="Search drafts"
+              placeholder={text.search}
+              aria-label={text.search}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -155,7 +193,8 @@ export function DraftList() {
                         {d.name}
                       </Link>
                       <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                        {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} · updated {relativeTime(d.updatedAt)}
+                        {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} ·{" "}
+                        {d.completedAt ? `completed ${relativeTime(d.completedAt)}` : `updated ${relativeTime(d.updatedAt)}`}
                       </p>
                     </div>
                     <Badge tone={STATUS_TONE[d.status]}>{STATUS_LABEL[d.status]}</Badge>
@@ -176,7 +215,13 @@ export function DraftList() {
               ))}
             </AnimatePresence>
           </ul>
-          {visible.length === 0 && <p className="text-sm text-slate-500">No drafts match “{query}”.</p>}
+          {visible.length === 0 && <p className="text-sm text-slate-500">Nothing matches “{query}”.</p>}
+          {bucket === "drafts" && otherCount > 0 && (
+            <p className="text-sm text-slate-500 dark:text-zinc-400">
+              {otherCount} applied draft{otherCount === 1 ? " is" : "s are"} under{" "}
+              <Link href="/completed" className="font-medium text-slate-700 underline underline-offset-2 dark:text-zinc-200">Completed</Link>.
+            </p>
+          )}
         </>
       )}
 
