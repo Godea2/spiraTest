@@ -289,6 +289,8 @@ export const defectCaseUndoRequestSchema = z.object({
   projectId: id,
   testCaseId: id,
   memberships: z.array(z.object({ testSetId: id, testSetTestCaseId: id })).max(MAX_NEW_CASE_SETS),
+  /** The boards holding those memberships, to be sealed again without the deleted case. */
+  boards: z.array(z.object({ context: contextSchema, testSets })).max(MAX_NEW_CASE_SETS).optional(),
 });
 
 export const defectVerifyRequestSchema = z.object({

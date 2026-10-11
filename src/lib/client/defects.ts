@@ -20,7 +20,7 @@ import {
   type DefectTarget,
   type VerifiedCase,
 } from "@/lib/domain/defects";
-import { recordDefectMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
+import { recordComparison, recordDefectMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
 import { executedSteps, RUNNER_NAME, runnableSteps, type RunnableStep } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import type {
@@ -40,6 +40,7 @@ import type {
   NewDefectCase,
   NewDefectCaseSuggestion,
   Platform,
+  TestSetComparison,
   TestSetMapping,
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
@@ -474,7 +475,7 @@ export async function suggestNewCase(drafts: Draft[], search: Pick<DefectSearch,
 /**
  * Creates the test case in Spira, adds it to each chosen test set, and puts it on each board straight
  * into Defects (In Scope, executed), so it can be failed for the defect. Returns a pick per test set for
- * raiseDefect. If Spira refuses part of it, nothing is left behind; if a board cannot be recompared
+ * raiseDefect. If Spira refuses part of it, nothing is left behind; if a board cannot be updated
  * afterwards, that is reported so it can be recompared before a live apply.
  */
 export async function createDefectTestCase(
@@ -523,7 +524,12 @@ export async function createDefectTestCase(
   for (const m of created.memberships) {
     const key = `${m.testSetId}:${m.testSetTestCaseId}`;
     try {
-      const draft = await compareTestSet(m.draftId, m.testSetId, mappings, { [key]: "defects" });
+      // The server returns each test set sealed with the new card; a full recompare (which sends the whole
+      // workbook) is only the fallback.
+      const sealed = out.comparisons?.find((c) => c.comparison.testSetId === m.testSetId)?.comparison;
+      const draft = sealed
+        ? mutateDraft(m.draftId, (d) => recordComparison(d, sealed, { [key]: "defects" }))
+        : await compareTestSet(m.draftId, m.testSetId, mappings, { [key]: "defects" });
       const set = draft.testSets.find((s) => s.testSetId === m.testSetId);
       const card = set?.cards.find((c) => c.key === key);
       if (!set || !card) {
@@ -902,14 +908,31 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
   let created = made;
   if (made && !remaining.some((c) => c.testCaseId === made.testCaseId)) {
     try {
-      await api("/api/execution/defect/case/undo", {
+      const boardDrafts = [...new Set(made.memberships.map((m) => m.draftId))].flatMap((id) => {
+        try {
+          return [getDraft(id)];
+        } catch {
+          return [];
+        }
+      });
+      const undone = await api<{ comparisons?: Array<{ board: number; comparison: TestSetComparison }> }>("/api/execution/defect/case/undo", {
         method: "POST",
-        body: { projectId: record.projectId, testCaseId: made.testCaseId, memberships: made.memberships.map(({ testSetId, testSetTestCaseId }) => ({ testSetId, testSetTestCaseId })) },
+        body: {
+          projectId: record.projectId,
+          testCaseId: made.testCaseId,
+          memberships: made.memberships.map(({ testSetId, testSetTestCaseId }) => ({ testSetId, testSetTestCaseId })),
+          boards: boardDrafts.map((d) => ({ context: contextOf(d), testSets: d.testSets })),
+        },
       });
       created = null;
       for (const m of made.memberships) {
+        const board = boardDrafts.findIndex((d) => d.id === m.draftId);
+        const sealed = undone.comparisons?.find((c) => c.board === board && c.comparison.testSetId === m.testSetId)?.comparison;
         try {
-          await compareTestSet(m.draftId, m.testSetId, mappings);
+          if (sealed) mutateDraft(m.draftId, (d) => recordComparison(d, sealed));
+          else if (board >= 0 && boardDrafts[board].testSets.some((s) => s.testSetId === m.testSetId && s.cards.some((c) => c.testCaseId === made.testCaseId))) {
+            await compareTestSet(m.draftId, m.testSetId, mappings);
+          }
         } catch (err) {
           errors.push(`${m.module}: TC${made.testCaseId} was deleted, but the board could not be recompared (${errorMessage(err)}). Recompare it.`);
         }

@@ -1,6 +1,6 @@
 import "server-only";
 import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
-import { allCards, diffMembership, effectiveColumn, intendedMembership, isExecutedColumn, normalizeDecisions } from "@/lib/domain/board";
+import { allCards, cardKey, diffMembership, effectiveColumn, intendedMembership, isExecutedColumn, normalizeDecisions } from "@/lib/domain/board";
 import { expectedTestSetStatus, fillRunSteps, invalidResult, runNote, runReport, TEST_SET_STATUS_NAMES } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
@@ -656,6 +656,10 @@ export async function logDefect(input: {
  * a verified board of the same project. The case goes in the folder of the test set's first case and
  * carries the app's signature, so only it can be deleted by undo. If any step fails, what was created is
  * removed again and nothing is left behind. Writes are never retried.
+ *
+ * Each test set comes back sealed again with the new card (Not Run, not in the workbook) and its membership
+ * added to the baseline, and nothing else changed: a change someone else made in Spira since the last
+ * compare still shows in the membership check. The board can then fail the case without a full recompare.
  */
 export async function createDefectCase(input: {
   boards: Array<{ context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> }>;
@@ -704,30 +708,83 @@ export async function createDefectCase(input: {
       error.upstream,
     );
   }
-  return { testCaseId, memberships };
+  const comparisons = memberships.map((m, i) => {
+    const target = input.targets[i];
+    const set = boards[target.board].find((s) => s.testSetId === m.testSetId)!;
+    const card = {
+      key: cardKey(m.testSetId, m.testSetTestCaseId),
+      testSetId: m.testSetId,
+      testCaseId,
+      testSetTestCaseId: m.testSetTestCaseId,
+      name: input.testCase.name,
+      tcId: null,
+      executionStatus: "Not Run",
+      executed: false,
+      suggestion: "outOfScope" as const,
+      reason: "Not found in the workbook for this module.",
+    };
+    return {
+      board: target.board,
+      comparison: sealComparison(input.boards[target.board].context, {
+        ...set,
+        cards: [...set.cards, card],
+        baselineMembership: [...set.baselineMembership, m.testSetTestCaseId],
+      }),
+    };
+  });
+  return { testCaseId, memberships, comparisons };
 }
 
-/** Takes a test case this app created for a defect out of its test sets and deletes it; it is checked to be ours first. */
+/**
+ * Takes a test case this app created for a defect out of its test sets and deletes it; it is checked to be
+ * ours first. The boards sent come back sealed again without its cards and memberships, so they need no
+ * full recompare.
+ */
 export async function deleteDefectCase(input: {
   projectId: number;
   testCaseId: number;
   memberships: Array<{ testSetId: number; testSetTestCaseId: number }>;
-}): Promise<{ ok: true; message: string | null }> {
+  boards?: Array<{ context: WorkflowContext; testSets: TestSetComparison[] }>;
+}): Promise<{ ok: true; message: string | null; comparisons: Array<{ board: number; comparison: TestSetComparison }> }> {
+  const boards = (input.boards ?? []).map((b) => {
+    if (b.context.projectId !== input.projectId) throw new ApplyValidationError("Every board must be in the same Spira project.");
+    return { context: b.context, sets: verifyComparisons(b.context, b.testSets) };
+  });
+  let message: string | null = null;
   try {
     await deleteCreatedTestCase(input.projectId, input.testCaseId);
   } catch (error) {
-    if (error instanceof SpiraError && error.upstream === 404) return { ok: true, message: "Already deleted in Spira." };
-    throw error;
+    if (!(error instanceof SpiraError && error.upstream === 404)) throw error;
+    message = "Already deleted in Spira.";
   }
-  for (const m of input.memberships) {
-    try {
-      await removeFromTestSet(input.projectId, m.testSetId, m.testSetTestCaseId);
-    } catch (error) {
-      // Deleting the test case already takes it out of its test sets; a membership that is gone is fine.
-      if (!(error instanceof SpiraError)) throw error;
+  if (!message) {
+    for (const m of input.memberships) {
+      try {
+        await removeFromTestSet(input.projectId, m.testSetId, m.testSetTestCaseId);
+      } catch (error) {
+        // Deleting the test case already takes it out of its test sets; a membership that is gone is fine.
+        if (!(error instanceof SpiraError)) throw error;
+      }
     }
   }
-  return { ok: true, message: null };
+  const listed = new Set(input.memberships.map((m) => cardKey(m.testSetId, m.testSetTestCaseId)));
+  const isGone = (c: { key: string; testCaseId: number }) => listed.has(c.key) && c.testCaseId === input.testCaseId;
+  const comparisons = boards.flatMap((b, board) =>
+    b.sets
+      .filter((set) => set.cards.some(isGone))
+      .map((set) => {
+        const removed = new Set(set.cards.filter(isGone).map((c) => c.testSetTestCaseId));
+        return {
+          board,
+          comparison: sealComparison(b.context, {
+            ...set,
+            cards: set.cards.filter((c) => !removed.has(c.testSetTestCaseId)),
+            baselineMembership: set.baselineMembership.filter((id) => !removed.has(id)),
+          }),
+        };
+      }),
+  );
+  return { ok: true, message, comparisons };
 }
 
 /** Deletes an incident this app logged; it is checked to be ours first. */

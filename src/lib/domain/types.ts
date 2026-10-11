@@ -360,6 +360,8 @@ export interface NewDefectCaseSuggestion extends NewDefectCase {
 export interface DefectCaseCreated {
   testCaseId: number;
   memberships: Array<{ testSetId: number; testSetTestCaseId: number }>;
+  /** Each test set again, sealed with the new card added; `board` indexes the boards sent. */
+  comparisons: Array<{ board: number; comparison: TestSetComparison }>;
 }
 
 export interface IncidentOption {

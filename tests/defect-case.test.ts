@@ -15,7 +15,7 @@ const spira = vi.hoisted(() => ({
 vi.mock("@/lib/server/spira", async (importOriginal) => ({ ...(await importOriginal<object>()), ...spira }));
 
 const { SpiraError } = await import("@/lib/server/spira");
-const { sealComparison } = await import("@/lib/server/seal");
+const { sealComparison, verifyComparisons } = await import("@/lib/server/seal");
 const { createDefectCase, deleteDefectCase } = await import("@/lib/server/workflow");
 const { emptyApplyState, recordCleanCompletion, recordComparison } = await import("@/lib/domain/draft-ops");
 const { newCaseTargets } = await import("@/lib/client/defects");
@@ -75,7 +75,7 @@ describe("createDefectCase", () => {
     const boards = [board(ctx, 1, [1, 2]), board({ ...ctx, module: "Transfers" }, 2, [3])];
     const out = await createDefectCase({ boards, testCase, targets: [{ board: 0, testSetId: 1 }, { board: 1, testSetId: 2 }] });
 
-    expect(out).toEqual({ testCaseId: 5000, memberships: [{ testSetId: 1, testSetTestCaseId: 100 }, { testSetId: 2, testSetTestCaseId: 200 }] });
+    expect(out).toMatchObject({ testCaseId: 5000, memberships: [{ testSetId: 1, testSetTestCaseId: 100 }, { testSetId: 2, testSetTestCaseId: 200 }] });
     expect(spira.getTestCaseFolderId).toHaveBeenCalledWith(24, 1001);
     expect(spira.createTestCase).toHaveBeenCalledWith(24, {
       name: testCase.name,
@@ -84,6 +84,31 @@ describe("createDefectCase", () => {
       statusId: null,
     });
     expect(spira.addTestStep.mock.calls.map((c) => c[2].position)).toEqual([1, 2]);
+  });
+
+  it("returns each test set sealed again with only the new card and membership added, ready to fail without a recompare", async () => {
+    const boards = [board(ctx, 1, [1, 2]), board({ ...ctx, module: "Transfers" }, 2, [3])];
+    const out = await createDefectCase({ boards, testCase, targets: [{ board: 0, testSetId: 1 }, { board: 1, testSetId: 2 }] });
+
+    expect(out.comparisons.map((c) => [c.board, c.comparison.testSetId])).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+    const payments = out.comparisons[0].comparison;
+    expect(verifyComparisons(ctx, [payments])).toHaveLength(1);
+    expect(() => verifyComparisons({ ...ctx, module: "Transfers" }, [payments])).toThrow();
+    expect(payments.baselineMembership).toEqual([1, 2, 100]);
+    expect(payments.comparedAt).toBe(boards[0].testSets[0].comparedAt);
+    expect(payments.cards.map((c) => [c.key, c.testCaseId, c.suggestion])).toEqual([
+      ["1:1", 1001, "inScope"],
+      ["1:2", 1002, "inScope"],
+      ["1:100", 5000, "outOfScope"],
+    ]);
+    expect(payments.cards[2]).toMatchObject({ name: testCase.name, executed: false, executionStatus: "Not Run" });
+
+    const draft = draftWith("d1", boards[0].testSets);
+    recordComparison(draft, payments, { "1:100": "defects" });
+    expect(draft.decisions).toEqual({ "1:100": "defects" });
   });
 
   it("creates the case with the chosen Spira status", async () => {
@@ -139,13 +164,34 @@ describe("deleteDefectCase", () => {
   it("deletes the case, then its memberships, tolerating ones already gone", async () => {
     spira.removeFromTestSet.mockRejectedValueOnce(new SpiraError("not found", 502, 404));
     const out = await deleteDefectCase({ projectId: 24, testCaseId: 5000, memberships: [{ testSetId: 1, testSetTestCaseId: 100 }, { testSetId: 2, testSetTestCaseId: 200 }] });
-    expect(out).toEqual({ ok: true, message: null });
+    expect(out).toEqual({ ok: true, message: null, comparisons: [] });
     expect(spira.removeFromTestSet).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns the boards sealed again without the deleted case, leaving other cards alone", async () => {
+    const created = await createDefectCase({ boards: [board(ctx, 1, [1, 2])], testCase, targets: [{ board: 0, testSetId: 1 }] });
+    const withCase = created.comparisons[0].comparison;
+    const out = await deleteDefectCase({
+      projectId: 24,
+      testCaseId: 5000,
+      // 1:1 belongs to another test case, so it stays even though it is listed.
+      memberships: [{ testSetId: 1, testSetTestCaseId: 100 }, { testSetId: 1, testSetTestCaseId: 1 }],
+      boards: [{ context: ctx, testSets: [withCase] }],
+    });
+    expect(out.comparisons).toHaveLength(1);
+    const after = out.comparisons[0].comparison;
+    expect(verifyComparisons(ctx, [after])).toHaveLength(1);
+    expect(after.cards.map((c) => c.key)).toEqual(["1:1", "1:2"]);
+    expect(after.baselineMembership).toEqual([1, 2]);
+
+    await expect(
+      deleteDefectCase({ projectId: 25, testCaseId: 5000, memberships: [], boards: [{ context: ctx, testSets: [withCase] }] }),
+    ).rejects.toThrow(/same Spira project/);
   });
 
   it("treats a case already gone as undone and passes on a refusal to delete one it did not create", async () => {
     spira.deleteCreatedTestCase.mockRejectedValueOnce(new SpiraError("not found", 502, 404));
-    await expect(deleteDefectCase({ projectId: 24, testCaseId: 5000, memberships: [] })).resolves.toEqual({ ok: true, message: "Already deleted in Spira." });
+    await expect(deleteDefectCase({ projectId: 24, testCaseId: 5000, memberships: [] })).resolves.toEqual({ ok: true, message: "Already deleted in Spira.", comparisons: [] });
 
     spira.deleteCreatedTestCase.mockRejectedValueOnce(new SpiraError("Test case 5000 was not created by this app, so it was not deleted.", 409));
     await expect(deleteDefectCase({ projectId: 24, testCaseId: 5000, memberships: [] })).rejects.toThrow(/not created by this app/);
