@@ -38,10 +38,22 @@ export interface Card {
   executed: boolean;
   suggestion: Column;
   reason: string;
-  /** Plain-text test case description and custom fields, searched for not-implemented keywords. */
-  description?: string;
-  /** Text of the matched workbook row, searched for not-implemented keywords. */
-  workbookText?: string;
+  /** Test Scenario of the matched workbook row; with the name, the text checked for not-implemented keywords. */
+  workbookScenario?: string;
+}
+
+export type BlockedConfidence = "high" | "medium" | "low";
+
+/** Whether a case whose scenario mentions a not-implemented keyword really depends on that feature. */
+export interface BlockedAssessment {
+  /** Keywords the scenario mentioned when this was decided. */
+  keywords: string[];
+  blocked: boolean;
+  /** Null for keyword-only verdicts. */
+  confidence: BlockedConfidence | null;
+  reason: string;
+  source: "ai" | "keyword";
+  at: string;
 }
 
 export interface MissingRow {
@@ -171,9 +183,9 @@ export interface Draft {
   apply: DraftApplyState;
   /** Features not built yet, keyed by test set ID; In Scope cards mentioning one are moved to Blocked. */
   testSetKeywords?: Record<string, string[]>;
-  /** Plain text of each test case's steps, keyed by test case ID, read from Spira for keyword matching. */
-  stepText?: Record<string, string>;
-  /** When Filter last read the steps from Spira and applied the keywords. */
+  /** Blocked/not-blocked verdicts for cases whose scenario mentions a keyword, keyed by card key. */
+  blockedReview?: Record<string, BlockedAssessment>;
+  /** When Filter last ran. */
   keywordsFilteredAt?: string | null;
 }
 
@@ -220,6 +232,20 @@ export interface AppSettings {
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
   updatedAt: string | null;
+}
+
+/** One answer from the AI review. */
+export interface AiBlockedVerdict {
+  key: string;
+  blocked: boolean;
+  confidence: BlockedConfidence;
+  reason: string;
+}
+
+/** Server-side Gemini configuration. Never includes the API key. */
+export interface AiStatus {
+  configured: boolean;
+  model: string;
 }
 
 /** Server-side Spira configuration as shown in Settings. Never includes the API key. */

@@ -7,11 +7,14 @@ import {
   recordPreflight,
   recordSignOffResults,
   recordSignOffUndo,
-  recordStepText,
+  recordBlockedReview,
   recordVerification,
 } from "@/lib/domain/draft-ops";
+import { keywordAssessment, MAX_AI_REVIEW_BATCH, type BlockedCandidate } from "@/lib/domain/keywords";
 import type {
+  AiBlockedVerdict,
   ApplyActionResult,
+  BlockedAssessment,
   Draft,
   PreflightResult,
   SignOffResult,
@@ -23,7 +26,7 @@ import type {
   WorkflowContext,
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
-import { api } from "./api";
+import { api, errorMessage } from "./api";
 import { getDraft, mutateDraft } from "./drafts";
 
 // The server is stateless: each call carries the board it acts on and the draft
@@ -152,17 +155,54 @@ export async function applyBatch(
   return { draft: updated, results };
 }
 
-/** Reads step text for some test cases and stores it in the draft. Returns cases that could not be read. */
-export async function readTestSteps(
+/**
+ * Decides whether each candidate is really blocked. With AI on, the server asks Gemini, reading the test
+ * scenario only; cases it could not answer, or every case when AI is off, fall back to the keyword verdict.
+ */
+export async function reviewBlockedCases(
   draftId: string,
-  testCaseIds: number[],
-): Promise<{ draft: Draft; failed: Record<string, string> }> {
+  candidates: BlockedCandidate[],
+  useAi: boolean,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ draft: Draft; aiError: string | null }> {
   const draft = getDraft(draftId);
-  const { steps, failed } = await api<{ steps: Record<string, string>; failed: Record<string, string> }>("/api/spira/test-steps", {
-    method: "POST",
-    body: { projectId: draft.projectId, testCaseIds },
-  });
-  return { draft: mutateDraft(draftId, (d) => recordStepText(d, steps)), failed };
+  const at = new Date().toISOString();
+  const assessments: Record<string, BlockedAssessment> = {};
+  let aiError: string | null = null;
+  if (useAi) {
+    let done = 0;
+    for (const batch of chunk(candidates, MAX_AI_REVIEW_BATCH)) {
+      try {
+        const { verdicts } = await api<{ verdicts: AiBlockedVerdict[] }>("/api/ai/blocked-review", {
+          method: "POST",
+          body: {
+            module: draft.module,
+            cases: batch.map(({ card, keywords }) => ({
+              key: card.key,
+              testSetName: draft.testSets.find((s) => s.testSetId === card.testSetId)?.testSetName ?? `TX${card.testSetId}`,
+              scenario: card.name,
+              ...(card.workbookScenario ? { workbookScenario: card.workbookScenario } : {}),
+              keywords,
+              allKeywords: draft.testSetKeywords?.[String(card.testSetId)] ?? keywords,
+            })),
+          },
+        });
+        const byKey = new Map(batch.map((c) => [c.card.key, c]));
+        for (const v of verdicts) {
+          const candidate = byKey.get(v.key);
+          if (!candidate) continue;
+          assessments[v.key] = { keywords: candidate.keywords, blocked: v.blocked, confidence: v.confidence, reason: v.reason, source: "ai", at };
+        }
+      } catch (err) {
+        aiError = errorMessage(err);
+        break;
+      }
+      done += batch.length;
+      onProgress?.(done, candidates.length);
+    }
+  }
+  for (const c of candidates) assessments[c.card.key] ??= keywordAssessment(c.keywords, at);
+  return { draft: mutateDraft(draftId, (d) => recordBlockedReview(d, assessments, at)), aiError };
 }
 
 export async function signOffBatch(

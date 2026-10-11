@@ -11,9 +11,34 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import clsx from "clsx";
+import {
+  Ban,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  CircleHelp,
+  ClipboardCheck,
+  Download,
+  FileQuestion,
+  History,
+  Keyboard,
+  Layers,
+  MinusCircle,
+  Pencil,
+  Redo2,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Search,
+  SlidersHorizontal,
+  Undo2,
+  X,
+} from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Badge, Button, ButtonLink, Dialog, Field, Notice, PageHeader, Spinner, Stat } from "@/components/ui";
+import { Badge, Button, ButtonLink, Collapsible, Dialog, Field, Notice, PageHeader, Spinner, Stat } from "@/components/ui";
 import { useSettings } from "@/components/settings-context";
 import { errorMessage } from "@/lib/client/api";
 import { DraftConflictError, mutateDraft, renameDraft } from "@/lib/client/drafts";
@@ -39,8 +64,8 @@ import {
   type Draft,
   type HistoryEntry,
 } from "@/lib/domain/types";
-import { blockMatchingCards, keywordHits } from "@/lib/domain/keywords";
-import { BoardCard, BoardColumn } from "./board-parts";
+import { applyProposals, keywordHits, type BlockedProposal } from "@/lib/domain/keywords";
+import { BoardCard, BoardColumn, COLUMN_STYLE } from "./board-parts";
 import { KeywordPanel } from "./keyword-panel";
 
 const AUTOSAVE_MS = 30_000;
@@ -100,14 +125,7 @@ export function Board({ id }: { id: string }) {
   const setNames = useMemo(() => new Map(draft?.testSets.map((s) => [s.testSetId, s.testSetName]) ?? []), [draft]);
   const counts = useMemo(() => countColumns(cards, decisions), [cards, decisions]);
   const missingCount = draft?.testSets.reduce((n, s) => n + s.missingFromSpira.length, 0) ?? 0;
-  const hits = useMemo(
-    () => keywordHits(cards, draft?.testSetKeywords, draft?.stepText),
-    [cards, draft?.testSetKeywords, draft?.stepText],
-  );
-  const pendingBlocks = useMemo(
-    () => cards.filter((c) => hits.has(c.key) && effectiveColumn(c, decisions) === "inScope").length,
-    [cards, hits, decisions],
-  );
+  const hits = useMemo(() => keywordHits(cards, draft?.testSetKeywords), [cards, draft?.testSetKeywords]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -252,7 +270,7 @@ export function Board({ id }: { id: string }) {
     }, "redo");
   }, [redoStack, cards, record, withExecutedGuard]);
 
-  /** Adopts a draft written outside the board's own save (keywords, step text) so the next save does not conflict. */
+  /** Adopts a draft written outside the board's own save (keywords, review verdicts) so the next save does not conflict. */
   const adoptDraft = useCallback(
     (d: Draft) => {
       stateRef.current = { ...stateRef.current, draft: d };
@@ -261,16 +279,18 @@ export function Board({ id }: { id: string }) {
     [setDraft],
   );
 
-  const blockMatches = useCallback(
-    (d: Draft) => {
-      const { decisions: next, changes, hits: found } = blockMatchingCards(cards, stateRef.current.decisions, d.testSetKeywords, d.stepText);
-      if (changes.length === 0) return 0;
-      const mentioned = [...new Set(changes.flatMap((c) => found.get(c.key) ?? []))];
+  const applyReview = useCallback(
+    (proposals: BlockedProposal[], chosen: Set<string>) => {
+      const { decisions: next, changes } = applyProposals(cards, stateRef.current.decisions, proposals, chosen);
+      const toBlocked = changes.filter((c) => c.to === "blocked").length;
+      const toInScope = changes.length - toBlocked;
+      if (changes.length === 0) return { toBlocked, toInScope };
       setDecisions(next);
       setUndoStack((s) => [...s, changes]);
       setRedoStack([]);
-      record(`${describeMove(changes, "blocked")}: they mention ${mentioned.join(", ")}`, changes);
-      return changes.length;
+      const parts = [toBlocked && `${toBlocked} to Blocked`, toInScope && `${toInScope} back to In Scope`].filter(Boolean);
+      record(`Not-implemented review: moved ${parts.join(" and ")}`, changes);
+      return { toBlocked, toInScope };
     },
     [cards, record],
   );
@@ -433,7 +453,15 @@ export function Board({ id }: { id: string }) {
     return <Notice tone="danger" title="This draft could not be opened" action={<ButtonLink href="/drafts" size="sm">Back to drafts</ButtonLink>}>{loadError}</Notice>;
   }
   if (!draft) {
-    return <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading board…</div>;
+    return (
+      <div className="flex flex-col gap-6" aria-busy="true">
+        <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading board…</div>
+        <div className="skeleton h-24" />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {COLUMNS.map((c) => <div key={c} className="skeleton h-80 rounded-2xl" />)}
+        </div>
+      </div>
+    );
   }
 
   const complete = isComparisonComplete(draft);
@@ -441,33 +469,39 @@ export function Board({ id }: { id: string }) {
   const activeCard = activeDrag ? cardByKey.get(activeDrag) : null;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHeader
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
+            <Link href="/drafts" className="inline-flex items-center gap-1 transition hover:text-slate-900 dark:hover:text-white">
+              <ChevronLeft className="size-4" aria-hidden /> Drafts
+            </Link>
+            <span className="text-slate-300 dark:text-zinc-700">/</span>
             {draft.module}
-            {draft.releaseLabel || draft.releaseId ? ` · Release ${draft.releaseLabel || draft.releaseId}` : ""}
-            <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>          </span>
+            {draft.releaseLabel || draft.releaseId ? <span className="text-slate-400 dark:text-zinc-500">· Release {draft.releaseLabel || draft.releaseId}</span> : null}
+            <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
+          </span>
         }
         title={
-          <button type="button" className="text-left hover:underline decoration-zinc-300 underline-offset-4" onClick={() => setRenaming(draft.name)} title="Rename draft">
+          <button type="button" className="group inline-flex cursor-pointer items-center gap-2 text-left" onClick={() => setRenaming(draft.name)} title="Rename draft">
             {draft.name}
+            <Pencil className="size-4 text-slate-300 opacity-0 transition group-hover:opacity-100 dark:text-zinc-600" aria-hidden />
           </button>
         }
         actions={
           <>
-            <span className="mr-1 text-xs text-zinc-500" aria-live="polite">
-              {saving ? "Saving…" : dirty ? "Unsaved changes" : savedAt ? `Saved ${relativeTime(savedAt)}` : ""}
+            <span className="mr-1 inline-flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-500" aria-live="polite">
+              {saving ? <><Spinner className="size-3" /> Saving…</> : dirty ? <><span className="size-1.5 rounded-full bg-amber-500" /> Unsaved changes</> : savedAt ? <><Check className="size-3.5 text-emerald-500" aria-hidden /> Saved {relativeTime(savedAt)}</> : ""}
             </span>
-            <Button size="sm" variant="ghost" onClick={() => void save()} disabled={!dirty || saving}>Save</Button>
-            <Button size="sm" onClick={() => exportBoard({ ...draft, decisions, history })}>Export</Button>
-            <Button size="sm" onClick={() => setConfirm({
+            <Button size="sm" variant="ghost" icon={Save} onClick={() => void save()} disabled={!dirty || saving}>Save</Button>
+            <Button size="sm" icon={Download} onClick={() => exportBoard({ ...draft, decisions, history })}>Export</Button>
+            <Button size="sm" icon={RefreshCw} onClick={() => setConfirm({
               title: "Recompare with Spira?",
               body: "Each test set is reconciled again. Manual moves are kept for cases that are still present; cases that disappeared are dropped.",
               confirmLabel: "Recompare",
               run: () => void runRecompare(draft.testSetIds),
             })} disabled={!!recompare?.running}>Recompare</Button>
-            <Button size="sm" variant="primary" onClick={goToReview} disabled={!complete}>Review &amp; apply</Button>
+            <Button size="sm" variant="primary" icon={ClipboardCheck} onClick={goToReview} disabled={!complete}>Review &amp; apply</Button>
           </>
         }
       />
@@ -502,76 +536,91 @@ export function Board({ id }: { id: string }) {
         </Notice>
       )}
 
-      <dl className="surface grid grid-cols-2 gap-4 px-5 py-4 sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Total cards" value={counts.total} />
-        <Stat label="In Scope" value={counts.inScope} />
-        <Stat label="Blocked · not implemented" value={counts.blocked} />
-        <Stat label="Out of Scope · to remove" value={counts.outOfScope} tone={counts.outOfScope ? "danger" : undefined} />
-        <Stat label="Needs Review" value={counts.needsReview} tone={counts.needsReview ? "warning" : "success"} />
-        <Stat label="Missing from Spira" value={missingCount} />
+      <dl className="surface grid grid-cols-2 gap-x-4 gap-y-5 px-5 py-5 sm:grid-cols-3 sm:px-6 xl:grid-cols-6">
+        <Stat label="Total cards" value={counts.total} icon={Layers} />
+        <Stat label="In Scope" value={counts.inScope} icon={CheckCircle2} tone="success" />
+        <Stat label="Blocked" value={counts.blocked} icon={Ban} tone={counts.blocked ? "orange" : undefined} hint="not implemented" />
+        <Stat label="Out of Scope" value={counts.outOfScope} icon={MinusCircle} tone={counts.outOfScope ? "danger" : undefined} hint="to remove" />
+        <Stat label="Needs Review" value={counts.needsReview} icon={CircleHelp} tone={counts.needsReview ? "warning" : undefined} />
+        <Stat label="Missing from Spira" value={missingCount} icon={FileQuestion} />
       </dl>
 
-      {complete && (
-        <KeywordPanel
-          draft={draft}
-          cards={cards}
-          decisions={decisions}
-          pending={pendingBlocks}
-          onDraft={adoptDraft}
-          onBlockMatches={blockMatches}
-        />
-      )}
+      {complete && <KeywordPanel draft={draft} cards={cards} decisions={decisions} onDraft={adoptDraft} onApply={applyReview} />}
 
       <div className="flex flex-col gap-3">
-        {draft.testSets.length > 1 && (
-          <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Test set">
-            {[{ id: "all" as const, label: "All test sets" }, ...draft.testSets.map((s) => ({ id: s.testSetId, label: s.testSetName }))].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={setFilter === tab.id}
-                onClick={() => setSetFilter(tab.id)}
-                className={clsx(
-                  "rounded-lg px-3 py-1.5 text-sm whitespace-nowrap",
-                  setFilter === tab.id ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800",
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input type="search" className="input sm:max-w-xs" placeholder="Search name, TC ID or case ID" aria-label="Search cards" value={search} onChange={(e) => setSearch(e.target.value)} />
-          <select className="input sm:w-48" aria-label="Filter cards" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
-            <option value="all">All cards</option>
-            <option value="executed">Executed</option>
-            <option value="notExecuted">Not executed</option>
-            <option value="manual">Moved manually</option>
-            <option value="keyword">Mentions a keyword</option>
-          </select>
-          <div className="flex items-center gap-1 sm:ml-auto">
-            <Button size="sm" variant="ghost" onClick={undo} disabled={undoStack.length === 0} title="Undo (Ctrl+Z)">Undo</Button>
-            <Button size="sm" variant="ghost" onClick={redo} disabled={redoStack.length === 0} title="Redo (Ctrl+Y)">Redo</Button>
-            <Button size="sm" variant="ghost" onClick={reset} disabled={Object.keys(decisions).length === 0}>Reset</Button>
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          {draft.testSets.length > 1 && (
+            <div className="inline-flex w-fit max-w-full shrink-0 gap-1 overflow-x-auto overflow-y-hidden rounded-xl bg-slate-200/60 p-1 [scrollbar-width:none] dark:bg-white/[0.05]" role="tablist" aria-label="Test set">
+              {[{ id: "all" as const, label: "All test sets" }, ...draft.testSets.map((s) => ({ id: s.testSetId, label: s.testSetName }))].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={setFilter === tab.id}
+                  onClick={() => setSetFilter(tab.id)}
+                  className={clsx(
+                    "relative cursor-pointer rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition",
+                    setFilter === tab.id ? "text-slate-900 dark:text-white" : "text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                  )}
+                >
+                  {setFilter === tab.id && <motion.span layoutId="set-tab" className="absolute inset-0 rounded-lg bg-white shadow-soft dark:bg-white/[0.1]" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+                  <span className="relative">{tab.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative sm:max-w-xs sm:flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
+              <input type="search" className="input pl-9" placeholder="Search name, TC ID or case ID" aria-label="Search cards" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <div className="relative sm:w-52">
+              <SlidersHorizontal className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
+              <select className="input appearance-none pl-9" aria-label="Filter cards" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}>
+                <option value="all">All cards</option>
+                <option value="executed">Executed</option>
+                <option value="notExecuted">Not executed</option>
+                <option value="manual">Moved manually</option>
+                <option value="keyword">Mentions a keyword</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1 sm:ml-auto">
+              <Button size="sm" variant="ghost" icon={Undo2} onClick={undo} disabled={undoStack.length === 0} title="Undo (Ctrl+Z)">Undo</Button>
+              <Button size="sm" variant="ghost" icon={Redo2} onClick={redo} disabled={redoStack.length === 0} title="Redo (Ctrl+Y)">Redo</Button>
+              <Button size="sm" variant="ghost" icon={RotateCcw} onClick={reset} disabled={Object.keys(decisions).length === 0}>Reset</Button>
+            </div>
           </div>
         </div>
-        <p className="hidden text-xs text-zinc-500 lg:block">
+        <p className="hidden items-center gap-1.5 text-xs text-slate-500 lg:flex dark:text-zinc-500">
+          <Keyboard className="size-3.5" aria-hidden />
           Drag cards between columns, or focus a card and press <kbd className="kbd">Space</kbd> to select, <kbd className="kbd">1</kbd> <kbd className="kbd">2</kbd> <kbd className="kbd">3</kbd> <kbd className="kbd">4</kbd> to move, <kbd className="kbd">↑</kbd> <kbd className="kbd">↓</kbd> to navigate.
         </p>
       </div>
 
-      {selection.size > 0 && (
-        <div className="sticky top-16 z-20 flex flex-wrap items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 shadow-sm dark:border-brand-800 dark:bg-brand-950/80">
-          <span className="text-sm font-medium">{selection.size} selected</span>
-          <span className="text-sm text-zinc-500">Move to</span>
-          {COLUMNS.map((c) => (
-            <Button key={c} size="sm" onClick={() => move([...selection], c)}>{COLUMN_LABELS[c]}</Button>
-          ))}
-          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setSelection(new Set())}>Clear</Button>
-        </div>
-      )}
+      <AnimatePresence>
+        {selection.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 24, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, y: 24, x: "-50%" }}
+            transition={{ type: "spring", stiffness: 420, damping: 34 }}
+            className="fixed bottom-6 left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-max flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2.5 shadow-lift backdrop-blur-xl lg:ml-32 dark:border-white/10 dark:bg-zinc-900/90"
+          >
+            <span className="rounded-lg bg-brand-600 px-2 py-1 text-xs font-semibold text-white tabular-nums">{selection.size}</span>
+            <span className="text-sm font-medium">selected · move to</span>
+            {COLUMNS.map((c) => {
+              const Icon = COLUMN_STYLE[c].icon;
+              return (
+                <button key={c} type="button" onClick={() => move([...selection], c)} className={clsx("inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ring-1 ring-inset transition hover:brightness-95", COLUMN_STYLE[c].chip)}>
+                  <Icon className="size-3.5" aria-hidden />
+                  {COLUMN_LABELS[c]}
+                </button>
+              );
+            })}
+            <Button size="sm" variant="ghost" icon={X} onClick={() => setSelection(new Set())}>Clear</Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDrag(null)}>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -591,6 +640,7 @@ export function Board({ id }: { id: string }) {
                   column={column}
                   setName={setFilter === "all" && draft.testSets.length > 1 ? setNames.get(card.testSetId) ?? null : null}
                   keywords={hits.get(card.key)}
+                  assessment={hits.has(card.key) ? draft.blockedReview?.[card.key] ?? null : null}
                   moved={Boolean(decisions[card.key])}
                   selected={selection.has(card.key)}
                   onToggle={toggle}
@@ -603,50 +653,41 @@ export function Board({ id }: { id: string }) {
         </div>
         <DragOverlay dropAnimation={null}>
           {activeCard && (
-            <div className="rounded-lg border border-brand-500 bg-white p-3 text-sm font-medium shadow-lg dark:bg-zinc-900">
+            <div className="max-w-xs rotate-2 rounded-xl border border-brand-400 bg-white p-3 text-sm font-medium shadow-lift dark:bg-zinc-900">
               {dragCount > 1 ? `${dragCount} cards` : activeCard.name}
             </div>
           )}
         </DragOverlay>
       </DndContext>
 
-      <section className="surface">
-        <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left" aria-expanded={showMissing} onClick={() => setShowMissing((v) => !v)}>
-          <span className="font-semibold">Missing from Spira <span className="font-normal text-zinc-500">({missingCount})</span></span>
-          <span className="text-sm text-zinc-500">{showMissing ? "Hide" : "Show"}</span>
-        </button>
-        {showMissing && (
-          <div className="overflow-x-auto border-t border-zinc-100 dark:border-zinc-800">
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Collapsible title="Missing from Spira" count={missingCount} icon={FileQuestion} open={showMissing} onToggle={() => setShowMissing((v) => !v)}>
+          <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="text-xs text-zinc-500"><tr><th className="px-5 py-2 font-medium">TC ID</th><th className="px-5 py-2 font-medium">Scenario</th><th className="px-5 py-2 font-medium">Test set</th><th className="px-5 py-2 font-medium">Reason</th></tr></thead>
-              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              <thead className="text-xs text-slate-500 dark:text-zinc-400"><tr><th className="px-5 py-2 font-medium">TC ID</th><th className="px-5 py-2 font-medium">Scenario</th><th className="px-5 py-2 font-medium">Test set</th><th className="px-5 py-2 font-medium">Reason</th></tr></thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                 {draft.testSets.flatMap((s) => s.missingFromSpira.map((row, i) => (
-                  <tr key={`${s.testSetId}-${i}`}><td className="px-5 py-2 font-mono text-xs">{row.tcId}</td><td className="px-5 py-2">{row.testScenario}</td><td className="px-5 py-2 text-zinc-500">{s.testSetName}</td><td className="px-5 py-2 text-zinc-500">{row.reason}</td></tr>
+                  <tr key={`${s.testSetId}-${i}`}><td className="px-5 py-2 font-mono text-xs">{row.tcId}</td><td className="px-5 py-2">{row.testScenario}</td><td className="px-5 py-2 text-slate-500">{s.testSetName}</td><td className="px-5 py-2 text-slate-500">{row.reason}</td></tr>
                 )))}
-                {missingCount === 0 && <tr><td colSpan={4} className="px-5 py-4 text-zinc-500">Every workbook row has a matching Spira test case.</td></tr>}
+                {missingCount === 0 && <tr><td colSpan={4} className="px-5 py-4 text-slate-500">Every workbook row has a matching Spira test case.</td></tr>}
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </Collapsible>
 
-      <section className="surface">
-        <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left" aria-expanded={showHistory} onClick={() => setShowHistory((v) => !v)}>
-          <span className="font-semibold">Change history <span className="font-normal text-zinc-500">({history.length})</span></span>
-          <span className="text-sm text-zinc-500">{showHistory ? "Hide" : "Show"}</span>
-        </button>
-        {showHistory && (
-          <ol className="divide-y divide-zinc-100 border-t border-zinc-100 text-sm dark:divide-zinc-800 dark:border-zinc-800">
+        <Collapsible title="Change history" count={history.length} icon={History} open={showHistory} onToggle={() => setShowHistory((v) => !v)}>
+          <ol className="relative mx-5 mb-4 border-l border-slate-200 text-sm dark:border-white/10">
             {[...history].reverse().slice(0, 200).map((entry, i) => (
-              <li key={`${entry.at}-${i}`} className="flex gap-4 px-5 py-2.5">
-                <span className="w-28 shrink-0 text-xs text-zinc-500">{formatDateTime(entry.at)}</span>
+              <li key={`${entry.at}-${i}`} className="relative py-2 pl-5">
+                <span className="absolute top-3.5 -left-[5px] size-2.5 rounded-full border-2 border-white bg-brand-500 dark:border-zinc-900" />
+                <span className="block text-xs text-slate-500 dark:text-zinc-500">{formatDateTime(entry.at)}</span>
                 <span>{entry.label}</span>
               </li>
             ))}
-            {history.length === 0 && <li className="px-5 py-4 text-zinc-500">No changes yet.</li>}
+            {history.length === 0 && <li className="py-2 pl-5 text-slate-500">No changes yet.</li>}
           </ol>
-        )}
-      </section>
+        </Collapsible>
+      </div>
 
       <Dialog
         open={confirm !== null}

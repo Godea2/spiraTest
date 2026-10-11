@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import { ArrowRight, Check, CheckCircle2, Clock, FileSpreadsheet, GitCompareArrows, RotateCcw, UploadCloud } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { WorkBook } from "xlsx";
 import { modulesFrom, useSettings } from "@/components/settings-context";
@@ -54,12 +55,14 @@ function StepTitle({ n, children, done }: { n: number; children: React.ReactNode
     <span className="flex items-center gap-3">
       <span
         className={clsx(
-          "grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold",
-          done ? "bg-emerald-600 text-white" : "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900",
+          "grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold transition-colors duration-300",
+          done
+            ? "bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-[0_0_0_4px_rgb(16_185_129/0.12)]"
+            : "bg-gradient-to-br from-brand-500 to-violet-600 text-white shadow-[0_0_0_4px_rgb(99_102_241/0.12)]",
         )}
         aria-hidden
       >
-        {done ? "✓" : n}
+        {done ? <Check className="size-3.5" strokeWidth={3} /> : n}
       </span>
       {children}
     </span>
@@ -304,10 +307,12 @@ export function CompareWorkspace() {
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             className={clsx(
-              "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center transition-colors",
+              "group flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-10 text-center transition-all duration-200",
               dragging
-                ? "border-brand-500 bg-brand-50 dark:bg-brand-950/30"
-                : "border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600",
+                ? "scale-[1.01] border-brand-500 bg-brand-50/80 dark:bg-brand-500/10"
+                : loaded
+                  ? "border-emerald-300 bg-emerald-50/40 hover:border-emerald-400 dark:border-emerald-500/30 dark:bg-emerald-500/[0.04]"
+                  : "border-slate-300 bg-slate-50/50 hover:border-brand-400 hover:bg-brand-50/40 dark:border-white/10 dark:bg-white/[0.02] dark:hover:border-brand-400/50",
               locked && "pointer-events-none opacity-60",
             )}
           >
@@ -327,13 +332,19 @@ export function CompareWorkspace() {
               <span className="flex items-center gap-2 text-sm"><Spinner /> Reading workbook…</span>
             ) : loaded ? (
               <>
-                <span className="text-sm font-medium">{loaded.fileName}</span>
-                <span className="mt-1 text-xs text-zinc-500">Drop another file or click to replace</span>
+                <span className="mb-3 grid size-12 place-items-center rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
+                  <FileSpreadsheet className="size-6" aria-hidden />
+                </span>
+                <span className="text-sm font-semibold">{loaded.fileName}</span>
+                <span className="mt-1 text-xs text-slate-500">Drop another file or click to replace</span>
               </>
             ) : (
               <>
-                <span className="text-sm font-medium">Drop the scope workbook here</span>
-                <span className="mt-1 text-xs text-zinc-500">or click to browse · .xlsx</span>
+                <span className="mb-3 grid size-12 place-items-center rounded-2xl bg-gradient-to-br from-brand-100 to-violet-100 text-brand-600 transition-transform duration-200 group-hover:-translate-y-0.5 dark:from-brand-500/20 dark:to-violet-500/15 dark:text-brand-300">
+                  <UploadCloud className="size-6" aria-hidden />
+                </span>
+                <span className="text-sm font-semibold">Drop the scope workbook here</span>
+                <span className="mt-1 text-xs text-slate-500">or click to browse · .xlsx, .xlsm, .xls</span>
               </>
             )}
           </label>
@@ -465,7 +476,7 @@ export function CompareWorkspace() {
                 <input {...props} className="input" value={draftName} onChange={(e) => setDraftName(e.target.value)} placeholder="e.g. Onboarding · Sprint 3" maxLength={160} />
               )}
             </Field>
-            <Button variant="primary" onClick={startComparison} disabled={!canCompare} busy={starting}>
+            <Button variant="primary" icon={GitCompareArrows} onClick={startComparison} disabled={!canCompare} busy={starting}>
               Compare {selected.size || ""} test set{selected.size === 1 ? "" : "s"}
             </Button>
           </div>
@@ -487,11 +498,11 @@ export function CompareWorkspace() {
                         </p>
                       )}
                     </div>
-                    {status === "running" && <span className="flex items-center gap-2 text-xs text-zinc-500"><Spinner className="size-3.5" /> Comparing…</span>}
-                    {status === "pending" && <span className="text-xs text-zinc-500">Waiting</span>}
-                    {status === "ok" && <Badge tone="success">Compared</Badge>}
+                    {status === "running" && <span className="flex items-center gap-2 text-xs text-brand-600 dark:text-brand-300"><Spinner className="size-3.5" /> Comparing…</span>}
+                    {status === "pending" && <span className="flex items-center gap-1.5 text-xs text-slate-500"><Clock className="size-3.5" aria-hidden /> Waiting</span>}
+                    {status === "ok" && <Badge tone="success"><CheckCircle2 aria-hidden /> Compared</Badge>}
                     {status === "failed" && (
-                      <Button size="sm" onClick={() => compareSet(draft.id, id)} disabled={anyRunning}>
+                      <Button size="sm" icon={RotateCcw} onClick={() => compareSet(draft.id, id)} disabled={anyRunning}>
                         Retry
                       </Button>
                     )}
@@ -501,7 +512,7 @@ export function CompareWorkspace() {
             </ul>
             <div className="flex flex-wrap items-center gap-3">
               {allOk ? (
-                <ButtonLink href={`/drafts/${draft.id}`} variant="primary">Open board</ButtonLink>
+                <ButtonLink href={`/drafts/${draft.id}`} variant="primary" icon={ArrowRight}>Open board</ButtonLink>
               ) : (
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
                   {anyRunning ? "Comparing…" : "Every test set must compare successfully before the board opens."}

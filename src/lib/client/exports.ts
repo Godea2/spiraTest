@@ -11,7 +11,13 @@ export async function exportBoard(draft: Draft): Promise<void> {
   const wb = XLSX.utils.book_new();
   const setName = new Map(draft.testSets.map((s) => [s.testSetId, s.testSetName]));
   const cardByKey = new Map(draft.testSets.flatMap((s) => s.cards).map((c) => [c.key, c]));
-  const hits = keywordHits([...cardByKey.values()], draft.testSetKeywords, draft.stepText);
+  const hits = keywordHits([...cardByKey.values()], draft.testSetKeywords);
+  const verdict = (key: string) => {
+    const a = hits.has(key) ? draft.blockedReview?.[key] : undefined;
+    if (!a) return { verdict: "", reason: "" };
+    const who = a.source === "ai" ? `AI${a.confidence ? `, ${a.confidence} confidence` : ""}` : "keyword";
+    return { verdict: `${a.blocked ? "Blocked" : "Not blocked"} (${who})`, reason: a.reason };
+  };
 
   const sheetFor = (column: Column) =>
     draft.testSets.flatMap((set) =>
@@ -28,6 +34,8 @@ export async function exportBoard(draft: Draft): Promise<void> {
           Suggestion: COLUMN_LABELS[card.suggestion],
           "Manually moved": draft.decisions[card.key] ? "Yes" : "No",
           "Not-implemented keywords": hits.get(card.key)?.join(", ") ?? "",
+          "Not-implemented verdict": verdict(card.key).verdict,
+          "Verdict reason": verdict(card.key).reason,
           Reason: card.reason,
         })),
     );

@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
-import { MAX_STEP_TEXT } from "@/lib/domain/keywords";
+import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { COLUMNS, PLATFORMS, SIGN_OFF_STATUSES } from "@/lib/domain/types";
 
 const id = z.number().int().positive();
@@ -40,8 +40,7 @@ const cardSchema = z.object({
   executed: z.boolean(),
   suggestion: column,
   reason: z.string().max(2_000),
-  description: z.string().max(MAX_STEP_TEXT).optional(),
-  workbookText: z.string().max(MAX_STEP_TEXT).optional(),
+  workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
 });
 
 const comparisonSchema = testSetRef.extend({
@@ -136,9 +135,21 @@ export const undoSignOffRequestSchema = z.object({
     .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} runs per batch.`),
 });
 
-export const testStepsRequestSchema = z.object({
-  projectId: id,
-  testCaseIds: z.array(id).min(1).max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} test cases per request.`),
+export const blockedReviewRequestSchema = z.object({
+  module: z.string().trim().min(1).max(200),
+  cases: z
+    .array(
+      z.object({
+        key: z.string().max(40),
+        testSetName: z.string().max(200),
+        scenario: z.string().max(MAX_SCENARIO_TEXT),
+        workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
+        keywords: z.array(z.string().max(60)).min(1).max(20),
+        allKeywords: keywordListSchema,
+      }),
+    )
+    .min(1)
+    .max(MAX_AI_REVIEW_BATCH, `Send at most ${MAX_AI_REVIEW_BATCH} cases per request.`),
 });
 
 export const verifyRequestSchema = z.object({

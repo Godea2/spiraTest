@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import { ChevronLeft, ClipboardList, FlaskConical, ListChecks, Rocket, RotateCcw, Sparkles, Zap } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
@@ -102,7 +103,7 @@ export function Review({ id }: { id: string }) {
   }, [draft]);
 
   const hits = useMemo(
-    () => (draft ? keywordHits(allCards(draft.testSets), draft.testSetKeywords, draft.stepText) : new Map<string, string[]>()),
+    () => (draft ? keywordHits(allCards(draft.testSets), draft.testSetKeywords) : new Map<string, string[]>()),
     [draft],
   );
 
@@ -214,8 +215,11 @@ export function Review({ id }: { id: string }) {
           for (const batch of chunk(group, MAX_APPLY_BATCH)) {
             const notes = Object.fromEntries(
               batch.flatMap((a) => {
-                const found = hits.get(`${a.testSetId}:${a.testSetTestCaseId}`);
-                return status === "blocked" && found ? [[String(a.testSetTestCaseId), found.join(", ").slice(0, 300)]] : [];
+                const key = `${a.testSetId}:${a.testSetTestCaseId}`;
+                const found = hits.get(key);
+                const reason = found ? draft.blockedReview?.[key]?.reason : undefined;
+                const note = found ? `${found.join(", ")}${reason ? `. ${reason}` : ""}` : "";
+                return status === "blocked" && note ? [[String(a.testSetTestCaseId), note.slice(0, 300)]] : [];
               }),
             );
             const out = await signOffBatch(
@@ -295,7 +299,7 @@ export function Review({ id }: { id: string }) {
       <PageHeader
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
-            <ButtonLink href={`/drafts/${draft.id}`} size="sm" variant="ghost" className="-ml-2.5">← Board</ButtonLink>
+            <ButtonLink href={`/drafts/${draft.id}`} size="sm" variant="ghost" icon={ChevronLeft} className="-ml-2.5">Board</ButtonLink>
             <Badge tone={STATUS_TONE[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
           </span>
         }
@@ -303,7 +307,7 @@ export function Review({ id }: { id: string }) {
         description={`Final approval for ${draft.module} in project ${draft.projectId}${releaseText ? `, release ${releaseText}` : ""}. Out of Scope cases are removed from their test sets. Blocked cases, and In Scope cases if you choose, get a test result recorded in Spira. Test cases and their steps are never edited or deleted.`}
       />
 
-      <Section title="What will change" description="Out of Scope cards are removed from their test set. Blocked cards stay in the test set and are recorded as Blocked. In Scope cards stay.">
+      <Section icon={ListChecks} title="What will change" description="Out of Scope cards are removed from their test set. Blocked cards stay in the test set and are recorded as Blocked. In Scope cards stay.">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[36rem] text-left text-sm">
             <thead className="text-xs text-zinc-500">
@@ -338,7 +342,7 @@ export function Review({ id }: { id: string }) {
                   {expanded === set.testSetId && (
                     <tr>
                       <td colSpan={6} className="pb-3">
-                        <CaseList title="Blocked" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "blocked")} hits={hits} />
+                        <CaseList title="Blocked" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "blocked")} hits={hits} review={draft.blockedReview} />
                         <CaseList title="Remove" cards={set.cards.filter((c) => effectiveColumn(c, draft.decisions) === "outOfScope")} hits={hits} />
                       </td>
                     </tr>
@@ -350,8 +354,8 @@ export function Review({ id }: { id: string }) {
         </div>
       </Section>
 
-      <Section title="Apply">
-        <label className="mb-5 flex items-start gap-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
+      <Section icon={Rocket} title="Apply">
+        <label className="well mb-5 flex items-start gap-3 p-4">
           <input
             type="checkbox"
             className="mt-0.5 size-4 accent-brand-600"
@@ -415,11 +419,11 @@ export function Review({ id }: { id: string }) {
         )}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          <Button variant={mode === "live" ? "danger" : "primary"} onClick={start} disabled={!canRun} busy={running}>
+          <Button variant={mode === "live" ? "danger" : "primary"} icon={mode === "dry" ? FlaskConical : Zap} onClick={start} disabled={!canRun} busy={running}>
             {mode === "dry" ? "Start dry run" : liveLabel}
           </Button>
           {retryCount > 0 && !running && (
-            <Button onClick={retryFailed} disabled={confirmText !== moduleConfirm || liveBlockers.length > 0} title={confirmText !== moduleConfirm ? `Type ${moduleConfirm} above to enable retry` : undefined}>
+            <Button icon={RotateCcw} onClick={retryFailed} disabled={confirmText !== moduleConfirm || liveBlockers.length > 0} title={confirmText !== moduleConfirm ? `Type ${moduleConfirm} above to enable retry` : undefined}>
               Retry {retryCount} failed
             </Button>
           )}
@@ -448,6 +452,7 @@ export function Review({ id }: { id: string }) {
 
       {(recordedRuns.length > 0 || undo.message || undo.error) && (
         <Section
+          icon={ClipboardList}
           title="Recorded results"
           description="Test runs this app recorded in Spira for this draft. Undo deletes only these runs; each one is checked to have been recorded by this app first."
         >
@@ -504,7 +509,17 @@ export function Review({ id }: { id: string }) {
   );
 }
 
-function CaseList({ title, cards, hits }: { title: string; cards: Card[]; hits: Map<string, string[]> }) {
+function CaseList({
+  title,
+  cards,
+  hits,
+  review,
+}: {
+  title: string;
+  cards: Card[];
+  hits: Map<string, string[]>;
+  review?: Draft["blockedReview"];
+}) {
   if (cards.length === 0) return null;
   return (
     <div className="mt-2">
@@ -514,7 +529,14 @@ function CaseList({ title, cards, hits }: { title: string; cards: Card[]; hits: 
           <li key={c.key} className="flex items-center gap-3 px-3 py-2">
             <span className="w-20 shrink-0 font-mono text-zinc-500">TC{c.testCaseId}</span>
             <span className="min-w-0 flex-1 truncate">{c.name}</span>
-            {hits.get(c.key) && <Badge>{hits.get(c.key)!.join(", ")}</Badge>}
+            {hits.get(c.key) && (
+              <span title={review?.[c.key]?.reason}>
+                <Badge tone={review?.[c.key]?.source === "ai" ? "brand" : "neutral"}>
+                  {review?.[c.key]?.source === "ai" && <Sparkles aria-hidden />}
+                  {hits.get(c.key)!.join(", ")}
+                </Badge>
+              </span>
+            )}
             {c.executed && <Badge tone="warning">{c.executionStatus}</Badge>}
           </li>
         ))}

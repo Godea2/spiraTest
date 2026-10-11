@@ -1,8 +1,8 @@
 import { allCards, normalizeDecisions, preserveDecisions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
-import { MAX_STEP_TEXT } from "./keywords";
 import type {
   ApplyActionResult,
+  BlockedAssessment,
   Column,
   Draft,
   DraftApplyState,
@@ -119,10 +119,10 @@ export function recordSignOffUndo(draft: Draft, deletedRunIds: number[]): void {
 }
 
 /** Merges step text read from Spira; long text is cut to keep the draft small. */
-export function recordStepText(draft: Draft, steps: Record<string, string>): void {
-  const next = { ...(draft.stepText ?? {}) };
-  for (const [testCaseId, text] of Object.entries(steps)) next[testCaseId] = text.slice(0, MAX_STEP_TEXT);
-  draft.stepText = next;
+/** Stores blocked/not-blocked verdicts and marks when Filter ran. */
+export function recordBlockedReview(draft: Draft, assessments: Record<string, BlockedAssessment>, at: string): void {
+  draft.blockedReview = { ...(draft.blockedReview ?? {}), ...assessments };
+  draft.keywordsFilteredAt = at;
 }
 
 export function recordVerification(draft: Draft, verification: VerificationResult): void {

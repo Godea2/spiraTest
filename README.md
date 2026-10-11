@@ -16,6 +16,8 @@ Built with Next.js (App Router), TypeScript, React and Tailwind CSS.
    | `SPIRA_BASE_URL` | Spira site URL, e.g. `https://yourcompany.spiraservice.net` |
    | `SPIRA_USERNAME` | Spira user the server acts as |
    | `SPIRA_API_KEY` | That user's API key (RSS token), including the `{ }` braces |
+   | `GEMINI_API_KEY` | Optional. Google Gemini API key for the AI review of blocked cases |
+   | `GEMINI_MODEL` | Optional. Gemini model for that review; defaults to `gemini-3.8-flash` |
 
    Sign-in is disabled until `APP_PASSWORD` and `SESSION_SECRET` are set. Comparisons are disabled until all three Spira values are set. Nothing is preset: in **Settings**, pick the project (listed from Spira) and save. On **Compare**, choose a module and the project's test sets are read from Spira, with those whose name starts with the module (for example `Onboarding-Android`, `Onboarding-IOS`) ticked. The release is optional and only labels drafts; module-to-test-set mappings in Settings are optional overrides.
 
@@ -33,7 +35,6 @@ Use a dedicated Spira service account with access to the project and permission 
 | Dry run | `GET …/test-case-mapping`; nothing is changed |
 | Live apply | `GET …/test-case-mapping`, then `DELETE projects/{p}/test-sets/{t}/test-cases/{test_set_test_case_id}` per case |
 | Verify | `GET …/test-case-mapping` |
-| Keyword filter (board) | `GET projects/{p}/test-cases/{tc}/test-steps` per case in a test set with keywords, plus the steps of linked test cases (read only) |
 | Record results | `GET …/test-sets/{t}` and `…/test-cases` (current status), then `POST projects/{p}/test-runs/record` per Blocked or Passed case |
 | Undo sign-off | `GET projects/{p}/test-runs/{id}/automated` (checks the runner name and test case), then `DELETE projects/{p}/test-runs/{id}` |
 
@@ -41,7 +42,11 @@ Live apply removes a test case from a test set; the test case itself is never de
 
 ### Blocked cases and sign-off
 
-On the board, **Not implemented yet** has one keyword list per test set in the draft (for example `nin, bvn, google` for Onboarding-IOS). **Filter** reads the steps of every case in those test sets from Spira again, then checks each case's name, description and custom property text, every step's description, expected result, sample data and precondition (following linked test cases), and the workbook row it matched. Keywords match whole words and their plural, ignoring case, so `nin` matches `NIN` and `BVN/NIN` but not `running`. In Scope cases that mention a keyword of their test set move to **Blocked**; the move is in the change history and can be undone. A table then shows, for every keyword, how many cases mention it in each column, and lists them, so a keyword found only in Out of Scope cases shows that the workbook left those cases out.
+On the board, **Not implemented yet** has one keyword list per test set in the draft (for example `nin, bvn, google` for Onboarding-IOS). Only the **test scenario** is searched: the Spira test case name and the Test Scenario cell of the workbook row it matched. Test steps and test data are deliberately ignored, because a step that enters a BVN does not make a case depend on BVN verification. Keywords match whole words and their plural, ignoring case, so `nin` matches `NIN` and `BVN/NIN` but not `running`.
+
+**Filter** collects the In Scope and Blocked cases whose scenario mentions a keyword of their test set. If `GEMINI_API_KEY` is set, the server asks Gemini whether each case really depends on the missing feature, and gets back a verdict, a confidence and a one-sentence reason. For example, "Verify no sensitive data (BVN, passcode) is logged" is about logging, so it is not blocked. Without a key, a keyword in the scenario counts as Blocked. Only test case names, workbook scenarios and keywords are sent to Google, with storage turned off; Spira is not called.
+
+Nothing moves on its own. The review lists the suggested changes: cases to move to Blocked, and cases to move back to In Scope, including Blocked cases whose scenario mentions none of the keywords. Confident suggestions are ticked; low-confidence answers and cases with no keyword are left unticked for you to decide. **Apply** moves the ticked cases in one step, which is in the change history and can be undone. Verdicts are saved in the draft, so filtering again only sends new or changed cases unless you choose **Re-analyse all**. A table shows, for every keyword, how many cases mention it in each column, so a keyword found only in Out of Scope cases shows that the workbook left those cases out.
 
 On **Review & apply**, a live apply removes Out of Scope cases, then records an automated test run with status **Blocked** for each Blocked case. Ticking **Also mark In Scope cases as Passed** (off by default, with its own confirmation) records **Passed** runs for In Scope cases too. Runs use the draft's release, or the test set's release when the draft has none. Cases that already have a result in Spira are skipped and listed. The IDs of recorded runs are kept in the draft so **Undo sign-off** can delete exactly those runs.
 
@@ -64,7 +69,7 @@ The server is stateless. It signs every comparison and passing membership check 
 
 ## Deploying to Vercel
 
-Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SPIRA_API_KEY` under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. If your Spira instance restricts access by IP address, it must allow Vercel's outbound traffic.
+Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SPIRA_API_KEY` (and optionally `GEMINI_API_KEY` and `GEMINI_MODEL`) under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. If your Spira instance restricts access by IP address, it must allow Vercel's outbound traffic.
 
 ## Scripts
 

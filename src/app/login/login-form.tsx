@@ -1,5 +1,6 @@
 "use client";
 
+import { LogIn } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { Button, Field, Notice } from "@/components/ui";
@@ -46,7 +47,7 @@ export function LoginForm() {
           />
         )}
       </Field>
-      <Button type="submit" variant="primary" busy={busy} disabled={!password}>
+      <Button type="submit" variant="primary" busy={busy} disabled={!password} icon={LogIn}>
         Sign in
       </Button>
     </form>

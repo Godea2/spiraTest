@@ -1,46 +1,93 @@
 "use client";
 
+import clsx from "clsx";
+import {
+  ArrowRight,
+  BarChart3,
+  ChevronDown,
+  Filter,
+  RefreshCw,
+  ScanSearch,
+  Sparkles,
+  Tag,
+  UserCheck,
+  X,
+} from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
-import { Button, Notice, ProgressBar } from "@/components/ui";
+import { toast } from "sonner";
+import { useSettings } from "@/components/settings-context";
+import { Badge, Button, Notice, ProgressBar } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { mutateDraft } from "@/lib/client/drafts";
-import { readTestSteps } from "@/lib/client/workflow";
-import { chunk, MAX_APPLY_BATCH } from "@/lib/domain/board";
-import { hasKeywords, keywordReport, normalizeKeywords, parseKeywords, type KeywordReportRow } from "@/lib/domain/keywords";
+import { reviewBlockedCases } from "@/lib/client/workflow";
+import {
+  blockedCandidates,
+  blockedProposals,
+  defaultSelection,
+  hasCurrentAiVerdict,
+  hasKeywords,
+  keywordReport,
+  normalizeKeywords,
+  parseKeywords,
+  type BlockedProposal,
+  type KeywordReportRow,
+} from "@/lib/domain/keywords";
 import { COLUMN_LABELS, type Card, type Column, type Draft } from "@/lib/domain/types";
+import { AssessmentBadge, COLUMN_STYLE } from "./board-parts";
 
-type Scan = { running: boolean; done: number; total: number; moved: number | null; error: string | null };
+type Scan = { done: number; total: number; ai: boolean };
+type View = "changes" | "blocked" | "notBlocked" | "all";
 
 const REPORT_COLUMNS: Column[] = ["inScope", "blocked", "needsReview", "outOfScope"];
 
 /**
- * Keywords for features that are not built yet, one list per test set in the draft.
- * Filter reads the steps of every case from Spira again, then moves In Scope cases that
- * mention a keyword for their test set to Blocked and reports where every keyword was found.
+ * Not-implemented features, one keyword list per test set in the draft. Filter finds In Scope and Blocked
+ * cases whose test scenario mentions a keyword, has the AI judge whether each really depends on the
+ * feature, and lists the suggested moves for the user to accept. Nothing moves without the user.
  */
 export function KeywordPanel({
   draft,
   cards,
   decisions,
-  pending,
   onDraft,
-  onBlockMatches,
+  onApply,
 }: {
   draft: Draft;
   cards: Card[];
   decisions: Record<string, Column>;
-  /** In Scope cards that mention a keyword. */
-  pending: number;
   onDraft: (draft: Draft) => void;
-  /** Moves matching In Scope cards to Blocked and returns how many moved. */
-  onBlockMatches: (draft: Draft) => number;
+  /** Moves the selected proposals; returns how many went to Blocked and back to In Scope. */
+  onApply: (proposals: BlockedProposal[], selected: Set<string>) => { toBlocked: number; toInScope: number };
 }) {
+  const { ai } = useSettings();
+  const aiOn = !!ai?.configured;
   const [scan, setScan] = useState<Scan | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [view, setView] = useState<View>("changes");
+  const [showReport, setShowReport] = useState(false);
   const anyKeywords = hasKeywords(draft.testSetKeywords);
-  const report = useMemo(
-    () => keywordReport(cards, decisions, draft.testSetKeywords, draft.stepText),
-    [cards, decisions, draft.testSetKeywords, draft.stepText],
+  const filteredAt = draft.keywordsFilteredAt ? new Date(draft.keywordsFilteredAt) : null;
+
+  const proposals = useMemo(
+    () => blockedProposals(cards, decisions, draft.testSetKeywords, draft.blockedReview),
+    [cards, decisions, draft.testSetKeywords, draft.blockedReview],
   );
+  const report = useMemo(() => keywordReport(cards, decisions, draft.testSetKeywords), [cards, decisions, draft.testSetKeywords]);
+
+  const changes = proposals.filter((p) => p.proposed !== p.current && (p.kind === "noKeyword" || p.assessment));
+  const changeKeys = new Set(changes.map((p) => p.card.key));
+  const chosen = new Set([...selected].filter((k) => changeKeys.has(k)));
+  const unanalysed = proposals.filter((p) => p.kind === "match" && !p.assessment).length;
+  const lowConfidence = changes.filter((p) => p.assessment?.confidence === "low").length;
+
+  const visible = proposals.filter((p) => {
+    if (view === "changes") return changeKeys.has(p.card.key);
+    if (view === "blocked") return p.kind === "match" && p.assessment?.blocked;
+    if (view === "notBlocked") return p.kind === "noKeyword" || (p.assessment && !p.assessment.blocked);
+    return true;
+  });
 
   function saveForSet(testSetId: number, next: string[]) {
     onDraft(
@@ -54,56 +101,96 @@ export function KeywordPanel({
     );
   }
 
-  async function filter() {
-    const setIds = new Set(Object.keys(draft.testSetKeywords ?? {}).filter((id) => draft.testSetKeywords![id].length > 0));
-    const ids = [...new Set(cards.filter((c) => setIds.has(String(c.testSetId))).map((c) => c.testCaseId))];
-    let latest = draft;
-    const failed: string[] = [];
-    setScan({ running: true, done: 0, total: ids.length, moved: null, error: null });
+  async function filter(force: boolean) {
+    const candidates = blockedCandidates(cards, decisions, draft.testSetKeywords);
+    const toAnalyse = aiOn && !force ? candidates.filter((c) => !hasCurrentAiVerdict(draft.blockedReview?.[c.card.key], c.keywords)) : candidates;
+    setAiError(null);
+    setScan({ done: 0, total: toAnalyse.length, ai: aiOn });
     try {
-      for (const batch of chunk(ids, MAX_APPLY_BATCH)) {
-        const out = await readTestSteps(draft.id, batch);
-        latest = out.draft;
-        onDraft(latest);
-        failed.push(...Object.values(out.failed));
-        setScan((s) => s && { ...s, done: s.done + batch.length });
-      }
+      const out = await reviewBlockedCases(draft.id, toAnalyse, aiOn, (done, total) => setScan({ done, total, ai: true }));
+      onDraft(out.draft);
+      setAiError(out.aiError);
+      const next = blockedProposals(cards, decisions, out.draft.testSetKeywords, out.draft.blockedReview);
+      setSelected(defaultSelection(next));
+      setView("changes");
+      const suggested = next.filter((p) => p.proposed !== p.current && p.assessment).length;
+      if (out.aiError) toast.warning("AI review stopped; the rest use the keyword match.", { description: out.aiError });
+      else toast.success(`Checked ${candidates.length} matching case${candidates.length === 1 ? "" : "s"}`, { description: suggested ? `${suggested} suggested change${suggested === 1 ? "" : "s"} to review.` : "Nothing needs to move." });
     } catch (err) {
-      setScan((s) => s && { ...s, running: false, error: errorMessage(err) });
-      return;
+      setAiError(errorMessage(err));
+    } finally {
+      setScan(null);
     }
-    latest = mutateDraft(draft.id, (d) => void (d.keywordsFilteredAt = new Date().toISOString()));
-    onDraft(latest);
-    const moved = onBlockMatches(latest);
-    setScan({
-      running: false,
-      done: ids.length,
-      total: ids.length,
-      moved,
-      error: failed.length
-        ? `The steps of ${failed.length} case${failed.length === 1 ? "" : "s"} could not be read, so only their name, description and workbook row were checked: ${failed[0]}`
-        : null,
-    });
   }
 
-  const filteredAt = draft.keywordsFilteredAt ? new Date(draft.keywordsFilteredAt) : null;
+  function apply() {
+    const { toBlocked, toInScope } = onApply(proposals, chosen);
+    setSelected(new Set());
+    const parts = [toBlocked && `${toBlocked} to Blocked`, toInScope && `${toInScope} back to In Scope`].filter(Boolean);
+    if (parts.length) toast.success(`Moved ${parts.join(" and ")}`, { description: "Undo with Ctrl+Z." });
+  }
+
+  const toggle = (key: string) =>
+    setSelected((s) => {
+      const next = new Set([...s].filter((k) => changeKeys.has(k)));
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const counts = {
+    changes: changes.length,
+    blocked: proposals.filter((p) => p.kind === "match" && p.assessment?.blocked).length,
+    notBlocked: proposals.filter((p) => p.kind === "noKeyword" || (p.assessment && !p.assessment.blocked)).length,
+    all: proposals.length,
+  };
 
   return (
-    <section className="surface flex flex-col gap-3 px-5 py-4" aria-labelledby="keywords-title">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 id="keywords-title" className="font-semibold">Not implemented yet</h2>
-          <p className="text-sm text-zinc-500">
-            Add keywords for features that are not built yet. Filter checks every case in the test set: its name, description and custom fields in Spira, all of its
-            steps (including steps from linked test cases), and its row in your workbook. In Scope cases that mention a keyword move to Blocked.
-          </p>
+    <section className="surface overflow-hidden" aria-labelledby="keywords-title">
+      <div className="relative border-b border-slate-100 px-5 py-5 sm:px-6 dark:border-white/[0.06]">
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-brand-500/[0.05] via-violet-500/[0.04] to-transparent" />
+        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-violet-600 text-white shadow-[0_6px_16px_-6px_rgb(99_102_241/0.7)]">
+              <ScanSearch className="size-5" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 id="keywords-title" className="text-base font-semibold tracking-tight">Not implemented yet</h2>
+                {ai &&
+                  (aiOn ? (
+                    <Badge tone="brand">
+                      <Sparkles aria-hidden /> AI review · {ai.model}
+                    </Badge>
+                  ) : (
+                    <Badge>
+                      <Tag aria-hidden /> Keyword match only
+                    </Badge>
+                  ))}
+              </div>
+              <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-zinc-400">
+                Add keywords for features that are not built yet. Filter checks only the <strong className="font-medium text-slate-800 dark:text-zinc-200">test scenario</strong>{" "}
+                (the Spira name and the workbook scenario), never steps or test data.{" "}
+                {aiOn
+                  ? "Gemini then judges whether each matching case really depends on the feature, and you choose which suggestions to apply."
+                  : "Every match is suggested as Blocked for you to review. Add GEMINI_API_KEY on the server to have the AI judge each case."}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {filteredAt && aiOn && (
+              <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => void filter(true)} disabled={!anyKeywords || !!scan} title="Ask the AI again about every matching case">
+                Re-analyse all
+              </Button>
+            )}
+            <Button variant="primary" icon={Filter} onClick={() => void filter(false)} disabled={!anyKeywords || !!scan} busy={!!scan}>
+              Filter
+            </Button>
+          </div>
         </div>
-        <Button size="sm" className="shrink-0" onClick={() => void filter()} disabled={!anyKeywords || !!scan?.running} busy={scan?.running}>
-          Filter
-        </Button>
       </div>
 
-      <dl className="flex flex-col divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+      <dl className="divide-y divide-slate-100 dark:divide-white/[0.05]">
         {draft.testSets.map((set) => (
           <KeywordRow
             key={set.testSetId}
@@ -115,41 +202,198 @@ export function KeywordPanel({
         ))}
       </dl>
 
-      {scan?.running && (
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs text-zinc-500">Reading test steps from Spira… {scan.done} / {scan.total} cases</span>
-          <ProgressBar value={scan.done} max={Math.max(scan.total, 1)} />
+      <AnimatePresence initial={false}>
+        {scan && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="flex flex-col gap-2 border-t border-slate-100 px-5 py-4 sm:px-6 dark:border-white/[0.06]">
+              <span className="flex items-center gap-2 text-sm text-slate-600 dark:text-zinc-400">
+                <Sparkles className="size-4 animate-pulse text-brand-500" aria-hidden />
+                {scan.ai ? `Gemini is reviewing the scenarios… ${scan.done} / ${scan.total}` : "Matching keywords against the scenarios…"}
+              </span>
+              <ProgressBar value={scan.ai ? scan.done : 1} max={Math.max(scan.ai ? scan.total : 1, 1)} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {aiError && !scan && (
+        <div className="border-t border-slate-100 px-5 py-4 sm:px-6 dark:border-white/[0.06]">
+          <Notice tone="warning" title="The AI review did not finish">
+            {aiError} Cases it did not answer use the keyword match; press Filter to try again.
+          </Notice>
         </div>
       )}
-      {scan?.moved !== null && scan?.moved !== undefined && !scan.running && (
-        <Notice tone={scan.moved ? "success" : "info"}>
-          {scan.moved
-            ? `Checked ${scan.total} cases. Moved ${scan.moved} In Scope case${scan.moved === 1 ? "" : "s"} to Blocked; Undo puts them back.`
-            : `Checked ${scan.total} cases. No In Scope case mentions these keywords; the table below shows where each keyword was found.`}
-        </Notice>
-      )}
-      {scan?.error && !scan.running && <Notice tone="warning" title="Some steps were not read">{scan.error}</Notice>}
-      {!scan?.running && pending > 0 && filteredAt && (
-        <Notice tone="warning">
-          {pending} In Scope case{pending === 1 ? "" : "s"} mention{pending === 1 ? "s" : ""} a keyword. Filter again to move {pending === 1 ? "it" : "them"} to Blocked.
-        </Notice>
+
+      {anyKeywords && filteredAt && !scan && (
+        <div className="border-t border-slate-100 dark:border-white/[0.06]">
+          <div className="flex flex-col gap-3 px-5 pt-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+            <div role="tablist" aria-label="Suggestions" className="inline-flex w-fit flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-white/[0.05]">
+              {(
+                [
+                  ["changes", "Suggested changes"],
+                  ["blocked", "Blocked"],
+                  ["notBlocked", "Not blocked"],
+                  ["all", "All matches"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === id}
+                  onClick={() => setView(id)}
+                  className={clsx(
+                    "relative cursor-pointer rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                    view === id ? "text-slate-900 dark:text-white" : "text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200",
+                  )}
+                >
+                  {view === id && <motion.span layoutId="kw-tab" className="absolute inset-0 rounded-lg bg-white shadow-soft dark:bg-white/[0.1]" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+                  <span className="relative">
+                    {label} <span className="tabular-nums opacity-60">{counts[id]}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 dark:text-zinc-500">
+              Last filtered {filteredAt.toLocaleString()}
+              {unanalysed > 0 && <> · {unanalysed} not analysed yet (keywords changed), press Filter</>}
+            </p>
+          </div>
+
+          <ul className="mt-3 flex max-h-[28rem] flex-col overflow-y-auto px-2 pb-2 sm:px-3">
+            {visible.map((p) => (
+              <ProposalRow key={p.card.key} proposal={p} changing={changeKeys.has(p.card.key)} checked={chosen.has(p.card.key)} onToggle={toggle} setName={draft.testSets.length > 1 ? draft.testSets.find((s) => s.testSetId === p.card.testSetId)?.testSetName ?? null : null} />
+            ))}
+            {visible.length === 0 && (
+              <li className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-slate-500 dark:text-zinc-500">
+                <UserCheck className="size-6 opacity-60" aria-hidden />
+                {view === "changes" ? "Nothing to change: every matching case is already where the review suggests." : "No cases in this view."}
+              </li>
+            )}
+          </ul>
+
+          {changes.length > 0 && (
+            <div className="sticky bottom-0 flex flex-col gap-3 border-t border-slate-100 bg-white/90 px-5 py-3.5 backdrop-blur sm:flex-row sm:items-center sm:px-6 dark:border-white/[0.06] dark:bg-zinc-900/90">
+              <p className="text-sm text-slate-600 dark:text-zinc-400">
+                <span className="font-semibold text-slate-900 tabular-nums dark:text-white">{chosen.size}</span> of {changes.length} suggested change{changes.length === 1 ? "" : "s"} selected
+                {lowConfidence > 0 && <span className="text-amber-700 dark:text-amber-400"> · {lowConfidence} low-confidence, left for you to decide</span>}
+              </p>
+              <div className="flex gap-2 sm:ml-auto">
+                <Button size="sm" variant="ghost" onClick={() => setSelected(chosen.size ? new Set() : new Set(changeKeys))}>
+                  {chosen.size ? "Clear" : "Select all"}
+                </Button>
+                <Button size="sm" variant="primary" icon={ArrowRight} onClick={apply} disabled={chosen.size === 0}>
+                  Apply {chosen.size || ""} change{chosen.size === 1 ? "" : "s"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <div className="border-t border-slate-100 dark:border-white/[0.06]">
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-center gap-2 px-5 py-3 text-left text-sm font-medium text-slate-600 transition hover:text-slate-900 sm:px-6 dark:text-zinc-400 dark:hover:text-white"
+              aria-expanded={showReport}
+              onClick={() => setShowReport((v) => !v)}
+            >
+              <BarChart3 className="size-4" aria-hidden />
+              Where each keyword appears
+              <ChevronDown className={clsx("ml-auto size-4 transition-transform", showReport && "rotate-180")} aria-hidden />
+            </button>
+            <AnimatePresence initial={false}>
+              {showReport && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                  <KeywordReport rows={report} draft={draft} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
       )}
 
-      {anyKeywords && filteredAt && !scan?.running && <KeywordReport rows={report} draft={draft} filteredAt={filteredAt} />}
-      {anyKeywords && !filteredAt && !scan?.running && <p className="text-xs text-zinc-500">Press Filter to check the cases against these keywords.</p>}
+      {anyKeywords && !filteredAt && !scan && (
+        <p className="border-t border-slate-100 px-5 py-4 text-sm text-slate-500 sm:px-6 dark:border-white/[0.06] dark:text-zinc-500">
+          Press <strong className="font-medium text-slate-700 dark:text-zinc-300">Filter</strong> to find the cases these keywords affect.
+        </p>
+      )}
     </section>
   );
 }
 
-function KeywordReport({ rows, draft, filteredAt }: { rows: KeywordReportRow[]; draft: Draft; filteredAt: Date }) {
+function ProposalRow({
+  proposal: p,
+  changing,
+  checked,
+  onToggle,
+  setName,
+}: {
+  proposal: BlockedProposal;
+  changing: boolean;
+  checked: boolean;
+  onToggle: (key: string) => void;
+  setName: string | null;
+}) {
+  const from = COLUMN_STYLE[p.current];
+  const to = COLUMN_STYLE[p.proposed];
+  const reason = p.kind === "noKeyword" ? "Blocked, but its test scenario mentions none of the keywords." : p.assessment?.reason ?? "Not analysed for its current keywords yet.";
+  return (
+    <li>
+      <label
+        className={clsx(
+          "flex gap-3 rounded-xl px-3 py-3 transition",
+          changing ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.03]" : "opacity-80",
+          checked && "bg-brand-50/60 hover:bg-brand-50 dark:bg-brand-500/[0.07] dark:hover:bg-brand-500/10",
+        )}
+      >
+        <input
+          type="checkbox"
+          className="mt-0.5 size-4 shrink-0 cursor-pointer accent-brand-600 disabled:cursor-default disabled:opacity-30"
+          checked={checked}
+          disabled={!changing}
+          onChange={() => onToggle(p.card.key)}
+          aria-label={`Move ${p.card.name} to ${COLUMN_LABELS[p.proposed]}`}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <span className="min-w-0 text-sm leading-snug font-medium text-slate-800 dark:text-zinc-100">{p.card.name}</span>
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium">
+              <span className={clsx("rounded-full px-2 py-0.5 ring-1 ring-inset", from.chip)}>{COLUMN_LABELS[p.current]}</span>
+              {changing && (
+                <>
+                  <ArrowRight className="size-3 text-slate-400" aria-hidden />
+                  <span className={clsx("rounded-full px-2 py-0.5 ring-1 ring-inset", to.chip)}>{COLUMN_LABELS[p.proposed]}</span>
+                </>
+              )}
+            </span>
+          </span>
+          <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-zinc-500">
+            <span className="font-mono">TC{p.card.testCaseId}</span>
+            {setName && <span>· {setName}</span>}
+            {p.keywords.map((k) => (
+              <span key={k} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700 dark:bg-white/[0.06] dark:text-zinc-300">
+                <Tag className="size-3" aria-hidden />
+                {k}
+              </span>
+            ))}
+            {p.assessment && <AssessmentBadge assessment={p.assessment} />}
+            {p.assessment?.confidence === "low" && <Badge tone="warning">Your call</Badge>}
+          </span>
+          <span className="mt-1.5 block text-xs leading-relaxed text-slate-600 dark:text-zinc-400">{reason}</span>
+        </span>
+      </label>
+    </li>
+  );
+}
+
+function KeywordReport({ rows, draft }: { rows: KeywordReportRow[]; draft: Draft }) {
   const setName = (id: number) => draft.testSets.find((s) => s.testSetId === id)?.testSetName ?? `TX${id}`;
   const multipleSets = new Set(rows.map((r) => r.testSetId)).size > 1;
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+    <div className="px-5 pb-5 sm:px-6">
+      <div className="overflow-x-auto rounded-xl border border-slate-200/80 dark:border-white/[0.06]">
         <table className="w-full text-sm">
-          <caption className="sr-only">Where each keyword was found</caption>
-          <thead className="bg-zinc-50 text-left text-xs text-zinc-500 dark:bg-zinc-900">
+          <caption className="sr-only">Where each keyword appears in test scenarios</caption>
+          <thead className="bg-slate-50 text-left text-xs text-slate-500 dark:bg-white/[0.03] dark:text-zinc-400">
             <tr>
               <th className="px-3 py-2 font-medium">Keyword</th>
               {REPORT_COLUMNS.map((c) => (
@@ -159,68 +403,27 @@ function KeywordReport({ rows, draft, filteredAt }: { rows: KeywordReportRow[]; 
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {rows.map((row) => (
-              <KeywordReportLine key={`${row.testSetId}:${row.keyword}`} row={row} setLabel={multipleSets ? setName(row.testSetId) : null} />
+              <tr key={`${row.testSetId}:${row.keyword}`}>
+                <td className="px-3 py-2 font-medium">
+                  {row.keyword}
+                  {multipleSets && <span className="ml-2 text-xs font-normal text-slate-500">{setName(row.testSetId)}</span>}
+                </td>
+                {REPORT_COLUMNS.map((c) => (
+                  <td key={c} className="px-3 py-2 text-right tabular-nums">
+                    {row.byColumn[c].length || <span className="text-slate-300 dark:text-zinc-600">0</span>}
+                  </td>
+                ))}
+              </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-zinc-500">
-        Steps last read from Spira {filteredAt.toLocaleString()}. Keywords match whole words and their plural, ignoring case, so “nin” matches “NIN” and “NINs” but not
-        “running”. Select a keyword to see its cases.
+      <p className="mt-2 text-xs text-slate-500 dark:text-zinc-500">
+        Counts cases whose test scenario mentions the keyword as a whole word or its plural, ignoring case. A keyword found only in Out of Scope means the workbook left those cases out.
       </p>
     </div>
-  );
-}
-
-function KeywordReportLine({ row, setLabel }: { row: KeywordReportRow; setLabel: string | null }) {
-  const [open, setOpen] = useState(false);
-  const total = REPORT_COLUMNS.reduce((n, c) => n + row.byColumn[c].length, 0);
-  return (
-    <>
-      <tr>
-        <td className="px-3 py-2">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 font-medium hover:underline disabled:no-underline"
-            onClick={() => setOpen((o) => !o)}
-            aria-expanded={open}
-            disabled={total === 0}
-          >
-            <span aria-hidden className="w-3 text-zinc-400">{total ? (open ? "▾" : "▸") : ""}</span>
-            {row.keyword}
-          </button>
-          {setLabel && <span className="ml-2 text-xs text-zinc-500">{setLabel}</span>}
-          {total === 0 && <span className="ml-2 text-xs text-zinc-500">not found in any case</span>}
-        </td>
-        {REPORT_COLUMNS.map((c) => (
-          <td key={c} className="px-3 py-2 text-right tabular-nums">
-            {row.byColumn[c].length || <span className="text-zinc-400">0</span>}
-          </td>
-        ))}
-      </tr>
-      {open && (
-        <tr>
-          <td colSpan={REPORT_COLUMNS.length + 1} className="bg-zinc-50/60 px-3 py-2 dark:bg-zinc-900/40">
-            <div className="flex flex-col gap-2">
-              {REPORT_COLUMNS.filter((c) => row.byColumn[c].length > 0).map((c) => (
-                <div key={c}>
-                  <div className="text-xs font-medium text-zinc-500">{COLUMN_LABELS[c]}</div>
-                  <ul className="mt-0.5 flex flex-col gap-0.5 text-xs">
-                    {row.byColumn[c].map((card) => (
-                      <li key={card.key}>
-                        <span className="font-mono text-zinc-500">TC{card.testCaseId}</span> {card.name}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
   );
 }
 
@@ -242,28 +445,37 @@ function KeywordRow({
     setText("");
   };
   return (
-    <div className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
-      <dt className="text-sm sm:w-56 sm:shrink-0">
+    <div className="flex flex-col gap-2.5 px-5 py-3.5 sm:flex-row sm:items-center sm:px-6">
+      <dt className="text-sm sm:w-52 sm:shrink-0">
         <span className="font-medium">{label}</span>
-        {sublabel && <span className="block text-xs text-zinc-500">{sublabel}</span>}
+        {sublabel && <span className="block text-xs text-slate-500 dark:text-zinc-500">{sublabel}</span>}
       </dt>
-      <dd className="flex flex-1 flex-wrap items-center gap-1.5">
-        {keywords.map((k) => (
-          <span key={k} className="inline-flex items-center gap-1 rounded-full bg-orange-50 py-0.5 pr-1 pl-2.5 text-xs font-medium text-orange-800 dark:bg-orange-900/30 dark:text-orange-200">
-            {k}
-            <button
-              type="button"
-              className="grid size-4 place-items-center rounded-full hover:bg-orange-200 dark:hover:bg-orange-800"
-              aria-label={`Remove keyword ${k} from ${label}`}
-              onClick={() => onChange(keywords.filter((x) => x !== k))}
+      <dd className="flex min-h-10 flex-1 flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2 py-1.5 transition focus-within:border-brand-500 focus-within:ring-4 focus-within:ring-brand-500/15 dark:border-white/10 dark:bg-zinc-950/60">
+        <AnimatePresence initial={false}>
+          {keywords.map((k) => (
+            <motion.span
+              key={k}
+              layout
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.85 }}
+              className="inline-flex items-center gap-1 rounded-lg bg-orange-50 py-1 pr-1 pl-2 text-xs font-medium text-orange-800 ring-1 ring-orange-200/70 ring-inset dark:bg-orange-500/10 dark:text-orange-200 dark:ring-orange-400/20"
             >
-              ×
-            </button>
-          </span>
-        ))}
+              {k}
+              <button
+                type="button"
+                className="grid size-4 cursor-pointer place-items-center rounded hover:bg-orange-200/70 dark:hover:bg-orange-400/20"
+                aria-label={`Remove keyword ${k} from ${label}`}
+                onClick={() => onChange(keywords.filter((x) => x !== k))}
+              >
+                <X className="size-3" aria-hidden />
+              </button>
+            </motion.span>
+          ))}
+        </AnimatePresence>
         <input
-          className="input h-7 w-48 py-0 text-xs"
-          placeholder={keywords.length ? "Add more" : "e.g. nin, bvn, google"}
+          className="h-7 min-w-32 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-slate-400 dark:placeholder:text-zinc-500"
+          placeholder={keywords.length ? "Add more…" : "Type a feature, e.g. nin, bvn, google — press Enter"}
           aria-label={`Add keywords for ${label}`}
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -271,6 +483,8 @@ function KeywordRow({
             if (e.key === "Enter" || e.key === ",") {
               e.preventDefault();
               add();
+            } else if (e.key === "Backspace" && !text && keywords.length) {
+              onChange(keywords.slice(0, -1));
             }
           }}
           onBlur={add}

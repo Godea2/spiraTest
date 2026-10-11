@@ -1,15 +1,47 @@
 "use client";
 
+import clsx from "clsx";
+import { ArrowRight, Copy, FolderOpen, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeader, Spinner } from "@/components/ui";
+import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeader } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/client/drafts";
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
-import type { DraftSummary } from "@/lib/domain/types";
+import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
 
 type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
+
+const SCOPE_COLOR: Record<(typeof COLUMNS)[number], string> = {
+  inScope: "bg-emerald-500",
+  blocked: "bg-orange-500",
+  outOfScope: "bg-slate-400 dark:bg-zinc-500",
+  needsReview: "bg-amber-400",
+};
+
+function ScopeBar({ counts }: { counts: DraftSummary["counts"] }) {
+  const total = COLUMNS.reduce((n, c) => n + counts[c], 0);
+  return (
+    <div>
+      <div className="flex h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/[0.06]" aria-hidden>
+        {total > 0 && COLUMNS.map((c) => counts[c] > 0 && <span key={c} className={SCOPE_COLOR[c]} style={{ width: `${(counts[c] / total) * 100}%` }} />)}
+      </div>
+      <dl className="mt-3 grid grid-cols-4 gap-2 text-xs">
+        {COLUMNS.map((c) => (
+          <div key={c} className="min-w-0">
+            <dt className="flex items-center gap-1.5 truncate text-slate-500 dark:text-zinc-400">
+              <span className={clsx("size-1.5 shrink-0 rounded-full", SCOPE_COLOR[c])} />
+              {COLUMN_LABELS[c]}
+            </dt>
+            <dd className={clsx("mt-0.5 text-sm font-semibold tabular-nums", c === "needsReview" && counts[c] > 0 && "text-amber-600 dark:text-amber-400")}>{counts[c]}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
 
 export function DraftList() {
   const router = useRouter();
@@ -81,59 +113,70 @@ export function DraftList() {
       <PageHeader
         title="Drafts"
         description="Every comparison is saved as a draft in this browser, so you can reopen, review and apply it later."
-        actions={<ButtonLink href="/" variant="primary">New comparison</ButtonLink>}
+        actions={<ButtonLink href="/" variant="primary" icon={Plus}>New comparison</ButtonLink>}
       />
       {error && <Notice tone="danger">{error}</Notice>}
 
       {drafts === null && !error ? (
-        <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Loading drafts…</div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2].map((i) => <div key={i} className="skeleton h-44 rounded-2xl" />)}
+        </div>
       ) : drafts && drafts.length === 0 ? (
-        <EmptyState title="No drafts yet" action={<ButtonLink href="/" variant="primary">Start a comparison</ButtonLink>}>
+        <EmptyState icon={FolderOpen} title="No drafts yet" action={<ButtonLink href="/" variant="primary" icon={Plus}>Start a comparison</ButtonLink>}>
           Upload the scope workbook to compare a module with its Spira test sets.
         </EmptyState>
       ) : (
         <>
-          <input
-            type="search"
-            className="input max-w-sm"
-            placeholder="Search drafts"
-            aria-label="Search drafts"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <ul className="surface divide-y divide-zinc-100 dark:divide-zinc-800">
-            {visible.map((d) => (
-              <li key={d.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:gap-6">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link href={`/drafts/${d.id}`} className="truncate font-medium hover:underline">
-                      {d.name}
-                    </Link>
+          <div className="relative max-w-sm">
+            <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
+            <input
+              type="search"
+              className="input pl-9"
+              placeholder="Search drafts by name or module"
+              aria-label="Search drafts"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <AnimatePresence initial={false}>
+              {visible.map((d, i) => (
+                <motion.li
+                  key={d.id}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0, transition: { delay: Math.min(i, 8) * 0.03 } }}
+                  exit={{ opacity: 0, scale: 0.97 }}
+                  className="surface group flex flex-col gap-4 p-5 transition-shadow hover:shadow-lift"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <Link href={`/drafts/${d.id}`} className="block truncate font-semibold tracking-tight hover:text-brand-600 dark:hover:text-brand-300">
+                        {d.name}
+                      </Link>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
+                        {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} · updated {relativeTime(d.updatedAt)}
+                      </p>
+                    </div>
                     <Badge tone={STATUS_TONE[d.status]}>{STATUS_LABEL[d.status]}</Badge>
-                    {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}                  </div>
-                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    {d.module} · {d.testSetIds.length} test set{d.testSetIds.length === 1 ? "" : "s"} · updated {relativeTime(d.updatedAt)}
-                  </p>
-                </div>
-                <dl className="flex gap-5 text-xs tabular-nums">
-                  <div><dt className="text-zinc-500">In</dt><dd className="font-semibold">{d.counts.inScope}</dd></div>
-                  <div><dt className="text-zinc-500">Blocked</dt><dd className="font-semibold">{d.counts.blocked}</dd></div>
-                  <div><dt className="text-zinc-500">Out</dt><dd className="font-semibold">{d.counts.outOfScope}</dd></div>
-                  <div>
-                    <dt className="text-zinc-500">Review</dt>
-                    <dd className={d.counts.needsReview ? "font-semibold text-amber-600 dark:text-amber-400" : "font-semibold"}>{d.counts.needsReview}</dd>
                   </div>
-                </dl>
-                <div className="flex flex-wrap gap-1.5">
-                  <ButtonLink href={`/drafts/${d.id}`} size="sm" variant="secondary">Open</ButtonLink>
-                  <Button size="sm" variant="ghost" onClick={() => { setName(d.name); setPending({ kind: "rename", draft: d }); }} disabled={busy === d.id}>Rename</Button>
-                  <Button size="sm" variant="ghost" onClick={() => duplicate(d)} busy={busy === d.id}>Duplicate</Button>
-                  <Button size="sm" variant="ghostDanger" onClick={() => setPending({ kind: "delete", draft: d })} disabled={busy === d.id}>Delete</Button>
-                </div>
-              </li>
-            ))}
-            {visible.length === 0 && <li className="p-4 text-sm text-zinc-500">No drafts match “{query}”.</li>}
+
+                  <ScopeBar counts={d.counts} />
+
+                  <div className="mt-auto flex items-center gap-1.5">
+                    {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}
+                    <div className="ml-auto flex gap-1 opacity-100 transition-opacity sm:opacity-60 sm:group-hover:opacity-100">
+                      <Button size="sm" variant="ghost" icon={Pencil} aria-label={`Rename ${d.name}`} title="Rename" onClick={() => { setName(d.name); setPending({ kind: "rename", draft: d }); }} disabled={busy === d.id} />
+                      <Button size="sm" variant="ghost" icon={Copy} aria-label={`Duplicate ${d.name}`} title="Duplicate" onClick={() => duplicate(d)} busy={busy === d.id} />
+                      <Button size="sm" variant="ghostDanger" icon={Trash2} aria-label={`Delete ${d.name}`} title="Delete" onClick={() => setPending({ kind: "delete", draft: d })} disabled={busy === d.id} />
+                    </div>
+                    <ButtonLink href={`/drafts/${d.id}`} size="sm" variant="secondary" icon={ArrowRight}>Open</ButtonLink>
+                  </div>
+                </motion.li>
+              ))}
+            </AnimatePresence>
           </ul>
+          {visible.length === 0 && <p className="text-sm text-slate-500">No drafts match “{query}”.</p>}
         </>
       )}
 

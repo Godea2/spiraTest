@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { api, errorMessage } from "@/lib/client/api";
 import { purgeMockData } from "@/lib/client/drafts";
 import { loadSettings } from "@/lib/client/settings-store";
-import type { AppSettings, SpiraStatus } from "@/lib/domain/types";
+import type { AiStatus, AppSettings, SpiraStatus } from "@/lib/domain/types";
 
 interface SettingsState {
   /** Saved in this browser. */
@@ -12,6 +12,8 @@ interface SettingsState {
   /** Spira connection as configured on the server (host and username only). */
   spira: SpiraStatus | null;
   spiraError: string | null;
+  /** Gemini AI review as configured on the server (model only). */
+  ai: AiStatus | null;
   replace: (settings: AppSettings) => void;
   reloadSpira: () => Promise<void>;
 }
@@ -22,6 +24,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [spira, setSpira] = useState<SpiraStatus | null>(null);
   const [spiraError, setSpiraError] = useState<string | null>(null);
+  const [ai, setAi] = useState<AiStatus | null>(null);
 
   const reloadSpira = useCallback(async () => {
     try {
@@ -43,13 +46,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       (loaded) => active && setSpira(loaded),
       (err) => active && setSpiraError(errorMessage(err)),
     );
+    api<AiStatus>("/api/ai").then(
+      (loaded) => active && setAi(loaded),
+      () => active && setAi({ configured: false, model: "" }),
+    );
     return () => {
       active = false;
     };
   }, []);
 
   return (
-    <SettingsContext.Provider value={{ settings, spira, spiraError, replace: setSettings, reloadSpira }}>
+    <SettingsContext.Provider value={{ settings, spira, spiraError, ai, replace: setSettings, reloadSpira }}>
       {children}
     </SettingsContext.Provider>
   );

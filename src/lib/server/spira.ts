@@ -1,6 +1,5 @@
 import "server-only";
 import { z } from "zod";
-import { MAX_STEP_TEXT, plainText } from "@/lib/domain/keywords";
 import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary } from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
@@ -217,25 +216,11 @@ const testCaseSchema = z.array(
     TestCaseId: id,
     TestSetTestCaseId: id.nullish(),
     Name: z.string().nullish(),
-    Description: z.string().nullish(),
     ExecutionStatusId: z.number().int().nullish(),
     ExecutionStatusName: z.string().nullish(),
     CustomProperties: z.array(customPropertySchema).nullish(),
   }),
 );
-
-const testStepSchema = z.array(
-  z.object({
-    Description: z.string().nullish(),
-    ExpectedResult: z.string().nullish(),
-    SampleData: z.string().nullish(),
-    Precondition: z.string().nullish(),
-    LinkedTestCaseId: z.number().int().nullish(),
-  }),
-);
-
-/** How deep linked test cases are followed when reading steps; Spira allows links inside links. */
-const LINKED_STEP_DEPTH = 3;
 
 const recordedRunSchema = z.object({ TestRunId: id });
 const automatedRunSchema = z.object({
@@ -286,7 +271,6 @@ export interface SpiraSetCase {
   executed: boolean;
   /** Text values of the test case's custom properties, searched for TC IDs. */
   customText: string[];
-  description: string;
 }
 
 /** Spira's execution status IDs. */
@@ -318,7 +302,6 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
   return [...membership].map(([testSetTestCaseId, testCaseId]) => {
     const details = byMembership.get(testSetTestCaseId) ?? byTestCase.get(testCaseId);
     const statusId = details?.ExecutionStatusId ?? null;
-    const customText = (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean);
     return {
       testSetTestCaseId,
       testCaseId,
@@ -326,31 +309,9 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
       executionStatus: details?.ExecutionStatusName ?? (statusId ? EXECUTION_STATUS_NAMES[statusId] : null) ?? "Not Run",
       executionStatusId: statusId,
       executed: statusId !== null && EXECUTED_STATUS_IDS.has(statusId),
-      customText,
-      description: [plainText(details?.Description), ...customText.map(plainText)].filter(Boolean).join("\n").slice(0, MAX_STEP_TEXT),
+      customText: (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean),
     };
   });
-}
-
-/**
- * Plain text of a test case's steps: description, expected result, sample data and precondition,
- * plus the steps of any test case a step links to. Read-only.
- */
-export async function getTestStepText(projectId: number, testCaseId: number): Promise<string> {
-  const parts: string[] = [];
-  const visited = new Set<number>();
-  async function read(id: number, depth: number): Promise<void> {
-    if (visited.has(id)) return;
-    visited.add(id);
-    const what = `reading the steps of test case ${id}`;
-    const steps = parse(testStepSchema, await call("GET", `projects/${projectId}/test-cases/${id}/test-steps`, what), what);
-    for (const s of steps) {
-      parts.push(...[s.Precondition, s.Description, s.ExpectedResult, s.SampleData].map(plainText).filter(Boolean));
-      if (s.LinkedTestCaseId && s.LinkedTestCaseId > 0 && depth < LINKED_STEP_DEPTH) await read(s.LinkedTestCaseId, depth + 1);
-    }
-  }
-  await read(testCaseId, 0);
-  return parts.join("\n").slice(0, MAX_STEP_TEXT);
 }
 
 /** Name the app records as the runner, and checks before deleting a run on undo. */

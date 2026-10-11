@@ -22,7 +22,6 @@ import {
   getMembership,
   getTestSet,
   getTestSetCases,
-  getTestStepText,
   recordTestRun,
   removeFromTestSet,
   RUNNER_NAME,
@@ -202,24 +201,6 @@ export async function verifyApply(input: {
   return { verification: { at: new Date().toISOString(), ok: sets.length > 0 && sets.every((s) => s.ok), sets } };
 }
 
-/** Plain text of each test case's steps, for keyword matching. Read-only. */
-export async function readStepText(input: {
-  projectId: number;
-  testCaseIds: number[];
-}): Promise<{ steps: Record<string, string>; failed: Record<string, string> }> {
-  const steps: Record<string, string> = {};
-  const failed: Record<string, string> = {};
-  await inPool([...new Set(input.testCaseIds)], REMOVE_CONCURRENCY, async (testCaseId) => {
-    try {
-      steps[String(testCaseId)] = await getTestStepText(input.projectId, testCaseId);
-    } catch (error) {
-      if (!(error instanceof SpiraError)) throw error;
-      failed[String(testCaseId)] = error.message;
-    }
-  });
-  return { steps, failed };
-}
-
 export interface SignOffBatchInput extends ApplyBatchInput {
   status: SignOffStatus;
 }
@@ -293,7 +274,7 @@ export async function signOffBatch(input: {
         message: blocked ? `Blocked: feature not implemented${note ? ` (${note})` : ""}` : "Passed: signed off with the approved scope",
         details: [
           `Recorded by ${RUNNER_NAME} when the scope for module ${ctx.module} was approved (draft "${input.draftName}").`,
-          note ? `Matched not-implemented keywords: ${note}.` : null,
+          note ? `Not-implemented features in the test scenario: ${note}` : null,
           "No test steps were executed by this tool.",
         ]
           .filter(Boolean)

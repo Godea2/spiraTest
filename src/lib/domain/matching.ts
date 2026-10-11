@@ -1,5 +1,5 @@
 import { cardKey } from "./board";
-import { MAX_STEP_TEXT } from "./keywords";
+import { MAX_SCENARIO_TEXT } from "./keywords";
 import type { Card, Column, MissingRow, WorkbookRow } from "./types";
 
 const normalizeHeader = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
@@ -13,8 +13,6 @@ export interface SetCase {
   executed: boolean;
   /** Custom property text values; a TC ID stored there counts as a match. */
   customText: string[];
-  /** Plain-text description, kept on the card for keyword matching. */
-  description?: string;
 }
 
 export interface ReconcileOutput {
@@ -124,11 +122,7 @@ export function reconcileTestSet(testSetId: number, rows: WorkbookRow[], cases: 
     const matched = byId.length ? byId : byName;
     matched.forEach((r) => matchedRows.add(r));
 
-    const workbookText = matched
-      .flatMap((r) => Object.values(r.row.values))
-      .filter((v) => v !== null && v !== undefined && String(v).trim())
-      .join("\n")
-      .slice(0, MAX_STEP_TEXT);
+    const workbookScenario = [...new Set(matched.map((r) => r.scenario).filter(Boolean))].join("\n").slice(0, MAX_SCENARIO_TEXT);
     let outcome: { suggestion: Column; reason: string; tcId: string | null };
     if (matched.length > 0) {
       outcome = decide(matched, byId.length ? "TC ID" : "test scenario");
@@ -160,8 +154,7 @@ export function reconcileTestSet(testSetId: number, rows: WorkbookRow[], cases: 
       executed: c.executed,
       suggestion: outcome.suggestion,
       reason: outcome.reason,
-      ...(c.description ? { description: c.description } : {}),
-      ...(workbookText ? { workbookText } : {}),
+      ...(workbookScenario ? { workbookScenario } : {}),
     };
   });
 

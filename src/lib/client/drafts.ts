@@ -73,7 +73,7 @@ export function createDraft(input: NewDraft): Draft {
     history: [],
     apply: emptyApplyState(),
     testSetKeywords: {},
-    stepText: {},
+    blockedReview: {},
   };
   writeItem(keyFor(draft.id), draft);
   logActivity({

@@ -1,5 +1,6 @@
 "use client";
 
+import { Boxes, CloudDownload, FolderKanban, PlugZap, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
@@ -250,9 +251,12 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         actions={settings.updatedAt && <span className="text-xs text-zinc-500">Last saved {formatDateTime(settings.updatedAt)}</span>}
       />
 
-      <SpiraConnection connection={connection} onRetest={retest} />
+      <div className="grid gap-6 xl:grid-cols-2">
+        <SpiraConnection connection={connection} onRetest={retest} />
+        <AiReviewStatus />
+      </div>
 
-      <Section title="Spira project" description="Used for every new comparison. Existing drafts keep the values they were created with.">
+      <Section icon={FolderKanban} title="Spira project" description="Used for every new comparison. Existing drafts keep the values they were created with.">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
           <Field
             label="Project"
@@ -341,6 +345,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       </Section>
 
       <Section
+        icon={Boxes}
         title="Modules and test sets"
         description="Optional. Compare already finds a module's test sets in Spira by name (for example Onboarding-Android and Onboarding-IOS for Onboarding). Map them here only to pin a different set, or set an Excel alias if the workbook spells a module differently."
         actions={
@@ -348,13 +353,14 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             <Button
               size="sm"
               variant="primary"
+              icon={CloudDownload}
               onClick={() => setPickerOpen(true)}
               disabled={!spira?.configured || !positiveInt(form.projectId)}
               title={!positiveInt(form.projectId) ? "Choose a project first." : undefined}
             >
               Load test sets from Spira
             </Button>
-            <Button size="sm" onClick={() => setNewModule("")}>Add module</Button>
+            <Button size="sm" icon={Plus} onClick={() => setNewModule("")}>Add module</Button>
           </div>
         }
       >
@@ -683,11 +689,12 @@ function SpiraConnection({ connection, onRetest }: { connection: Connection; onR
 
   return (
     <Section
+      icon={PlugZap}
       title="Spira connection"
       description="The server calls Spira with credentials set in its environment. The browser never contacts Spira and never sees the API key."
       actions={
         spira?.configured && (
-          <Button size="sm" onClick={onRetest} busy={connection.status === "loading"}>Test connection</Button>
+          <Button size="sm" icon={RefreshCw} onClick={onRetest} busy={connection.status === "loading"}>Test connection</Button>
         )
       }
     >
@@ -726,6 +733,43 @@ function SpiraConnection({ connection, onRetest }: { connection: Connection; onR
             </Notice>
           )}
           {connection.status === "error" && <Notice tone="danger" title="Spira sign-in failed">{connection.error}</Notice>}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function AiReviewStatus() {
+  const { ai } = useSettings();
+  return (
+    <Section
+      icon={Sparkles}
+      title="AI review of blocked cases"
+      description="When you filter a board by not-implemented keywords, Gemini reads each matching test scenario and says whether the case really depends on the missing feature. You review every suggestion before anything moves."
+    >
+      {!ai ? (
+        <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading…</div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <dl className="grid gap-3 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-xs text-slate-500">Status</dt>
+              <dd className="mt-1">{ai.configured ? <Badge tone="success">Configured</Badge> : <Badge tone="warning">Not set</Badge>}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Model</dt>
+              <dd className="mt-0.5 font-mono">{ai.model || "Not set"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Sent to Google</dt>
+              <dd className="mt-0.5">Test case names, workbook scenarios and keywords only</dd>
+            </div>
+          </dl>
+          {!ai.configured && (
+            <Notice tone="info" title="Using keyword matching only">
+              Set GEMINI_API_KEY (and optionally GEMINI_MODEL) in the server environment, then redeploy. Until then, a keyword in the test scenario counts as Blocked.
+            </Notice>
+          )}
         </div>
       )}
     </Section>
