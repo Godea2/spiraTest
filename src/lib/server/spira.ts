@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES } from "@/lib/domain/execution";
 import { richText } from "@/lib/domain/text";
 import type { SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
 
@@ -17,17 +18,6 @@ const TIMEOUT_MS = 30_000;
 const READ_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-/** Spira execution statuses that mean a run was recorded (Failed, Passed, Blocked, Caution). */
-const EXECUTED_STATUS_IDS = new Set([1, 2, 5, 6]);
-const EXECUTION_STATUS_NAMES: Record<number, string> = {
-  1: "Failed",
-  2: "Passed",
-  3: "Not Run",
-  4: "N/A",
-  5: "Blocked",
-  6: "Caution",
-};
 
 export class SpiraError extends Error {
   constructor(
@@ -282,8 +272,7 @@ export interface SpiraSetCase {
   customText: string[];
 }
 
-/** Spira's execution status IDs. */
-export const EXECUTION_STATUS = { failed: 1, passed: 2, notRun: 3, notApplicable: 4, blocked: 5, caution: 6 } as const;
+export { EXECUTION_STATUS };
 
 export async function getTestSet(projectId: number, testSetId: number): Promise<SpiraTestSet> {
   const what = `reading test set ${testSetId}`;

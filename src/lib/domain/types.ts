@@ -12,6 +12,14 @@ export const COLUMN_LABELS: Record<Column, string> = {
 export const SIGN_OFF_STATUSES = ["blocked", "passed"] as const;
 export type SignOffStatus = (typeof SIGN_OFF_STATUSES)[number];
 
+/** Results a tester can record for a whole test case. */
+export const EXECUTION_STATUSES = ["passed", "failed", "blocked", "caution"] as const;
+export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
+
+/** Results for one step; a step that does not apply can be marked N/A. */
+export const STEP_STATUSES = ["passed", "failed", "blocked", "caution", "notApplicable"] as const;
+export type StepStatus = (typeof STEP_STATUSES)[number];
+
 export const PLATFORMS = ["Android", "iOS", "Web", "Other"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
@@ -191,6 +199,77 @@ export interface Draft {
   blockedReview?: Record<string, BlockedAssessment>;
   /** When Filter last ran. */
   keywordsFilteredAt?: string | null;
+  /** Test execution of the In Scope cases, once the draft is completed. Missing until it starts. */
+  execution?: DraftExecution;
+}
+
+/** A step as executed: its text from Spira and what the tester found. Labels are "3", or "3.2" inside a linked test case. */
+export interface ExecutedStep {
+  label: string;
+  description: string;
+  expectedResult: string;
+  status: StepStatus | null;
+  actualResult: string;
+}
+
+/** Marks a tester has made on a case but not sent to Spira yet. */
+export interface ExecutionProgress {
+  steps: Record<string, { status: StepStatus | null; actualResult: string }>;
+  /** Result chosen for a case without steps. */
+  status: ExecutionStatus | null;
+  comment: string;
+}
+
+/** A test run this app recorded during execution; kept so it can be undone. */
+export interface ExecutionRun {
+  testSetId: number;
+  testCaseId: number;
+  testSetTestCaseId: number;
+  status: ExecutionStatus;
+  testRunId: number;
+  at: string;
+  tester: string;
+  comment: string;
+}
+
+/** Execution status of one membership as last read from Spira. */
+export interface SpiraExecutionState {
+  statusId: number | null;
+  status: string;
+}
+
+export interface DraftExecution {
+  runs: ExecutionRun[];
+  /** Keyed by card key. */
+  progress: Record<string, ExecutionProgress>;
+  /** Keyed by card key. */
+  spira: Record<string, SpiraExecutionState>;
+  checkedAt: string | null;
+}
+
+export interface ExecutionCaseInput {
+  testCaseId: number;
+  testSetTestCaseId: number;
+  status: ExecutionStatus;
+  comment: string;
+  steps: ExecutedStep[];
+}
+
+export interface ExecutionResult {
+  testSetId: number;
+  testCaseId: number;
+  testSetTestCaseId: number;
+  status: ExecutionStatus;
+  result: "recorded" | "skipped" | "failed";
+  testRunId: number | null;
+  message: string | null;
+}
+
+/** Current execution status of each membership in a test set, read from Spira. */
+export interface TestSetExecutionStatus {
+  testSetId: number;
+  cases: Array<{ testSetTestCaseId: number; testCaseId: number; statusId: number | null; status: string }>;
+  error?: string;
 }
 
 export interface ColumnCounts {
@@ -210,6 +289,8 @@ export interface DraftSummary {
   updatedAt: string;
   /** When Spira was last verified to match the board; null until the draft is completed. */
   completedAt: string | null;
+  /** In Scope cases with a result in Spira, as last read; null until execution starts. */
+  execution?: { executed: number; total: number } | null;
   testSetIds: number[];
   comparedTestSetIds: number[];
   complete: boolean;

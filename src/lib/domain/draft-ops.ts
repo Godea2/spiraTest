@@ -1,12 +1,17 @@
-import { allCards, normalizeDecisions, preserveDecisions, removalActions } from "./board";
+import { allCards, cardKey, normalizeDecisions, preserveDecisions, removalActions } from "./board";
 import type { ApplyBatchInput } from "./apply-rules";
+import { emptyExecution, EXECUTION_STATUS, STATUS_LABEL } from "./execution";
 import type {
   ApplyActionResult,
   BlockedAssessment,
   Column,
   Draft,
   DraftApplyState,
+  ExecutionProgress,
+  ExecutionResult,
+  ExecutionRun,
   HistoryEntry,
+  TestSetExecutionStatus,
   PreflightResult,
   SignOffAction,
   SignOffResult,
@@ -155,6 +160,66 @@ export function recordBlockedReview(draft: Draft, assessments: Record<string, Bl
 export function recordVerification(draft: Draft, verification: VerificationResult): void {
   draft.apply.verification = verification;
   draft.status = verification.ok ? "applied" : "appliedWithErrors";
+}
+
+/** Keeps the latest execution status read from Spira for every membership on the board. */
+export function recordExecutionStatus(draft: Draft, sets: TestSetExecutionStatus[], at: string): void {
+  const execution = draft.execution ?? emptyExecution();
+  for (const set of sets) {
+    if (set.error) continue;
+    for (const c of set.cases) {
+      execution.spira[cardKey(set.testSetId, c.testSetTestCaseId)] = { statusId: c.statusId, status: c.status };
+    }
+  }
+  execution.checkedAt = at;
+  draft.execution = execution;
+}
+
+/** Saves, or with null clears, the marks a tester made on a case that is not sent yet. */
+export function saveExecutionProgress(draft: Draft, key: string, progress: ExecutionProgress | null): void {
+  const execution = draft.execution ?? emptyExecution();
+  if (progress) execution.progress[key] = progress;
+  else delete execution.progress[key];
+  draft.execution = execution;
+}
+
+/**
+ * Keeps each recorded run (for undo), takes its result as the case's status in Spira and clears the
+ * case's unsent marks. Failed and skipped cases keep their marks so they can be sent again.
+ */
+export function recordExecutionResults(
+  draft: Draft,
+  results: ExecutionResult[],
+  sent: Array<Pick<ExecutionRun, "testSetTestCaseId" | "comment">>,
+  tester: string,
+  now = new Date(),
+): void {
+  const execution = draft.execution ?? emptyExecution();
+  const at = now.toISOString();
+  for (const r of results) {
+    if (r.result !== "recorded" || r.testRunId === null) continue;
+    const key = cardKey(r.testSetId, r.testSetTestCaseId);
+    execution.runs.push({
+      testSetId: r.testSetId,
+      testCaseId: r.testCaseId,
+      testSetTestCaseId: r.testSetTestCaseId,
+      status: r.status,
+      testRunId: r.testRunId,
+      at,
+      tester,
+      comment: sent.find((s) => s.testSetTestCaseId === r.testSetTestCaseId)?.comment ?? "",
+    });
+    execution.spira[key] = { statusId: EXECUTION_STATUS[r.status], status: STATUS_LABEL[r.status] };
+    delete execution.progress[key];
+  }
+  draft.execution = execution;
+}
+
+/** Forgets runs deleted from Spira. Their cases' statuses are read again afterwards. */
+export function recordExecutionUndo(draft: Draft, deletedRunIds: number[]): void {
+  if (!draft.execution) return;
+  const deleted = new Set(deletedRunIds);
+  draft.execution.runs = draft.execution.runs.filter((run) => !deleted.has(run.testRunId));
 }
 
 export function sortedEntries<T>(record: Record<string, T>): Array<[string, T]> {

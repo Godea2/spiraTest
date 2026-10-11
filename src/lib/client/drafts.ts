@@ -1,5 +1,6 @@
 import { summarizeDraft } from "@/lib/domain/board";
 import { emptyApplyState } from "@/lib/domain/draft-ops";
+import { executionCards, executionCounts } from "@/lib/domain/execution";
 import type { Draft, DraftSummary } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { keysWithPrefix, readItem, removeItem, writeItem } from "./storage";
@@ -34,7 +35,11 @@ export function listDrafts(): DraftSummary[] {
   return keysWithPrefix(PREFIX)
     .map((key) => readItem<Draft>(key))
     .filter((draft): draft is Draft => draft !== null)
-    .map(summarizeDraft)
+    .map((draft) => {
+      if (!draft.execution) return summarizeDraft(draft);
+      const counts = executionCounts(executionCards(draft), draft.execution);
+      return { ...summarizeDraft(draft), execution: { executed: counts.total - counts.notRun, total: counts.total } };
+    })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -121,6 +126,7 @@ export function duplicateDraft(id: string): Draft {
     createdAt: now,
     updatedAt: now,
     apply: emptyApplyState(),
+    execution: undefined,
   };
   writeItem(keyFor(copy.id), copy);
   logActivity({ type: "draft.duplicated", message: `Duplicated "${source.name}".`, draftId: copy.id, module: copy.module });

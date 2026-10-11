@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -54,7 +54,7 @@ const BUCKET_TEXT: Record<Bucket, { title: string; description: string; search: 
   },
   completed: {
     title: "Completed",
-    description: "Drafts whose test sets have been cleaned up in Spira: the live apply was verified and Spira matches the reviewed board.",
+    description: "Drafts whose test sets have been cleaned up in Spira: the live apply was verified and Spira matches the reviewed board. Run the In Scope cases from here.",
     search: "Search completed by name or module",
   },
 };
@@ -201,6 +201,20 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
                   </div>
 
                   <ScopeBar counts={d.counts} />
+
+                  {bucket === "completed" && (
+                    <div className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-white/[0.03]">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-slate-500 dark:text-zinc-400">Execution</p>
+                        <p className="text-sm font-semibold tabular-nums">
+                          {d.execution ? `${d.execution.executed} / ${d.execution.total} executed` : `${d.counts.inScope} In Scope to run`}
+                        </p>
+                      </div>
+                      <ButtonLink href={`/drafts/${d.id}/execute`} size="sm" variant="primary" icon={Play}>
+                        {d.execution?.executed ? "Continue" : "Run execution"}
+                      </ButtonLink>
+                    </div>
+                  )}
 
                   <div className="mt-auto flex items-center gap-1.5">
                     {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}

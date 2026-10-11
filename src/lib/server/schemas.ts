@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
-import { COLUMNS, PLATFORMS, SIGN_OFF_STATUSES } from "@/lib/domain/types";
+import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
 
 const id = z.number().int().positive();
 const column = z.enum(COLUMNS);
@@ -156,6 +156,42 @@ export const verifyRequestSchema = z.object({
   context: contextSchema,
   testSets,
   decisions,
+});
+
+export const executionStatusRequestSchema = z.object({
+  projectId: id,
+  testSetIds: z.array(id).min(1).max(50),
+});
+
+const executedStepSchema = z.object({
+  label: z.string().max(20),
+  description: z.string().max(4_000),
+  expectedResult: z.string().max(4_000),
+  status: z.enum(STEP_STATUSES).nullable(),
+  actualResult: z.string().max(4_000),
+});
+
+export const executionRecordRequestSchema = z.object({
+  context: contextSchema,
+  testSets,
+  decisions,
+  draftName: z.string().trim().max(200),
+  tester: z.string().trim().max(100),
+  batch: z.object({
+    testSetId: id,
+    cases: z
+      .array(
+        z.object({
+          testCaseId: id,
+          testSetTestCaseId: id,
+          status: z.enum(EXECUTION_STATUSES),
+          comment: z.string().max(4_000),
+          steps: z.array(executedStepSchema).max(300),
+        }),
+      )
+      .min(1)
+      .max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} results per batch.`),
+  }),
 });
 
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });

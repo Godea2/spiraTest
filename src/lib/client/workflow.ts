@@ -37,7 +37,7 @@ export interface SignOffBatchInput extends ApplyBatchInput {
   status: SignOffStatus;
 }
 
-const contextOf = (draft: Draft): WorkflowContext => ({
+export const contextOf = (draft: Draft): WorkflowContext => ({
   projectId: draft.projectId,
   releaseId: draft.releaseId,
   module: draft.module,

@@ -1,16 +1,20 @@
 import "server-only";
-import { SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
-import { allCards, diffMembership, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
+import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBatchInput } from "@/lib/domain/apply-rules";
+import { allCards, diffMembership, effectiveColumn, intendedMembership, normalizeDecisions } from "@/lib/domain/board";
+import { invalidResult, runReport } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
 import type {
   ApplyAction,
   ApplyActionResult,
   Column,
+  ExecutionCaseInput,
+  ExecutionResult,
   Platform,
   PreflightResult,
   SignOffResult,
   SignOffStatus,
   TestSetComparison,
+  TestSetExecutionStatus,
   VerificationResult,
   WorkbookRow,
   WorkflowContext,
@@ -305,6 +309,99 @@ export async function signOffBatch(input: {
     } catch (error) {
       if (!(error instanceof SpiraError)) throw error;
       return result(action, "failed", error.message);
+    }
+  });
+  return { results };
+}
+
+/** Read-only: the current execution status of every membership in the given test sets. */
+export async function readExecutionStatus(input: { projectId: number; testSetIds: number[] }): Promise<{ sets: TestSetExecutionStatus[] }> {
+  const sets = await inPool(input.testSetIds, 3, async (testSetId): Promise<TestSetExecutionStatus> => {
+    try {
+      const cases = await getTestSetCases(input.projectId, testSetId);
+      return {
+        testSetId,
+        cases: cases.map((c) => ({ testSetTestCaseId: c.testSetTestCaseId, testCaseId: c.testCaseId, statusId: c.executionStatusId, status: c.executionStatus })),
+      };
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return { testSetId, cases: [], error: error.message };
+    }
+  });
+  return { sets };
+}
+
+/**
+ * Records a test run for each executed case, with the tester's step results in the run's details.
+ * Only In Scope cases of a verified board can be recorded, and the test set is re-read first so a
+ * case is only recorded while it is still in the set and still the same test case. A case can be
+ * executed again: Spira keeps every run and shows the latest result.
+ */
+export async function recordExecutions(input: {
+  context: WorkflowContext;
+  testSets: TestSetComparison[];
+  decisions: Record<string, Column>;
+  draftName: string;
+  tester: string;
+  batch: { testSetId: number; cases: ExecutionCaseInput[] };
+}): Promise<{ results: ExecutionResult[] }> {
+  const ctx = input.context;
+  const { batch } = input;
+  const { sets, decisions } = verifiedBoard(ctx, input.testSets, input.decisions);
+  const set = sets.find((s) => s.testSetId === batch.testSetId);
+  if (!set) throw new ApplyValidationError(`Test set ${batch.testSetId} is not part of this draft.`);
+  const seen = new Set<number>();
+  for (const c of batch.cases) {
+    if (seen.has(c.testSetTestCaseId)) throw new ApplyValidationError(`Membership ${c.testSetTestCaseId} appears twice in this batch.`);
+    seen.add(c.testSetTestCaseId);
+    const card = set.cards.find((k) => k.testSetTestCaseId === c.testSetTestCaseId);
+    if (!card || card.testCaseId !== c.testCaseId) throw new ApplyValidationError(`TC${c.testCaseId} is not on this board.`);
+    if (effectiveColumn(card, decisions) !== "inScope") throw new ApplyValidationError(`TC${c.testCaseId} is not In Scope, so it is not executed here.`);
+    const invalid = invalidResult(c.status, c.comment, c.steps);
+    if (invalid) throw new ApplyValidationError(`TC${c.testCaseId}: ${invalid}`);
+  }
+
+  const result = (c: ExecutionCaseInput, outcome: ExecutionResult["result"], message: string | null = null, testRunId: number | null = null): ExecutionResult => ({
+    testSetId: batch.testSetId,
+    testCaseId: c.testCaseId,
+    testSetTestCaseId: c.testSetTestCaseId,
+    status: c.status,
+    result: outcome,
+    testRunId,
+    message,
+  });
+
+  let cases: Map<number, SpiraSetCase>;
+  let releaseId: number | null;
+  try {
+    const [spiraSet, list] = await Promise.all([getTestSet(ctx.projectId, batch.testSetId), getTestSetCases(ctx.projectId, batch.testSetId)]);
+    cases = new Map(list.map((c) => [c.testSetTestCaseId, c]));
+    releaseId = ctx.releaseId ?? spiraSet.releaseId;
+  } catch (error) {
+    if (!(error instanceof SpiraError)) throw error;
+    return { results: batch.cases.map((c) => result(c, "failed", error.message)) };
+  }
+
+  const results = await inPool(batch.cases, WRITE_CONCURRENCY, async (c): Promise<ExecutionResult> => {
+    const current = cases.get(c.testSetTestCaseId);
+    if (!current) return result(c, "skipped", "No longer in this test set in Spira.");
+    if (current.testCaseId !== c.testCaseId) return result(c, "failed", `This membership now points at test case ${current.testCaseId}. Recompare first.`);
+    const report = runReport({ runner: RUNNER_NAME, tester: input.tester, module: ctx.module, draftName: input.draftName, status: c.status, comment: c.comment, steps: c.steps });
+    try {
+      const testRunId = await recordTestRun(ctx.projectId, {
+        testCaseId: c.testCaseId,
+        testSetId: batch.testSetId,
+        testSetTestCaseId: c.testSetTestCaseId,
+        releaseId,
+        executionStatusId: EXECUTION_STATUS[c.status],
+        testName: current.name,
+        message: report.message,
+        details: report.details,
+      });
+      return result(c, "recorded", null, testRunId);
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return result(c, "failed", error.message);
     }
   });
   return { results };

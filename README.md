@@ -38,12 +38,25 @@ Use a dedicated Spira service account with access to the project and permission 
 | Verify | `GET …/test-case-mapping` |
 | Record results | `GET …/test-sets/{t}` and `…/test-cases` (current status), then `POST projects/{p}/test-runs/record` per Blocked or Passed case |
 | Undo sign-off | `GET projects/{p}/test-runs/{id}/automated` (checks the runner name and test case), then `DELETE projects/{p}/test-runs/{id}` |
+| Execution status | `GET …/test-case-mapping` and `…/test-cases` per test set; read only |
+| Record execution | `GET …/test-sets/{t}` and `…/test-cases`, then `POST projects/{p}/test-runs/record` per executed case |
+| Undo an execution result | Same as Undo sign-off, for one run |
 
 Live apply removes a test case from a test set; the test case itself is never deleted. Before each batch the server re-reads the test set and only removes memberships that still point at the reviewed test case. Reads are retried on temporary errors; removals and recorded results are never retried automatically, so a failed case is retried only when you choose to.
 
 Opening **Review & apply** reads each test set's membership from Spira (read only, also on **Check Spira again** and before every run). Out of Scope cases that are already gone from Spira, for example removed by an earlier run that reported an error, are counted as removed, so the remove figure only counts what is still in Spira. Any other difference (cases added in Spira, or In Scope and Blocked cases removed outside the app) is listed and blocks live apply until the board is recompared.
 
 Once a live apply is verified (Spira matches the reviewed board), the draft moves from **Drafts** to **Completed**. A draft applied with errors stays under Drafts until a retry succeeds. Completed drafts can still be opened, and their board and review work as before.
+
+### Test execution
+
+From **Completed**, **Run execution** lists the draft's In Scope cases with their latest result, read from Spira when the page opens (and on **Check Spira again**), so results recorded by others show up too. Filter by result, search, and see how many are executed.
+
+- **Run** opens a case step by step: its steps come from Spira (steps of linked test cases are listed in place), and each step is marked Passed, Failed, Blocked, Caution or N/A, with the actual result for anything that did not pass. Keys P, F, B, C and N mark the current step; Ctrl+Enter saves and opens the next case. The case result follows from the steps: the first Failed, Blocked or Caution step decides it, so a tester can stop at a failure. Marks are kept in the draft until saved.
+- **Pass** records a Passed result for the whole case in one click, with an Undo in the notification. Select several cases to mark them Passed together, after a confirmation.
+- A result that is not Passed needs the actual result on that step, or a comment.
+
+Saving records an automated test run in Spira against the draft's release (or the test set's release), with the tester's name, the result and a step-by-step report in the run's details. The server only records In Scope cases of a verified board, and re-reads the test set first, so a case that left the test set or changed is not recorded. A case can be executed again; Spira keeps every run and shows the latest. Runs recorded here are listed on the case and can be undone, which deletes only runs this app recorded.
 
 ### Blocked cases and sign-off
 

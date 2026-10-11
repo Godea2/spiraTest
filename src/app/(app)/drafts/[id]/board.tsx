@@ -25,6 +25,7 @@ import {
   Layers,
   MinusCircle,
   Pencil,
+  Play,
   Redo2,
   RefreshCw,
   RotateCcw,
@@ -531,7 +532,14 @@ export function Board({ id }: { id: string }) {
               confirmLabel: "Recompare",
               run: () => void runRecompare(draft.testSetIds),
             })} disabled={!!recompare?.running}>Recompare</Button>
-            <Button size="sm" variant="primary" icon={ClipboardCheck} onClick={goToReview} disabled={!complete}>Review &amp; apply</Button>
+            {isCompleted(draft.status) ? (
+              <>
+                <Button size="sm" icon={ClipboardCheck} onClick={goToReview} disabled={!complete}>Review</Button>
+                <ButtonLink href={`/drafts/${id}/execute`} size="sm" variant="primary" icon={Play}>Run execution</ButtonLink>
+              </>
+            ) : (
+              <Button size="sm" variant="primary" icon={ClipboardCheck} onClick={goToReview} disabled={!complete}>Review &amp; apply</Button>
+            )}
           </>
         }
       />

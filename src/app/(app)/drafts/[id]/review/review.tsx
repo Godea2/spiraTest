@@ -503,9 +503,9 @@ export function Review({ id }: { id: string }) {
               <Notice
                 tone="success"
                 title="Nothing left to apply"
-                action={isCompleted(draft.status) ? <ButtonLink href="/completed" size="sm">Go to Completed</ButtonLink> : undefined}
-              >
-                Spira already matches this board.
+              action={isCompleted(draft.status) ? <ButtonLink href={`/drafts/${draft.id}/execute`} size="sm">Run execution</ButtonLink> : undefined}
+            >
+              Spira already matches this board.
                 {passCount > 0 && " To record Passed results for the In Scope cases, tick the option above."}
               </Notice>
             ) : liveBlockers.length > 0 ? (
