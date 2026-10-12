@@ -174,10 +174,24 @@ Settings, drafts (with their boards and executions), defects, the activity log a
 
 How it works:
 
-- One table, `public.app_store` (created by [`supabase/schema.sql`](supabase/schema.sql)), holds one row per saved item, keyed as the browser keeps it (`settings`, `draft:<id>`, `activity`, `report-options:<project>`, …).
-- Only the server talks to Supabase, through its REST API with the secret key; the browser goes through `/api/store`, which needs the team password like every other page. Row level security is on with no policies, so Supabase's public keys can read nothing.
+- [`supabase/schema.sql`](supabase/schema.sql) creates one table per kind of data. Each row keeps the full record as the app saved it in `data`, plus columns worth querying:
+
+  | Table | One row per | Columns include |
+  | --- | --- | --- |
+  | `settings` | the team (one row) | project, Phase 1 release, total test plan release |
+  | `module_mappings` | module pinned to a test set | module, test set, platform, Excel alias |
+  | `drafts` | module comparison | module, stage (review or completed), status, test sets, platforms, In Scope / Defects / Blocked / Out of Scope / Needs Review counts, cases missing from Spira, executed of total, completed, created and updated times; deleted drafts are kept with `deleted_at` |
+  | `test_runs` | test run the app recorded in Spira | TR id, test set, test case, result, tester, comment, time, and whether it came from the execute page or sign-off |
+  | `defects` | defect logged as a Spira incident | IN id, title, tester, logged time, linked steps, cases, test case created for it; removed defects are kept with `deleted_at` |
+  | `defect_cases` | case failed for a defect | test set, test case, run, step, column it moved from |
+  | `activity_log` | action in the app, from every browser | time, type, message, module, details; never trimmed |
+  | `report_setups`, `report_history` | project / scope | report type, title, prepared by, go-live; daily figures for "change since the last report" |
+  | `app_store` | other small choice | |
+  | `sync_keys` | saved item | when it last changed, so browsers load only what changed |
+
+- Saving goes through one database function, `store_write`, so a batch is saved completely or not at all; `store_read` puts each item back together. Only the server talks to Supabase, through its REST API with the secret key; the browser goes through `/api/store`, which needs the team password like every other page. Row level security is on with no policies, and the tables and functions are closed to Supabase's public keys, so they can read nothing.
 - The browser keeps a copy in `localStorage`, so pages stay instant. Opening the app (or coming back to the tab after 30 seconds) loads what changed elsewhere; each change is saved to Supabase within a second. Changes that could not be saved (offline, Supabase down) stay queued in the browser and are saved when it answers; the sidebar's **Shared storage** row and **Settings → Shared storage** show the state.
-- The newest save of an item wins. The activity log is merged, so entries from different browsers are all kept. A deleted item keeps a marker row, so an older copy in another browser cannot bring it back.
+- The newest save of an item wins. Activity entries are added to the log, so entries from different browsers are all kept (the app shows the latest 1,000). A deleted item is marked deleted, so an older copy in another browser cannot bring it back.
 - The first time a browser opens the app with Supabase set up, what it saved before is uploaded, so existing drafts are kept. The tester name and the "create new cases automatically" choice stay per device.
 
 Setting it up: in Supabase, open **SQL Editor → New query**, paste [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. Then add `SUPABASE_URL` (Project Settings → Data API) and `SUPABASE_SERVICE_ROLE_KEY` (Project Settings → API Keys, the secret key) to Vercel and redeploy. Open the app once in the browser that holds your current drafts, so they are uploaded.

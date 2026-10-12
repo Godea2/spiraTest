@@ -48,22 +48,21 @@ describe("Supabase store on the server", () => {
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
   });
 
-  it("upserts with the secret key in apikey only, newest write wins", async () => {
-    const written = await writeItems([{ key: "settings", value: { a: 1 } }, { key: "draft:x1234567", value: null }], new Date("2026-10-12T10:00:00Z"));
+  it("saves through one database call, with the secret key in apikey only", async () => {
+    const written = await writeItems([{ key: "settings", value: { a: 1 } }, { key: "draft:x1234567", value: null }, { key: "activity", value: [] }], new Date("2026-10-12T10:00:00Z"));
     expect(written).toEqual([
       { key: "settings", updatedAt: "2026-10-12T10:00:00.000Z", merged: false },
       { key: "draft:x1234567", updatedAt: "2026-10-12T10:00:00.000Z", merged: false },
+      { key: "activity", updatedAt: "2026-10-12T10:00:00.000Z", merged: true },
     ]);
-    const [call] = calls;
-    expect(call.url).toBe("https://example.supabase.co/rest/v1/app_store?on_conflict=key");
-    const headers = call.init.headers as Record<string, string>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://example.supabase.co/rest/v1/rpc/store_write");
+    const headers = calls[0].init.headers as Record<string, string>;
     expect(headers.apikey).toBe("sb_secret_test");
     expect(headers.Authorization).toBeUndefined();
-    expect(headers.Prefer).toContain("merge-duplicates");
-    expect(JSON.parse(call.init.body as string)).toEqual([
-      { key: "settings", value: { a: 1 }, deleted: false, size: 7, updated_at: "2026-10-12T10:00:00.000Z" },
-      { key: "draft:x1234567", value: null, deleted: true, size: 0, updated_at: "2026-10-12T10:00:00.000Z" },
-    ]);
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.written_at).toBe("2026-10-12T10:00:00.000Z");
+    expect(body.items.map((i: { kind: string; deleted: boolean }) => [i.kind, i.deleted])).toEqual([["settings", false], ["draft", true], ["activity", false]]);
   });
 
   it("sends a legacy service_role JWT as a bearer token too", async () => {
@@ -72,22 +71,15 @@ describe("Supabase store on the server", () => {
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer eyJhbGciOi.test");
   });
 
-  it("merges the activity log with what is stored", async () => {
-    respond = (url, init) =>
-      init.method === "POST" ? new Response(null, { status: 201 }) : Response.json([{ key: "activity", value: [entry("old", "2026-10-01")], updated_at: "2026-10-01T00:00:00+00:00", deleted: false }]);
-    const [written] = await writeItems([{ key: "activity", value: [entry("new", "2026-10-02")] }]);
-    expect(written.merged).toBe(true);
-    expect(JSON.parse(calls[1].init.body as string)[0].value.map((e: { id: string }) => e.id)).toEqual(["new", "old"]);
-  });
-
   it("lists keys with times in one format and reads values by key", async () => {
     respond = (url) =>
-      url.includes("select=key,value")
+      url.includes("store_read")
         ? Response.json([{ key: "settings", value: { a: 1 }, updated_at: "2026-10-12T10:00:00.123+00:00", deleted: false }])
         : Response.json([{ key: "settings", updated_at: "2026-10-12T10:00:00.123+00:00", deleted: false, size: 7 }]);
     expect(await listEntries()).toEqual([{ key: "settings", updatedAt: "2026-10-12T10:00:00.123Z", deleted: false, size: 7 }]);
     expect(await readItems(["settings", "draft:a1234567"])).toEqual([{ key: "settings", value: { a: 1 }, updatedAt: "2026-10-12T10:00:00.123Z", deleted: false }]);
-    expect(decodeURIComponent(calls[1].url)).toContain('key=in.("settings","draft:a1234567")');
+    expect(calls[0].url).toContain("/rest/v1/sync_keys?");
+    expect(JSON.parse(calls[1].init.body as string)).toEqual({ keys: ["settings", "draft:a1234567"] });
   });
 
   it("explains a missing table or a refused key, without the key", async () => {

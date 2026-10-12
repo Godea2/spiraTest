@@ -1,13 +1,13 @@
 import "server-only";
-import { ACTIVITY_KEY, mergeActivity, type StoreEntry, type StoreItem, type StoreWritten } from "@/lib/domain/store-sync";
+import type { StoreEntry, StoreItem, StoreWritten } from "@/lib/domain/store-sync";
+import { toPayload } from "./store-rows";
 
 /**
- * Shared storage in Supabase (table public.app_store, see supabase/schema.sql), reached through its REST API
+ * Shared storage in Supabase (tables and functions in supabase/schema.sql), reached through its REST API
  * with the secret key. Only the server holds the key; the browser goes through /api/store behind sign-in.
  */
 
 export const STORE_ENV = { url: "SUPABASE_URL", key: "SUPABASE_SERVICE_ROLE_KEY", altKey: "SUPABASE_SECRET_KEY" } as const;
-const TABLE = "app_store";
 const PAGE = 1_000;
 const TIMEOUT_MS = 20_000;
 
@@ -50,11 +50,11 @@ async function rest(path: string, init: { method?: string; body?: unknown; prefe
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    console.error(`Supabase ${init.method ?? "GET"} ${TABLE} failed with HTTP ${response.status}`, detail.slice(0, 500));
+    console.error(`Supabase ${init.method ?? "GET"} ${path.split("?")[0]} failed with HTTP ${response.status}`, detail.slice(0, 500));
     throw new StoreError(
       502,
       response.status === 404
-        ? "The app_store table was not found in Supabase. Run supabase/schema.sql in the SQL editor."
+        ? "The app's tables were not found in Supabase. Run supabase/schema.sql in the SQL editor."
         : response.status === 401 || response.status === 403
           ? "Supabase refused the key. Set SUPABASE_SERVICE_ROLE_KEY to the project's secret (service role) key."
           : `Supabase answered HTTP ${response.status}.`,
@@ -66,34 +66,29 @@ async function rest(path: string, init: { method?: string; body?: unknown; prefe
 type Row = { key: string; value?: unknown; updated_at: string; deleted: boolean; size?: number };
 
 const iso = (value: string) => new Date(value).toISOString();
-const inList = (keys: string[]) => encodeURIComponent(`(${keys.map((k) => `"${k}"`).join(",")})`);
 
-/** Every stored key with when it last changed; no values. */
+/** Every saved key with when it last changed; no values. */
 export async function listEntries(): Promise<StoreEntry[]> {
   const entries: StoreEntry[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    const rows = (await (await rest(`${TABLE}?select=key,updated_at,deleted,size&order=key&limit=${PAGE}&offset=${offset}`)).json()) as Row[];
+    const rows = (await (await rest(`sync_keys?select=key,updated_at,deleted,size&order=key&limit=${PAGE}&offset=${offset}`)).json()) as Row[];
     for (const r of rows) entries.push({ key: r.key, updatedAt: iso(r.updated_at), deleted: r.deleted, size: r.size ?? 0 });
     if (rows.length < PAGE) return entries;
   }
 }
 
+/** The saved value of each key, put back together from its tables. */
 export async function readItems(keys: string[]): Promise<StoreItem[]> {
   if (keys.length === 0) return [];
-  const rows = (await (await rest(`${TABLE}?select=key,value,updated_at,deleted&key=in.${inList(keys)}`)).json()) as Row[];
-  return rows.map((r) => ({ key: r.key, value: r.deleted ? null : r.value, updatedAt: iso(r.updated_at), deleted: r.deleted }));
+  const rows = (await (await rest("rpc/store_read", { method: "POST", body: { keys } })).json()) as Row[];
+  return rows.map((r) => ({ key: r.key, value: r.deleted ? null : (r.value ?? null), updatedAt: iso(r.updated_at), deleted: r.deleted }));
 }
 
-/** Saves items (null deletes), newest write wins; the activity log is merged with what is stored. */
+/** Saves items (null deletes) in one transaction; the newest save wins, and activity entries are added to the log. */
 export async function writeItems(items: Array<{ key: string; value: unknown }>, now = new Date()): Promise<StoreWritten[]> {
   if (items.length === 0) return [];
   const updatedAt = now.toISOString();
-  const activity = items.find((i) => i.key === ACTIVITY_KEY && i.value !== null);
-  const storedActivity = activity ? (await readItems([ACTIVITY_KEY]))[0] : undefined;
-  const rows = items.map(({ key, value }) => {
-    const merged = key === ACTIVITY_KEY && value !== null ? mergeActivity(storedActivity?.value, value) : value;
-    return { key, value: merged, deleted: merged === null, size: merged === null ? 0 : JSON.stringify(merged).length, updated_at: updatedAt };
-  });
-  await rest(`${TABLE}?on_conflict=key`, { method: "POST", body: rows, prefer: "resolution=merge-duplicates,return=minimal" });
-  return items.map(({ key, value }) => ({ key, updatedAt, merged: key === ACTIVITY_KEY && value !== null }));
+  const payload = items.map(({ key, value }) => toPayload(key, value, updatedAt));
+  await rest("rpc/store_write", { method: "POST", body: { items: payload, written_at: updatedAt }, prefer: "return=minimal" });
+  return payload.map((p) => ({ key: p.key, updatedAt, merged: p.kind === "activity" && !p.deleted }));
 }
