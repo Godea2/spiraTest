@@ -5,13 +5,11 @@ import { useEffect, useId, useRef } from "react";
 import { Button } from "@/components/ui";
 import type { Report } from "@/lib/domain/report";
 import { ReportDocument, type ReportChanges } from "./report-document";
+import { usePdfDownload } from "./use-pdf-download";
 
 const readAt = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
-/**
- * The generated report over the page. It prints on its own: everything behind it is hidden from print,
- * and the browser's "Save as PDF" names the file after the report.
- */
+/** The generated report over the page, with the PDF, share and Excel downloads. */
 export function ReportViewer({
   report,
   changes,
@@ -31,6 +29,8 @@ export function ReportViewer({
 }) {
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const pagesRef = useRef<HTMLDivElement>(null);
+  const pdf = usePdfDownload(pagesRef, fileName);
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -38,7 +38,7 @@ export function ReportViewer({
     document.body.style.overflow = "hidden";
     closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !document.querySelector("dialog[open]")) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -47,13 +47,6 @@ export function ReportViewer({
       previous?.focus();
     };
   }, [onClose]);
-
-  const downloadPdf = () => {
-    const title = document.title;
-    document.title = fileName;
-    window.addEventListener("afterprint", () => (document.title = title), { once: true });
-    window.print();
-  };
 
   return (
     <div
@@ -69,8 +62,8 @@ export function ReportViewer({
           </h2>
           <p className="text-xs text-slate-500 dark:text-zinc-400">Read from Spira {readAt(report.generatedAt)}</p>
         </div>
-        <Button size="sm" variant="primary" icon={Download} onClick={downloadPdf}>
-          Download PDF
+        <Button size="sm" variant="primary" icon={Download} busy={pdf.busy} onClick={pdf.download}>
+          {pdf.busy ? "Preparing PDF…" : "Download PDF"}
         </Button>
         <Button size="sm" icon={Link2} onClick={onShare}>
           Share link
@@ -83,7 +76,7 @@ export function ReportViewer({
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-6 sm:px-8 print:overflow-visible print:p-0">
-        <div className="mx-auto max-w-[1280px]">
+        <div ref={pagesRef} className="mx-auto max-w-[1280px]">
           <ReportDocument report={report} changes={changes} siteUrl={siteUrl} />
         </div>
       </div>

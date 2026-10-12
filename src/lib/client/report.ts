@@ -3,21 +3,17 @@ import {
   defaultReportOptions,
   formatPct,
   LEVELS,
-  MAX_LINKED_CASES,
-  MAX_REPORT_LINKS,
-  MAX_REPORT_SETS,
   MODULE_STATUS_LABEL,
   OUTCOME_LABEL,
   OUTCOMES,
   RETEST_LABEL,
-  setsInScope,
   snapshotOf,
   type Report,
   type ReportInput,
   type ReportOptions,
   type ReportSnapshot,
 } from "@/lib/domain/report";
-import { EXECUTION_STATUS } from "@/lib/domain/execution";
+import { collectReportData, type ReportProgress } from "@/lib/domain/report-read";
 import type { ReportCase, ReportCatalog, ReportIncident, TestSetMapping } from "@/lib/domain/types";
 import { api } from "./api";
 import { readItem, writeItem } from "./storage";
@@ -58,30 +54,11 @@ export function recordSnapshot(report: Report, options: ReportOptions): ReportSn
   return before;
 }
 
-export interface ReportProgress {
-  step: string;
-  done: number;
-  total: number;
-}
+export type { ReportProgress };
 
-async function inBatches<T>(items: T[], size: number, workers: number, run: (batch: T[]) => Promise<void>): Promise<void> {
-  const batches: T[][] = [];
-  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(workers, batches.length) }, async () => {
-      while (next < batches.length) await run(batches[next++]);
-    }),
-  );
-}
+const numericKeys = <T>(record: Record<string, T>): Record<number, T> => Object.fromEntries(Object.entries(record).map(([k, v]) => [Number(k), v]));
 
-const LINK_STATUSES = new Set<number>([EXECUTION_STATUS.failed, EXECUTION_STATUS.blocked, EXECUTION_STATUS.caution]);
-
-/**
- * Reads everything the report needs from Spira (through the server, read-only): the cases of every
- * test set in both scopes, the project's incidents, and the incidents linked to each failed, blocked
- * or caution case in this build.
- */
+/** Reads everything the report needs from Spira, through the server and read-only. */
 export async function readReportData(input: {
   catalog: ReportCatalog;
   options: ReportOptions;
@@ -89,63 +66,31 @@ export async function readReportData(input: {
   onProgress: (progress: ReportProgress) => void;
   signal?: AbortSignal;
 }): Promise<ReportInput> {
-  const { catalog, options, signal } = input;
+  const { catalog, signal } = input;
   const projectId = catalog.projectId;
-  const scopedSets = setsInScope(catalog, options.scoped);
-  const baselineSets = setsInScope(catalog, options.baseline);
-  const setIds = [...new Set([...scopedSets, ...baselineSets].map((s) => s.testSetId))];
-
-  const incidentsRead = api<{ incidents: ReportIncident[]; complete: boolean }>("/api/reports/incidents", { method: "POST", body: { projectId }, signal });
-  incidentsRead.catch(() => undefined);
-
-  const results: Record<number, ReportCase[]> = {};
-  input.onProgress({ step: "Reading test sets", done: 0, total: setIds.length });
-  await inBatches(setIds, MAX_REPORT_SETS, 3, async (batch) => {
-    const out = await api<{ results: Record<string, ReportCase[]> }>("/api/reports/results", { method: "POST", body: { projectId, testSetIds: batch }, signal });
-    for (const [id, cases] of Object.entries(out.results)) results[Number(id)] = cases;
-    input.onProgress({ step: "Reading test sets", done: Object.keys(results).length, total: setIds.length });
+  return collectReportData({
+    ...input,
+    reader: {
+      results: async (testSetIds) =>
+        numericKeys((await api<{ results: Record<string, ReportCase[]> }>("/api/reports/results", { method: "POST", body: { projectId, testSetIds }, signal })).results),
+      links: async (testCaseIds) => {
+        const out = await api<{ links: Record<string, number[]>; incidents: ReportIncident[] }>("/api/reports/links", { method: "POST", body: { projectId, testCaseIds }, signal });
+        return { links: numericKeys(out.links), incidents: out.incidents };
+      },
+      incidents: () => api<{ incidents: ReportIncident[]; complete: boolean }>("/api/reports/incidents", { method: "POST", body: { projectId }, signal }),
+    },
   });
+}
 
-  // Failed cases first, so the link check covers them before blocked and caution ones.
-  const failed = new Set<number>();
-  const others = new Set<number>();
-  for (const set of scopedSets) {
-    for (const c of results[set.testSetId] ?? []) {
-      if (c.statusId === EXECUTION_STATUS.failed) failed.add(c.testCaseId);
-      else if (c.statusId !== null && LINK_STATUSES.has(c.statusId)) others.add(c.testCaseId);
-    }
-  }
-  const toLink = [...failed, ...[...others].filter((id) => !failed.has(id))].slice(0, MAX_LINKED_CASES);
-
-  const links: Record<number, number[]> = {};
-  const linked = new Map<number, ReportIncident>();
-  input.onProgress({ step: "Checking defects linked to failures", done: 0, total: toLink.length });
-  await inBatches(toLink, MAX_REPORT_LINKS, 3, async (batch) => {
-    const out = await api<{ links: Record<string, number[]>; incidents: ReportIncident[] }>("/api/reports/links", {
-      method: "POST",
-      body: { projectId, testCaseIds: batch },
-      signal,
-    });
-    for (const [id, incidentIds] of Object.entries(out.links)) links[Number(id)] = incidentIds;
-    for (const incident of out.incidents) linked.set(incident.incidentId, incident);
-    input.onProgress({ step: "Checking defects linked to failures", done: Object.keys(links).length, total: toLink.length });
-  });
-
-  input.onProgress({ step: "Reading incidents", done: 0, total: 1 });
-  const { incidents, complete } = await incidentsRead;
-  const all = new Map(incidents.map((i) => [i.incidentId, i]));
-  for (const [id, incident] of linked) all.set(id, incident);
-
-  return {
-    catalog,
-    options,
-    mappings: input.mappings,
-    results,
-    incidents: [...all.values()],
-    incidentsComplete: complete,
-    links,
-    generatedAt: new Date().toISOString(),
-  };
+/** A public, read-only link to the report: it is read live from Spira by the server each time it is opened. */
+export async function createShareLink(input: {
+  projectId: number;
+  options: ReportOptions;
+  mappings: TestSetMapping[];
+  days: number;
+}): Promise<{ url: string; expiresAt: string }> {
+  const { path, expiresAt } = await api<{ path: string; expiresAt: string }>("/api/reports/share", { method: "POST", body: input });
+  return { url: `${window.location.origin}${path}`, expiresAt };
 }
 
 function safeFileName(name: string): string {

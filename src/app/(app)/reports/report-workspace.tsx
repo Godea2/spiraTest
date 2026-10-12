@@ -1,21 +1,20 @@
 "use client";
 
 import clsx from "clsx";
-import { ChevronDown, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Sparkles, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
-import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
+import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
 import {
   buildReport,
   compareSnapshots,
   decodeShare,
-  encodeShare,
   formatPct,
   initialReportOptions,
   previousSnapshot,
+  reportFileName,
   resolveReportOptions,
   sameScope,
   scopeName,
@@ -32,37 +31,27 @@ import {
 import type { ReportCatalog } from "@/lib/domain/types";
 import { type ReportChanges } from "./report-document";
 import { ReportViewer } from "./report-viewer";
+import { ShareDialog, type ShareRequest } from "./share-dialog";
 
 type CatalogState = { projectId: number; catalog: ReportCatalog | null; error: string | null };
 
 const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green: "success", amber: "warning", red: "danger" };
 
-const KINDS: { kind: ReportKind; icon: LucideIcon; title: (phase: string) => string; text: string }[] = [
-  {
-    kind: "build",
-    icon: Target,
-    title: (phase) => `${phase}: scoped test cases`,
-    text: "Progress of the cases in scope for this build: executions, pass rate, modules ready for UAT and defects.",
-  },
-  {
-    kind: "buildVsPlan",
-    icon: GitCompareArrows,
-    title: (phase) => `${phase}: scoped vs total test plan`,
-    text: "The same build measured against the full test plan, with what is left for later builds and the change since the last cycle.",
-  },
-  {
-    kind: "plan",
-    icon: Layers,
-    title: () => "Total test plan",
-    text: "Every case in the full plan across all modules and platforms, with the results recorded against it.",
-  },
+/** The build's name on the report and its choices. */
+const PHASE = "Phase 1";
+
+const KINDS: { kind: ReportKind; icon: LucideIcon; title: string }[] = [
+  { kind: "build", icon: Target, title: `${PHASE}: scoped test cases` },
+  { kind: "buildVsPlan", icon: GitCompareArrows, title: `${PHASE}: scoped vs total test plan` },
+  { kind: "plan", icon: Layers, title: "Total test plan" },
 ];
 
-function KindPicker({ value, phase, onChange }: { value: ReportKind; phase: string; onChange: (kind: ReportKind) => void }) {
+function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: ReportKind) => void }) {
   return (
-    <div role="radiogroup" aria-label="Report type" className="grid gap-3 md:grid-cols-3">
-      {KINDS.map(({ kind, icon: Icon, title, text }) => {
+    <div role="radiogroup" aria-label="Report" className="grid gap-3 md:grid-cols-3">
+      {KINDS.map(({ kind, icon: Icon, title }) => {
         const selected = value === kind;
+        const featured = kind === "buildVsPlan";
         return (
           <button
             key={kind}
@@ -71,49 +60,36 @@ function KindPicker({ value, phase, onChange }: { value: ReportKind; phase: stri
             aria-checked={selected}
             onClick={() => onChange(kind)}
             className={clsx(
-              "well flex cursor-pointer flex-col gap-2 p-4 text-left transition",
-              selected ? "ring-2 ring-brand-500 dark:ring-brand-400" : "hover:border-slate-300 dark:hover:border-white/20",
+              "relative flex min-h-28 cursor-pointer flex-col justify-between gap-4 rounded-xl p-4 text-left transition focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:outline-none dark:focus-visible:ring-offset-zinc-900",
+              featured
+                ? "bg-gradient-to-br from-brand-600 via-indigo-600 to-violet-600 text-white shadow-lg shadow-brand-600/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand-600/40"
+                : "well hover:border-slate-300 dark:hover:border-white/20",
+              selected && (featured ? "ring-4 ring-brand-300/70 dark:ring-brand-400/50" : "ring-2 ring-brand-500 dark:ring-brand-400"),
             )}
           >
-            <span className="flex items-start gap-2">
-              <Icon className={clsx("mt-0.5 size-4 shrink-0", selected ? "text-brand-600 dark:text-brand-400" : "text-slate-400")} aria-hidden />
-              <span className="flex-1 text-sm font-semibold">{title(phase)}</span>
-              {kind === "buildVsPlan" && <Badge tone="brand">Recommended</Badge>}
+            <span className="flex items-center justify-between gap-2">
+              <span
+                className={clsx(
+                  "grid size-9 place-items-center rounded-lg",
+                  featured ? "bg-white/20 ring-1 ring-white/30" : "bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10",
+                )}
+              >
+                <Icon className="size-[18px]" aria-hidden />
+              </span>
+              {featured && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide uppercase ring-1 ring-white/30">
+                  <Sparkles className="size-3" aria-hidden /> Recommended
+                </span>
+              )}
             </span>
-            <span className="text-xs leading-relaxed text-slate-600 dark:text-zinc-400">{text}</span>
+            <span className="flex items-end justify-between gap-2">
+              <span className="text-[15px] leading-snug font-semibold">{title}</span>
+              {selected && <CircleCheck className={clsx("size-5 shrink-0", featured ? "text-white" : "text-brand-600 dark:text-brand-400")} aria-hidden />}
+            </span>
           </button>
         );
       })}
     </div>
-  );
-}
-
-function ReleaseSelect({ label, catalog, releaseId, onChange }: { label: string; catalog: ReportCatalog; releaseId: number | null; onChange: (releaseId: number | null) => void }) {
-  const counts = useMemo(() => new Map(catalog.releases.map((r) => [r.releaseId, setsInScope(catalog, { releaseId: r.releaseId, folderId: null }).length])), [catalog]);
-  const scope = { releaseId, folderId: null };
-  const sets = setsInScope(catalog, scope);
-  const slots = sets.reduce((t, s) => t + Object.values(s.counts).reduce((a, b) => a + b, 0), 0);
-  const hint =
-    releaseId === null
-      ? "Choose a release."
-      : sets.length
-        ? `${scopeName(catalog, scope)} · ${sets.length.toLocaleString()} test set${sets.length === 1 ? "" : "s"} · ${slots.toLocaleString()} test case slots in Spira`
-        : "No test sets in Spira are planned for this release.";
-  return (
-    <Field label={label} hint={hint}>
-      {(props) => (
-        <select {...props} className="input" value={releaseId ?? ""} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
-          <option value="">Choose a release</option>
-          {catalog.releases.map((r) => (
-            <option key={r.releaseId} value={r.releaseId}>
-              {"\u00a0\u00a0".repeat(r.depth)}
-              {r.label}
-              {r.active ? "" : " (inactive)"} · {counts.get(r.releaseId) ?? 0} sets
-            </option>
-          ))}
-        </select>
-      )}
-    </Field>
   );
 }
 
@@ -171,14 +147,14 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const shared = useMemo(() => (share ? decodeShare(share) : null), [share]);
 
   const [catalogState, setCatalogState] = useState<CatalogState | null>(null);
-  const [stored, setStored] = useState<{ projectId: number; options: ReportOptions | null } | null>(null);
+  const [stored, setStored] = useState<{ projectId: number; options: ReportOptions | null; fromLink: boolean } | null>(null);
   const [reload, setReload] = useState(0);
   const [data, setData] = useState<{ input: ReportInput; changes: ReportChanges | null } | null>(null);
   const [progress, setProgress] = useState<ReportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -188,9 +164,11 @@ export function ReportWorkspace({ share }: { share: string | null }) {
       (catalog) => {
         if (cancelled) return;
         setCatalogState({ projectId, catalog, error: null });
-        setStored((current) =>
-          current?.projectId === projectId ? current : { projectId, options: shared?.projectId === projectId ? shared.options : loadReportOptions(projectId) },
-        );
+        setStored((current) => {
+          if (current?.projectId === projectId) return current;
+          const fromLink = shared?.projectId === projectId;
+          return { projectId, options: fromLink ? shared.options : loadReportOptions(projectId), fromLink };
+        });
       },
       (err) => !cancelled && setCatalogState({ projectId, catalog: null, error: errorMessage(err) }),
     );
@@ -204,15 +182,22 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const current = catalogState && catalogState.projectId === projectId ? catalogState : null;
   const catalog = current?.catalog ?? null;
   const settingsRelease = settings?.releaseId ?? null;
-  const options = useMemo(() => {
+  // The releases follow Settings (the working release, and the one before it as the total test plan);
+  // only the report and its header are chosen here.
+  const options = useMemo((): ReportOptions | null => {
     if (!catalog || stored?.projectId !== projectId) return null;
-    return stored.options ?? initialReportOptions(catalog.releases, settingsRelease);
+    const saved = stored.options;
+    if (stored.fromLink && saved) return saved;
+    const auto = { ...initialReportOptions(catalog.releases, settingsRelease), phase: PHASE };
+    if (!saved) return auto;
+    const { kind, title, environment, baselineName, preparedBy, goLive, defectNotes } = saved;
+    return { ...auto, kind, title, environment, baselineName, preparedBy, goLive, defectNotes };
   }, [catalog, stored, projectId, settingsRelease]);
 
   const update = (patch: Partial<ReportOptions>) => {
-    if (!options || projectId === null) return;
+    if (!options || projectId === null || !stored) return;
     const next = { ...options, ...patch };
-    setStored({ projectId, options: next });
+    setStored({ projectId, options: next, fromLink: stored.fromLink });
     try {
       saveReportOptions(projectId, next);
     } catch {
@@ -262,21 +247,29 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     }
   };
 
-  const shareLink = async () => {
-    if (!options || projectId === null) return;
-    const url = `${window.location.origin}/reports?share=${encodeShare(projectId, options)}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success("Link copied. Whoever opens it signs in first, then generates the same report live from Spira.");
-    } catch {
-      window.prompt("Copy this link to share the report", url);
-    }
-  };
+  // The link carries the report as it was read (its type), and the module mappings of its test sets.
+  const shareRequest = useMemo((): ShareRequest | null => {
+    if (!options || !catalog || projectId === null) return null;
+    const shared = { ...options, kind: data?.input.options.kind ?? options.kind };
+    const scopes = resolveReportOptions(shared);
+    const ids = new Set([...setsInScope(catalog, scopes.scoped), ...setsInScope(catalog, scopes.baseline)].map((s) => s.testSetId));
+    return { projectId, options: shared, mappings: (settings?.mappings ?? []).filter((m) => ids.has(m.testSetId)) };
+  }, [options, catalog, projectId, data, settings?.mappings]);
 
   const closeViewer = useCallback(() => setViewerOpen(false), []);
   const busy = progress !== null;
-  const phaseName = options?.phase.trim() || "Phase 1";
-  const fileName = report ? `${report.title} ${report.generatedAt.slice(0, 10)}`.replace(/[\\/:*?"<>|]+/g, "-") : "";
+  const fileName = report ? reportFileName(report) : "";
+  const releaseOf = (id: number | null) => catalog?.releases.find((r) => r.releaseId === id)?.versionNumber;
+  const setupProblem =
+    options && resolved
+      ? resolved.kind !== "plan" && options.scoped.releaseId === null
+        ? "Choose the working release in Settings; the report reads Phase 1 from it."
+        : resolved.kind !== "build" && options.baseline.releaseId === null
+          ? `No release before ${releaseOf(options.scoped.releaseId) ?? "the working release"} was found for the total test plan. Check the working release in Settings.`
+          : scopedSets === 0
+            ? `Release ${releaseOf(resolved.scoped.releaseId) ?? ""} has no test sets in Spira. Check the working release in Settings.`
+            : null
+      : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -288,7 +281,6 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             </>
           }
           title="Executive test report"
-          description="Read live from Spira every time. Choose the report, add the header details and generate. Nothing is written to Spira."
         />
 
         {share && !shared && (
@@ -331,14 +323,13 @@ export function ReportWorkspace({ share }: { share: string | null }) {
         {catalog && options && (
           <Section
             title="Report setup"
-            description={`${catalog.projectName}: ${catalog.releases.length} releases, ${catalog.testSets.length} test sets. Your choices are kept in this browser.`}
             actions={
               <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => setReload((n) => n + 1)} disabled={busy}>
                 Refresh lists
               </Button>
             }
           >
-            <KindPicker value={options.kind} phase={phaseName} onChange={(kind) => update({ kind })} />
+            <KindPicker value={options.kind} onChange={(kind) => update({ kind })} />
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <Field label="Report title" hint="Empty uses the project name.">
@@ -373,131 +364,16 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               </Field>
             </div>
 
-            <button
-              type="button"
-              aria-expanded={moreOpen}
-              onClick={() => setMoreOpen((o) => !o)}
-              className="mt-4 inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-white"
-            >
-              <ChevronDown className={clsx("size-4 transition-transform", moreOpen && "rotate-180")} aria-hidden />
-              More options: releases, names, exit targets, status, notes and appendix
-            </button>
-            {moreOpen && (
-              <div className="mt-3 flex flex-col gap-4 border-t border-slate-100 pt-4 dark:border-white/[0.06]">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <ReleaseSelect
-                    label={`${phaseName} release`}
-                    catalog={catalog}
-                    releaseId={options.scoped.releaseId}
-                    onChange={(releaseId) => update({ scoped: { releaseId, folderId: null } })}
-                  />
-                  <ReleaseSelect
-                    label="Total test plan release"
-                    catalog={catalog}
-                    releaseId={options.baseline.releaseId}
-                    onChange={(releaseId) => update({ baseline: { releaseId, folderId: null } })}
-                  />
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <Field label="Build name" hint={`Shown as "This build (Phase 1)", on the report choices and in the defect register.`}>
-                    {(props) => <input {...props} className="input" value={options.phase} placeholder="Phase 1" onChange={(e) => update({ phase: e.target.value })} />}
-                  </Field>
-                  {options.kind === "buildVsPlan" && (
-                    <Field label="Total plan cycle" hint="Used in the cycle comparison. Empty uses its test sets' folder.">
-                      {(props) => (
-                        <input
-                          {...props}
-                          className="input"
-                          value={options.baselineName}
-                          placeholder={resolved ? scopeName(catalog, resolved.baseline) : ""}
-                          onChange={(e) => update({ baselineName: e.target.value })}
-                        />
-                      )}
-                    </Field>
-                  )}
-                  <Field
-                    label="Executions"
-                    hint={report?.window.first ? `Empty reads the run dates: ${report.window.first.slice(0, 10)} to ${report.window.last?.slice(0, 10)}.` : "Empty reads the run dates from Spira."}
-                  >
-                    {(props) => <input {...props} className="input" value={options.windowText} placeholder="Fri 9 – Sun 11 Oct 2026" onChange={(e) => update({ windowText: e.target.value })} />}
-                  </Field>
-                  <Field label="Overall status" hint={report ? `From the exit criteria: ${report.autoStatus.toUpperCase()}` : "From the exit criteria unless you set it."}>
-                    {(props) => (
-                      <select {...props} className="input" value={options.status} onChange={(e) => update({ status: e.target.value as "auto" | RagStatus })}>
-                        <option value="auto">From the exit criteria</option>
-                        <option value="green">Green</option>
-                        <option value="amber">Amber</option>
-                        <option value="red">Red</option>
-                      </select>
-                    )}
-                  </Field>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <Field label="Exit target: executed (%)">
-                    {(props) => (
-                      <input
-                        {...props}
-                        type="number"
-                        min={1}
-                        max={100}
-                        className="input"
-                        value={options.targets.executedPct}
-                        onChange={(e) => update({ targets: { ...options.targets, executedPct: Math.min(100, Math.max(1, Number(e.target.value) || 100)) } })}
-                      />
-                    )}
-                  </Field>
-                  <Field label="Exit target: pass rate (%)">
-                    {(props) => (
-                      <input
-                        {...props}
-                        type="number"
-                        min={1}
-                        max={100}
-                        className="input"
-                        value={options.targets.passRatePct}
-                        onChange={(e) => update({ targets: { ...options.targets, passRatePct: Math.min(100, Math.max(1, Number(e.target.value) || 95)) } })}
-                      />
-                    )}
-                  </Field>
-                  <Field label="Defect ageing SLA (days)">
-                    {(props) => (
-                      <input
-                        {...props}
-                        type="number"
-                        min={1}
-                        max={365}
-                        className="input"
-                        value={options.targets.agingDays}
-                        onChange={(e) => update({ targets: { ...options.targets, agingDays: Math.min(365, Math.max(1, Number(e.target.value) || 10)) } })}
-                      />
-                    )}
-                  </Field>
-                  <div className="pt-6">
-                    <Switch checked={options.appendix} onChange={(appendix) => update({ appendix })} label="Add appendix" description="Data checks, trend, test sets and failed cases after the four pages." />
-                  </div>
-                </div>
-                <Field label="QA notes" hint="Optional. Shown on the first page, for example scope decisions or build notes.">
-                  {(props) => <textarea {...props} rows={3} className="input" value={options.notes} onChange={(e) => update({ notes: e.target.value })} />}
-                </Field>
-              </div>
+            {setupProblem && (
+              <Notice tone="warning" className="mt-5" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
+                {setupProblem}
+              </Notice>
             )}
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
-              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0 || missingPlan}>
+              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
                 {data ? "Read Spira again" : "Generate report"}
               </Button>
-              {(scopedSets === 0 || missingPlan) && (
-                <span className="text-sm text-slate-500">
-                  {resolved?.scoped.releaseId === null || missingPlan
-                    ? `Choose the ${resolved?.kind === "plan" || missingPlan ? "total test plan" : phaseName} release`
-                    : "That release has no test sets in Spira; choose another"}{" "}
-                  under{" "}
-                  <button type="button" className="cursor-pointer font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400" onClick={() => setMoreOpen(true)}>
-                    More options
-                  </button>
-                  .
-                </span>
-              )}
               {busy && progress && (
                 <div className="flex min-w-60 flex-1 flex-col gap-1.5">
                   <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
@@ -522,7 +398,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
           </Notice>
         )}
 
-        {report && <ReportSummary report={report} onOpen={() => setViewerOpen(true)} onShare={() => void shareLink()} />}
+        {report && <ReportSummary report={report} onOpen={() => setViewerOpen(true)} onShare={() => setShareOpen(true)} />}
 
         {report && report.defects.rows.length > 0 && options && (
           <Collapsible title="Defect register notes" count={report.defects.rows.length} icon={NotebookPen} open={notesOpen} onToggle={() => setNotesOpen((o) => !o)}>
@@ -589,11 +465,12 @@ export function ReportWorkspace({ share }: { share: string | null }) {
           changes={data?.changes ?? null}
           siteUrl={spira?.siteUrl ?? null}
           fileName={fileName}
-          onShare={() => void shareLink()}
+          onShare={() => setShareOpen(true)}
           onExcel={() => void exportReportWorkbook(report, spira?.siteUrl ?? null)}
           onClose={closeViewer}
         />
       )}
+      {shareOpen && shareRequest && <ShareDialog request={shareRequest} onClose={() => setShareOpen(false)} />}
     </div>
   );
 }

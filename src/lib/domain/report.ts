@@ -111,32 +111,31 @@ export function defaultReportOptions(): ReportOptions {
 
 const scopeSchema = z.object({ releaseId: z.number().int().positive().nullable(), folderId: z.number().int().positive().nullable() });
 const text = (max: number) => z.string().max(max).catch("");
-const shareSchema = z.object({
-  p: z.number().int().positive(),
-  o: z.object({
-    kind: z.enum(REPORT_KINDS).catch("buildVsPlan"),
-    title: text(200),
-    environment: text(120),
-    preparedBy: text(120),
-    goLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().catch(null),
-    baseline: scopeSchema,
-    scoped: scopeSchema,
-    targets: z.object({ executedPct: z.number().min(1).max(100), passRatePct: z.number().min(1).max(100), agingDays: z.number().int().min(1).max(365) }),
-    status: z.enum(["auto", "green", "amber", "red"]).catch("auto"),
-    notes: text(4000),
-    phase: text(120),
-    baselineName: text(120),
-    windowText: text(120),
-    appendix: z.boolean().catch(false),
-    defectNotes: z
-      .record(z.string().regex(/^\d+$/), z.object({ feature: text(200), phase: z.enum(["in", "out", "tbc", ""]).catch(""), rationale: text(500) }))
-      .catch({}),
-  }),
+/** A report's setup as received from outside: text is capped and unknown values fall back. */
+export const reportOptionsSchema = z.object({
+  kind: z.enum(REPORT_KINDS).catch("buildVsPlan"),
+  title: text(200),
+  environment: text(120),
+  preparedBy: text(120),
+  goLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().catch(null),
+  baseline: scopeSchema,
+  scoped: scopeSchema,
+  targets: z.object({ executedPct: z.number().min(1).max(100), passRatePct: z.number().min(1).max(100), agingDays: z.number().int().min(1).max(365) }),
+  status: z.enum(["auto", "green", "amber", "red"]).catch("auto"),
+  notes: text(4000),
+  phase: text(120),
+  baselineName: text(120),
+  windowText: text(120),
+  appendix: z.boolean().catch(false),
+  defectNotes: z
+    .record(z.string().regex(/^\d+$/), z.object({ feature: text(200), phase: z.enum(["in", "out", "tbc", ""]).catch(""), rationale: text(500) }))
+    .catch({}),
 });
+const shareSchema = z.object({ p: z.number().int().positive(), o: reportOptionsSchema });
 
 /** The report's setup as URL-safe text, so a signed-in colleague can read the same report from Spira. */
 export function encodeShare(projectId: number, options: ReportOptions): string {
-  const o = shareSchema.shape.o.parse(options);
+  const o = reportOptionsSchema.parse(options);
   const bytes = new TextEncoder().encode(JSON.stringify({ p: projectId, o }));
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
@@ -340,6 +339,9 @@ export function resolveReportOptions(options: ReportOptions): ReportOptions {
 }
 
 const API_WORD = /\bapi\b/i;
+
+/** "Project-Simba — Daily SIT Test Report 2026-10-12", safe as a file name. */
+export const reportFileName = (report: Pick<Report, "title" | "generatedAt">) => `${report.title} ${report.generatedAt.slice(0, 10)}`.replace(/[\\/:*?"<>|]+/g, "-");
 
 /** Module identity across releases: "Notifications" and "Notification" are one module. */
 export function moduleId(name: string): string {
