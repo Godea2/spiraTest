@@ -234,7 +234,7 @@ describe("buildReport", () => {
     expect(named.title).toBe("Project-Simba — Daily SIT Test Report");
     expect(report.title).toBe("Project-Simba — Daily Test Report");
     expect(named.narrative.scopeNote).toBe(
-      "SIT Cycle 2 ran Sat 10 – Sun 11 Oct 2026. Test cases were scoped from the full plan (iOS 6 · Android 4, 10 runs) to Phase 1 (iOS 5 · Android 3, 8 runs, including 1 per platform added in testing). Cards is not part of Phase 1. The API stream (1 case, 1 executed) is reported separately.",
+      "SIT Cycle 2 ran Sat 10 – Sun 11 Oct 2026. Test cases were scoped from the full plan (iOS 6 · Android 4, 10 runs) to Phase 1 (iOS 5 · Android 3, 8 runs, including 1 per platform added in testing). This build (Phase 1) is every case in the test sets of release 1.0.0.0002, run on iOS and Android. Cards is not part of Phase 1. The API stream (1 case, 1 executed) is reported separately.",
     );
   });
 
@@ -317,36 +317,12 @@ describe("buildReport", () => {
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
   });
 
-  it("takes this build from the test cases mapped to the release", () => {
-    const mapped = buildReport(input({ releaseCases: [100, 101, 200, 999] }));
-    expect(mapped.kpis).toMatchObject({ plan: 10, inScope: 5, laterBuilds: 5, executed: 4, stillToRun: 1 });
-    expect(mapped.kpis.split.inScope).toEqual({ iOS: 3, Android: 2 });
-    expect(mapped.build).toEqual({ fromRelease: true, release: "1.0.0.0002", mapped: 4, notInTestSets: [999], unmappedRuns: 3, unmappedExecuted: 2 });
-    expect(mapped.findings.find((f) => f.check === "Mapped cases in no test set")?.appliesTo).toBe("TC:999");
-    expect(mapped.findings.find((f) => f.check === "Results on cases not mapped to the release")?.appliesTo).toBe("Payments");
-    expect(mapped.narrative.scopeNote).toContain("This build is the 4 test cases mapped to release 1.0.0.0002 in Spira, each run on iOS and Android.");
-    expect(mapped.kpis.api.inScope).toBe(1);
-  });
-
-  it("shows modules with no case mapped to the release as later builds", () => {
-    const later = buildReport(input({ releaseCases: [100, 101, 103], options: options({ phase: "Phase 1" }) }));
-    expect(later.modules.map((m) => m.name)).toEqual(["Payments"]);
-    expect(later.laterModules.map((m) => [m.name, m.plan])).toEqual([
-      ["Profile", 2],
-      ["Cards", 1],
-    ]);
-    expect(later.kpis).toMatchObject({ inScope: 6, laterBuilds: 4, stillToRun: 0 });
-    expect(later.narrative.scopeNote).toContain("Profile and Cards are not part of Phase 1.");
-  });
-
-  it("counts every case in the test sets when nothing is mapped to the release, and says so", () => {
-    const empty = buildReport(input({ releaseCases: [] }));
-    expect(empty.kpis.inScope).toBe(8);
-    expect(empty.build.fromRelease).toBe(false);
-    expect(empty.findings.find((f) => f.check === "No test cases mapped to the release")?.severity).toBe("High");
-    const unread = buildReport(input());
-    expect(unread.kpis.inScope).toBe(8);
-    expect(unread.findings.some((f) => f.check === "No test cases mapped to the release")).toBe(false);
+  it("takes this build from the release's test sets, and modules only in the baseline as later builds", () => {
+    const report = buildReport(input({ options: options({ phase: "Phase 1" }) }));
+    expect(report.kpis).toMatchObject({ plan: 10, inScope: 8, laterBuilds: 2 });
+    expect(report.laterModules.map((m) => m.name)).toEqual(["Cards"]);
+    expect(report.narrative.scopeNote).toContain("This build (Phase 1) is every case in the test sets of release 1.0.0.0002, run on iOS and Android.");
+    expect(report.narrative.scopeNote).toContain("Cards is not part of Phase 1.");
   });
 
   it("works without a baseline", () => {

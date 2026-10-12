@@ -2,7 +2,7 @@
 
 import clsx from "clsx";
 import { ArrowRight, Check, CheckCircle2, Clock, FileSpreadsheet, GitCompareArrows, RotateCcw, UploadCloud } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { WorkBook } from "xlsx";
 import { modulesFrom, useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
@@ -13,6 +13,7 @@ import { completionBlocker } from "@/lib/domain/board";
 import { guessMapping } from "@/lib/domain/settings";
 import { moduleKey, suggestTestSets } from "@/lib/domain/test-set-suggest";
 import type { Draft, SpiraTestSetSummary, TestSetRef, WorkbookRow } from "@/lib/domain/types";
+import { WholeWorkbook } from "./whole-workbook";
 
 type SetStatus = "pending" | "running" | "ok" | "failed";
 
@@ -170,6 +171,10 @@ export function CompareWorkspace() {
   const matchedRows = useMemo(
     () => (lib && rows && module ? lib.filterRowsByModule(rows, module, alias) : []),
     [lib, rows, module, alias],
+  );
+  const rowsOf = useCallback(
+    (name: string) => (lib && rows ? lib.filterRowsByModule(rows, name, settings?.moduleAliases[name] ?? null) : []),
+    [lib, rows, settings],
   );
 
   function parse(wl: WorkbookLib, source: LoadedWorkbook, inScope: string, needs: string) {
@@ -490,6 +495,26 @@ export function CompareWorkspace() {
           </div>
         </Section>
       </div>
+
+      {rows && loaded && settings && projectChosen && spira?.configured && workbookModules.length > 1 && (
+        projectSets?.sets ? (
+          <WholeWorkbook
+            key={`${loaded.fileName}:${inScopeSheet}:${needsSheet}`}
+            rowsOf={rowsOf}
+            modules={workbookModules}
+            settings={settings}
+            testSets={projectSets.sets}
+            source={{ fileName: loaded.fileName, inScopeSheet, needsConfirmationSheet: needsSheet || null }}
+            locked={locked || starting}
+          />
+        ) : (
+          !projectSets?.error && (
+            <p className="flex items-center gap-2 text-sm text-zinc-500">
+              <Spinner className="size-3.5" /> Reading test sets from Spira…
+            </p>
+          )
+        )
+      )}
 
       <Section title={<StepTitle n={3} done={allOk}>Compare</StepTitle>}>
         {!draft ? (

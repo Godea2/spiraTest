@@ -5,12 +5,10 @@ import {
   LEVELS,
   MAX_LINKED_CASES,
   MAX_REPORT_LINKS,
-  MAX_REPORT_RELEASES,
   MAX_REPORT_SETS,
   MODULE_STATUS_LABEL,
   OUTCOME_LABEL,
   OUTCOMES,
-  releaseFamily,
   RETEST_LABEL,
   setsInScope,
   snapshotOf,
@@ -81,8 +79,8 @@ const LINK_STATUSES = new Set<number>([EXECUTION_STATUS.failed, EXECUTION_STATUS
 
 /**
  * Reads everything the report needs from Spira (through the server, read-only): the cases of every
- * test set in both scopes, the test cases mapped to the release in scope, the project's incidents,
- * and the incidents linked to each failed, blocked or caution case in this build.
+ * test set in both scopes, the project's incidents, and the incidents linked to each failed, blocked
+ * or caution case in this build.
  */
 export async function readReportData(input: {
   catalog: ReportCatalog;
@@ -99,11 +97,6 @@ export async function readReportData(input: {
 
   const incidentsRead = api<{ incidents: ReportIncident[]; complete: boolean }>("/api/reports/incidents", { method: "POST", body: { projectId }, signal });
   incidentsRead.catch(() => undefined);
-  const releaseIds = options.scoped.releaseId === null ? [] : [...releaseFamily(catalog.releases, options.scoped.releaseId)].slice(0, MAX_REPORT_RELEASES);
-  const releaseCasesRead = releaseIds.length
-    ? api<{ testCaseIds: number[] }>("/api/reports/release-cases", { method: "POST", body: { projectId, releaseIds }, signal }).then((r) => r.testCaseIds)
-    : Promise.resolve(undefined);
-  releaseCasesRead.catch(() => undefined);
 
   const results: Record<number, ReportCase[]> = {};
   input.onProgress({ step: "Reading test sets", done: 0, total: setIds.length });
@@ -114,13 +107,10 @@ export async function readReportData(input: {
   });
 
   // Failed cases first, so the link check covers them before blocked and caution ones.
-  const releaseCases = await releaseCasesRead;
-  const mapped = releaseCases?.length ? new Set(releaseCases) : null;
   const failed = new Set<number>();
   const others = new Set<number>();
   for (const set of scopedSets) {
     for (const c of results[set.testSetId] ?? []) {
-      if (mapped && !mapped.has(c.testCaseId)) continue;
       if (c.statusId === EXECUTION_STATUS.failed) failed.add(c.testCaseId);
       else if (c.statusId !== null && LINK_STATUSES.has(c.statusId)) others.add(c.testCaseId);
     }
@@ -155,7 +145,6 @@ export async function readReportData(input: {
     incidentsComplete: complete,
     links,
     generatedAt: new Date().toISOString(),
-    releaseCases,
   };
 }
 
@@ -186,12 +175,6 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
     { Item: "Status reason", Value: report.statusReason },
     { Item: "Executions", Value: report.window.text ?? "" },
     { Item: "Counted as", Value: "Test runs: each case once per platform it is planned on" },
-    {
-      Item: `${report.labels.build} comes from`,
-      Value: report.build.fromRelease ? `${report.build.mapped} test cases mapped to release ${report.build.release} in Spira` : `Every case in the test sets of ${report.build.release}`,
-    },
-    { Item: "Mapped cases in no test set", Value: report.build.notInTestSets.map((id) => `TC:${id}`).join(", ") },
-    { Item: "Runs on cases not mapped to the release (left out)", Value: report.build.unmappedRuns },
     { Item: "Total test plan (runs)", Value: k.plan },
     { Item: `${report.labels.build} (runs)`, Value: k.inScope },
     { Item: "Later builds (runs)", Value: k.laterBuilds },

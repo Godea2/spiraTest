@@ -7,8 +7,6 @@ import type { ReportCase, ReportCatalog, ReportFolder, ReportIncident, ReportTes
 /** Test sets read per request, and test cases whose incidents are looked up per request. */
 export const MAX_REPORT_SETS = 10;
 export const MAX_REPORT_LINKS = 25;
-/** A release and its sprints whose test case mappings are read in one request. */
-export const MAX_REPORT_RELEASES = 50;
 /** Failed and blocked cases whose linked incidents are looked up; beyond this the link check is partial. */
 export const MAX_LINKED_CASES = 400;
 
@@ -660,8 +658,6 @@ export interface Report {
   targets: ReportTargets;
   notes: string;
   appendix: boolean;
-  /** How this build was taken from the test cases mapped to the release in scope. */
-  build: BuildSource;
   sources: {
     incidentsComplete: boolean;
     linksPartial: boolean;
@@ -681,24 +677,6 @@ export interface ReportInput {
   /** Incidents linked to each looked-up test case. */
   links: Record<number, number[]>;
   generatedAt: string;
-  /**
-   * Test case IDs mapped to the release in scope (and its sprints) in Spira. Undefined when not read;
-   * when read but empty, every case in the release's test sets counts.
-   */
-  releaseCases?: number[];
-}
-
-export interface BuildSource {
-  /** This build is the cases mapped to the release; false when the mapping was not read or is empty. */
-  fromRelease: boolean;
-  release: string;
-  /** Test cases mapped to the release in Spira. */
-  mapped: number;
-  /** Mapped cases with no place in the release's iOS or Android test sets, so no runs. */
-  notInTestSets: number[];
-  /** Runs in the release's test sets on cases not mapped to it, left out. */
-  unmappedRuns: number;
-  unmappedExecuted: number;
 }
 
 interface Placement {
@@ -725,12 +703,8 @@ interface Side {
   }>;
   /** Keyed by module and test case: a case planned in two modules counts in both. */
   cases: Map<string, PlannedCase>;
-  /** Cases in the test sets but outside this build, kept apart. */
-  outside: Map<string, PlannedCase>;
   moduleNames: Map<string, string>;
 }
-
-type Keep = (stream: Stream, testCaseId: number) => boolean;
 
 /** One planned run: a case on one platform of a module. */
 interface Run {
@@ -744,19 +718,17 @@ interface Run {
   lastRun: string | null;
 }
 
-function readSide(input: ReportInput, scope: ReportScope, keep: Keep = () => true): Side {
+function readSide(input: ReportInput, scope: ReportScope): Side {
   const sets = setsInScope(input.catalog, scope).map((set) => {
     const { module, stream } = classifySet(set, input.catalog.folders, input.mappings);
     return { set, module, moduleId: moduleId(module), stream };
   });
-  const kept = new Map<string, PlannedCase>();
-  const outside = new Map<string, PlannedCase>();
+  const cases = new Map<string, PlannedCase>();
   const moduleNames = new Map<string, string>();
   for (const s of sets) {
     if (!moduleNames.has(s.moduleId)) moduleNames.set(s.moduleId, s.module);
     for (const c of input.results[s.set.testSetId] ?? []) {
       const key = `${s.moduleId}:${c.testCaseId}`;
-      const cases = keep(s.stream, c.testCaseId) ? kept : outside;
       const planned = cases.get(key) ?? {
         testCaseId: c.testCaseId,
         name: c.name,
@@ -773,7 +745,7 @@ function readSide(input: ReportInput, scope: ReportScope, keep: Keep = () => tru
       cases.set(key, planned);
     }
   }
-  return { sets, cases: kept, outside, moduleNames };
+  return { sets, cases, moduleNames };
 }
 
 function streamsOf(c: PlannedCase): Stream[] {
@@ -913,10 +885,8 @@ export function buildReport(input: ReportInput): Report {
   const labels = phaseLabels(options.phase ?? "");
   const notesById = options.defectNotes ?? {};
   const baseline = readSide(input, options.baseline);
-  // This build is the cases mapped to the release in Spira, on each platform whose test sets hold them.
-  const mapped = new Set(input.releaseCases ?? []);
-  const fromRelease = mapped.size > 0;
-  const scoped = readSide(input, options.scoped, (stream, testCaseId) => !fromRelease || !isRunStream(stream) || mapped.has(testCaseId));
+  // This build is every case in the release's test sets, once per platform whose test sets hold it.
+  const scoped = readSide(input, options.scoped);
   const hasBaseline = options.baseline.releaseId !== null;
   const names = new Map([...baseline.moduleNames, ...scoped.moduleNames]);
   const nameOf = (id: string) => names.get(id) ?? id;
@@ -940,8 +910,6 @@ export function buildReport(input: ReportInput): Report {
     if (!scopedCaseIds.has(Number(caseId))) continue;
     for (const incidentId of incidentIds) casesByIncident.set(incidentId, (casesByIncident.get(incidentId) ?? new Set()).add(Number(caseId)));
   }
-  const outsideCaseIds = new Set([...scoped.outside.values()].map((c) => c.testCaseId).filter((id) => !scopedCaseIds.has(id)));
-  const outsideIncidents = new Set(Object.entries(input.links).flatMap(([caseId, ids]) => (outsideCaseIds.has(Number(caseId)) ? ids : [])));
   const modulesOfCase = new Map<number, Set<string>>();
   for (const c of scoped.cases.values()) modulesOfCase.set(c.testCaseId, (modulesOfCase.get(c.testCaseId) ?? new Set()).add(c.moduleId));
   const failedRunsOfCase = new Map<number, number>();
@@ -963,7 +931,7 @@ export function buildReport(input: ReportInput): Report {
         testCaseIds: caseIds,
         failedRuns: caseIds.reduce((n, id) => n + (failedRunsOfCase.get(id) ?? 0), 0),
         feature: note?.feature.trim() || moduleNames.join(", "),
-        phase: note?.phase || (caseIds.length ? "in" : outsideIncidents.has(incident.incidentId) ? "out" : null),
+        phase: note?.phase || (caseIds.length ? "in" : null),
         rationale: note?.rationale.trim() ?? "",
       };
     })
@@ -1397,49 +1365,8 @@ export function buildReport(input: ReportInput): Report {
   const addedCases = hasBaseline ? caseRefs(runs.filter((r) => !baseKeys.has(r.key))) : [];
   const deferredCases = caseRefs(baseRuns.filter((r) => !runKeys.has(r.key)));
 
-  // This build against the release's test case mapping.
-  const releaseName = scopeLabel(catalog, { releaseId: options.scoped.releaseId, folderId: null });
-  const outsideRuns = runsOf({ ...scoped, cases: scoped.outside }, isRunStream);
-  const outsideExecuted = outsideRuns.filter((r) => isExecuted(r.outcome)).length;
-  const runCaseIds = new Set(runs.map((r) => r.testCaseId));
-  const notInTestSets = fromRelease ? [...mapped].filter((id) => !runCaseIds.has(id)).sort((a, b) => a - b) : [];
-  const build: BuildSource = {
-    fromRelease,
-    release: releaseName,
-    mapped: mapped.size,
-    notInTestSets,
-    unmappedRuns: outsideRuns.length,
-    unmappedExecuted: outsideExecuted,
-  };
-
   // Data checks.
   const findings: Finding[] = [];
-  if (input.releaseCases && !fromRelease) {
-    findings.push({
-      severity: "High",
-      check: "No test cases mapped to the release",
-      appliesTo: releaseName,
-      detail: `Every case in its test sets is counted in ${labels.name}. Map the in-scope cases to ${releaseName} in Spira to scope it`,
-    });
-  }
-  if (notInTestSets.length) {
-    findings.push({
-      severity: "Medium",
-      check: "Mapped cases in no test set",
-      appliesTo: notInTestSets.length <= 8 ? notInTestSets.map((id) => `TC:${id}`).join(", ") : releaseName,
-      detail: `${plural(notInTestSets.length, "case")} mapped to ${releaseName} ${notInTestSets.length === 1 ? "is" : "are"} in none of its iOS or Android test sets, so ${
-        notInTestSets.length === 1 ? "it has" : "they have"
-      } no runs here`,
-    });
-  }
-  if (outsideExecuted) {
-    findings.push({
-      severity: "Low",
-      check: "Results on cases not mapped to the release",
-      appliesTo: list([...new Set(outsideRuns.filter((r) => isExecuted(r.outcome)).map((r) => r.module))].sort()),
-      detail: `${plural(outsideExecuted, "run")} in the test sets ${outsideExecuted === 1 ? "has" : "have"} a result but ${outsideExecuted === 1 ? "is" : "are"} on cases not mapped to ${releaseName}, so ${outsideExecuted === 1 ? "it is" : "they are"} left out`,
-    });
-  }
   const modulesOf = (cases: CaseRef[]) => list([...new Set(cases.map((c) => c.module))].sort());
   if (failedWithoutDefect.length) {
     findings.push({
@@ -1755,8 +1682,8 @@ export function buildReport(input: ReportInput): Report {
     hasBaseline
       ? `Test cases were scoped from the full plan (${planText}) to ${labels.name} (${buildText}${kpis.added ? `, including ${addedText} added in testing` : ""}).`
       : `${labels.build}: ${buildText}.`,
-    fromRelease
-      ? `${labels.build} is the ${plural(mapped.size, "test case")} mapped to release ${releaseName} in Spira${streams.length > 1 ? `, each run on ${list(streams)}` : ""}.`
+    options.scoped.releaseId !== null
+      ? `${labels.build} is every case in the test sets of release ${scopeLabel(catalog, { releaseId: options.scoped.releaseId, folderId: null })}${streams.length > 1 ? `, run on ${list(streams)}` : ""}.`
       : "",
     laterModules.length ? `${list(laterModules.map((m) => m.name))} ${laterModules.length === 1 ? "is" : "are"} not part of ${labels.name}.` : "",
     kpis.api.inScope ? `The API stream (${plural(kpis.api.inScope, "case")}, ${kpis.api.executed.toLocaleString()} executed) is reported separately.` : "",
@@ -1774,9 +1701,7 @@ export function buildReport(input: ReportInput): Report {
     `Spira's own test set roll-up shows ${spiraRollup.passed.toLocaleString()} passed and ${spiraRollup.failed.toLocaleString()} failed of ${rollupExecuted.toLocaleString()} executed${
       spiraRollup.passed === kpis.outcomes.passed && spiraRollup.failed === kpis.outcomes.failed
         ? ", matching this report"
-        : outsideRuns.length
-          ? `; ${plural(outsideRuns.length, "run")} in those test sets ${outsideRuns.length === 1 ? "is" : "are"} on cases not mapped to the release and left out here`
-          : "; this report counts each case once per platform from the cases read"
+        : "; this report counts each case once per platform from the cases read"
     }.`,
     hasBaseline ? `${baselineName} is used for the total plan and the comparison only.` : "",
   ]
@@ -1827,7 +1752,6 @@ export function buildReport(input: ReportInput): Report {
     targets,
     notes: options.notes.trim(),
     appendix: options.appendix ?? false,
-    build,
     sources: {
       incidentsComplete: input.incidentsComplete,
       linksPartial,

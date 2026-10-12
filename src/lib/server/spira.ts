@@ -955,14 +955,6 @@ export async function listTestSetFolders(projectId: number): Promise<ReportFolde
   }));
 }
 
-const releaseCaseSchema = z.array(z.object({ ReleaseId: z.number().int().nullish(), TestCaseId: id }));
-
-/** The test cases mapped to a release (its test coverage), as IDs. Read-only. */
-export async function getReleaseTestCases(projectId: number, releaseId: number): Promise<number[]> {
-  const what = `reading the test cases mapped to release ${releaseId}`;
-  return [...new Set(parse(releaseCaseSchema, await call("GET", `projects/${projectId}/releases/${releaseId}/test-cases`, what), what).map((m) => m.TestCaseId))];
-}
-
 /** The project's display name. Read-only. */
 export async function getProjectName(projectId: number): Promise<string> {
   const what = "reading the project";

@@ -177,16 +177,13 @@ function Figure({ label, value, hint }: { label: string; value: string; hint?: s
 /** The generated report in brief, with the button that opens it. */
 function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: () => void; onShare: () => void }) {
   const k = report.kpis;
-  const { build } = report;
   return (
     <section className="surface flex flex-col gap-4 p-5">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold tracking-tight">{report.title}</p>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-zinc-400">
-            {build.fromRelease
-              ? `${report.labels.build}: the ${build.mapped.toLocaleString()} test cases mapped to release ${build.release} in Spira.`
-              : `${report.labels.build}: every case in the test sets of ${build.release}.`}
+            {report.labels.build}: every case in the test sets of {report.scopedLabel}, compared with {report.hasBaseline ? report.baselineLabel : "no baseline"}.
           </p>
         </div>
         <Badge tone={STATUS_TONE[report.status]}>Overall {report.status.toUpperCase()}</Badge>
@@ -197,18 +194,6 @@ function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: ()
         <Figure label="Executed" value={k.executed.toLocaleString()} hint={`${formatPct(k.execPct)} of ${report.labels.name}`} />
         <Figure label="Pass rate" value={formatPct(k.passPct)} hint={`${k.outcomes.passed.toLocaleString()} passed · ${k.outcomes.failed.toLocaleString()} failed`} />
       </dl>
-      {!build.fromRelease && (
-        <Notice tone="warning" title={`No test cases are mapped to release ${build.release} in Spira`}>
-          Every case in its test sets is counted. Map the in-scope cases to the release in Spira, then read Spira again.
-        </Notice>
-      )}
-      {build.fromRelease && build.notInTestSets.length > 0 && (
-        <Notice tone="info" title={`${build.notInTestSets.length.toLocaleString()} mapped case${build.notInTestSets.length === 1 ? " is" : "s are"} in no test set`}>
-          {build.notInTestSets.length === 1 ? "It is" : "They are"} mapped to release {build.release} but not in any of its iOS or Android test sets, so{" "}
-          {build.notInTestSets.length === 1 ? "it has" : "they have"} no runs in the report: {build.notInTestSets.slice(0, 12).map((id) => `TC:${id}`).join(", ")}
-          {build.notInTestSets.length > 12 ? "…" : "."}
-        </Notice>
-      )}
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" icon={Eye} onClick={onOpen}>
           Open report
@@ -337,7 +322,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             </>
           }
           title="Executive test report"
-          description="Read live from Spira every time: this build is the test cases mapped to the release in scope, measured against the full test plan. Nothing is written to Spira."
+          description="Read live from Spira every time: this build is the test cases in the release's test sets, measured against the full test plan. Nothing is written to Spira."
         />
 
         {share && !shared && (
@@ -390,7 +375,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             <div className="grid gap-4 lg:grid-cols-2">
               <ScopePicker
                 title="This build"
-                hint="The release being tested, for example 1.0.0.0002. The build is the test cases mapped to this release in Spira; their results come from its test sets."
+                hint="The release being tested, for example 1.0.0.0002 in SIT Cycle 2. The build is every case in its test sets, which hold the reconciled scope once each module is applied."
                 catalog={catalog}
                 scope={options.scoped}
                 onChange={(scoped) => update({ scoped })}
