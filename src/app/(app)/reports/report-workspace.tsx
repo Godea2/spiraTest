@@ -1,8 +1,8 @@
 "use client";
 
 import clsx from "clsx";
-import { ChevronDown, Eye, FileChartColumn, Link2, NotebookPen, RefreshCw, Settings2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
@@ -13,13 +13,12 @@ import {
   compareSnapshots,
   decodeShare,
   encodeShare,
-  folderFamily,
-  folderPath,
   formatPct,
   initialReportOptions,
   previousSnapshot,
+  resolveReportOptions,
   sameScope,
-  scopeHints,
+  scopeName,
   setsInScope,
   snapshotOf,
   splitText,
@@ -27,9 +26,8 @@ import {
   type RagStatus,
   type Report,
   type ReportInput,
+  type ReportKind,
   type ReportOptions,
-  type ReportScope,
-  type ScopeHint,
 } from "@/lib/domain/report";
 import type { ReportCatalog } from "@/lib/domain/types";
 import { type ReportChanges } from "./report-document";
@@ -39,128 +37,83 @@ type CatalogState = { projectId: number; catalog: ReportCatalog | null; error: s
 
 const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green: "success", amber: "warning", red: "danger" };
 
-function HintRow({ text, hints, empty, onPick }: { text: string; hints: ScopeHint[]; empty: string; onPick: (scope: ReportScope) => void }) {
-  if (hints.length === 0) return <p>{empty}</p>;
+const KINDS: { kind: ReportKind; icon: LucideIcon; title: (phase: string) => string; text: string }[] = [
+  {
+    kind: "build",
+    icon: Target,
+    title: (phase) => `${phase}: scoped test cases`,
+    text: "Progress of the cases in scope for this build: executions, pass rate, modules ready for UAT and defects.",
+  },
+  {
+    kind: "buildVsPlan",
+    icon: GitCompareArrows,
+    title: (phase) => `${phase}: scoped vs total test plan`,
+    text: "The same build measured against the full test plan, with what is left for later builds and the change since the last cycle.",
+  },
+  {
+    kind: "plan",
+    icon: Layers,
+    title: () => "Total test plan",
+    text: "Every case in the full plan across all modules and platforms, with the results recorded against it.",
+  },
+];
+
+function KindPicker({ value, phase, onChange }: { value: ReportKind; phase: string; onChange: (kind: ReportKind) => void }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span>{text}</span>
-      {hints.map((h) =>
-        h.scope.releaseId === null ? (
-          <span key="none" className="text-xs">
-            {h.label} ({h.sets})
-          </span>
-        ) : (
-          <Button key={`${h.scope.releaseId}:${h.scope.folderId}`} size="sm" variant="ghost" onClick={() => onPick(h.scope)}>
-            {h.label} ({h.sets})
-          </Button>
-        ),
-      )}
+    <div role="radiogroup" aria-label="Report type" className="grid gap-3 md:grid-cols-3">
+      {KINDS.map(({ kind, icon: Icon, title, text }) => {
+        const selected = value === kind;
+        return (
+          <button
+            key={kind}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => onChange(kind)}
+            className={clsx(
+              "well flex cursor-pointer flex-col gap-2 p-4 text-left transition",
+              selected ? "ring-2 ring-brand-500 dark:ring-brand-400" : "hover:border-slate-300 dark:hover:border-white/20",
+            )}
+          >
+            <span className="flex items-start gap-2">
+              <Icon className={clsx("mt-0.5 size-4 shrink-0", selected ? "text-brand-600 dark:text-brand-400" : "text-slate-400")} aria-hidden />
+              <span className="flex-1 text-sm font-semibold">{title(phase)}</span>
+              {kind === "buildVsPlan" && <Badge tone="brand">Recommended</Badge>}
+            </span>
+            <span className="text-xs leading-relaxed text-slate-600 dark:text-zinc-400">{text}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function ScopePicker({
-  title,
-  hint,
-  catalog,
-  scope,
-  optional,
-  onChange,
-}: {
-  title: string;
-  hint: ReactNode;
-  catalog: ReportCatalog;
-  scope: ReportScope;
-  optional?: boolean;
-  onChange: (scope: ReportScope) => void;
-}) {
+function ReleaseSelect({ label, catalog, releaseId, onChange }: { label: string; catalog: ReportCatalog; releaseId: number | null; onChange: (releaseId: number | null) => void }) {
+  const counts = useMemo(() => new Map(catalog.releases.map((r) => [r.releaseId, setsInScope(catalog, { releaseId: r.releaseId, folderId: null }).length])), [catalog]);
+  const scope = { releaseId, folderId: null };
   const sets = setsInScope(catalog, scope);
-  const cases = sets.reduce((t, s) => t + Object.values(s.counts).reduce((a, b) => a + b, 0), 0);
-  const folders = useMemo(
-    () => catalog.folders.map((f) => ({ id: f.folderId, path: folderPath(catalog.folders, f.folderId) })).sort((a, b) => a.path.join("/").localeCompare(b.path.join("/"))),
-    [catalog.folders],
-  );
-  // How many test sets each option would give with the other choice kept, so empty combinations show before generating.
-  const counts = useMemo(() => {
-    const count = (s: ReportScope) => {
-      if (s.releaseId !== null) return setsInScope(catalog, s).length;
-      if (s.folderId === null) return catalog.testSets.length;
-      const family = folderFamily(catalog.folders, s.folderId);
-      return catalog.testSets.filter((t) => t.folderId !== null && family.has(t.folderId)).length;
-    };
-    return {
-      release: new Map(catalog.releases.map((r) => [r.releaseId, count({ releaseId: r.releaseId, folderId: scope.folderId })])),
-      folder: new Map([null, ...catalog.folders.map((f) => f.folderId)].map((id) => [id, count({ releaseId: scope.releaseId, folderId: id })])),
-    };
-  }, [catalog, scope.releaseId, scope.folderId]);
-  const hints = scope.releaseId !== null && sets.length === 0 ? scopeHints(catalog, scope) : null;
-  const sized = (n: number | undefined) => ` · ${(n ?? 0).toLocaleString()} set${n === 1 ? "" : "s"}`;
+  const slots = sets.reduce((t, s) => t + Object.values(s.counts).reduce((a, b) => a + b, 0), 0);
+  const hint =
+    releaseId === null
+      ? "Choose a release."
+      : sets.length
+        ? `${scopeName(catalog, scope)} · ${sets.length.toLocaleString()} test set${sets.length === 1 ? "" : "s"} · ${slots.toLocaleString()} test case slots in Spira`
+        : "No test sets in Spira are planned for this release.";
   return (
-    <div className="well flex flex-col gap-3 p-4">
-      <div>
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-zinc-400">{hint}</p>
-      </div>
-      <Field label="Release">
-        {(props) => (
-          <select
-            {...props}
-            className="input"
-            value={scope.releaseId ?? ""}
-            onChange={(e) => onChange({ ...scope, releaseId: e.target.value ? Number(e.target.value) : null })}
-          >
-            <option value="">{optional ? "No baseline" : "Choose a release"}</option>
-            {catalog.releases.map((r) => (
-              <option key={r.releaseId} value={r.releaseId}>
-                {"\u00a0\u00a0".repeat(r.depth)}
-                {r.label}
-                {r.active ? "" : " (inactive)"}
-                {sized(counts.release.get(r.releaseId))}
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
-      <Field label="Test set folder" hint="Limits the scope to a cycle, for example SIT Cycle 2, including its subfolders.">
-        {(props) => (
-          <select
-            {...props}
-            className="input"
-            value={scope.folderId ?? ""}
-            onChange={(e) => onChange({ ...scope, folderId: e.target.value ? Number(e.target.value) : null })}
-          >
-            <option value="">All folders{sized(counts.folder.get(null))}</option>
-            {folders.map((f) => (
-              <option key={f.id} value={f.id}>
-                {"\u00a0\u00a0".repeat(f.path.length - 1)}
-                {f.path[f.path.length - 1]}
-                {sized(counts.folder.get(f.id))}
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
-      {scope.releaseId !== null && sets.length > 0 && (
-        <p className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
-          {sets.length.toLocaleString()} test set{sets.length === 1 ? "" : "s"} · {cases.toLocaleString()} test case slots in Spira
-        </p>
+    <Field label={label} hint={hint}>
+      {(props) => (
+        <select {...props} className="input" value={releaseId ?? ""} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Choose a release</option>
+          {catalog.releases.map((r) => (
+            <option key={r.releaseId} value={r.releaseId}>
+              {"\u00a0\u00a0".repeat(r.depth)}
+              {r.label}
+              {r.active ? "" : " (inactive)"} · {counts.get(r.releaseId) ?? 0} sets
+            </option>
+          ))}
+        </select>
       )}
-      {hints && (
-        <Notice tone="warning" title="No test sets match this release and folder">
-          <div className="flex flex-col gap-2">
-            {scope.folderId !== null && (
-              <HintRow
-                text="The test sets in this folder are planned for:"
-                hints={hints.byRelease}
-                empty="This folder has no test sets."
-                onPick={onChange}
-              />
-            )}
-            <HintRow text="This release's test sets are in:" hints={hints.byFolder} empty="No test set in Spira is planned for this release or its sprints." onPick={onChange} />
-          </div>
-        </Notice>
-      )}
-    </div>
+    </Field>
   );
 }
 
@@ -183,13 +136,18 @@ function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: ()
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold tracking-tight">{report.title}</p>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-zinc-400">
-            {report.labels.build}: every case in the test sets of {report.scopedLabel}, compared with {report.hasBaseline ? report.baselineLabel : "no baseline"}.
+            {report.labels.build}: every case in the test sets of {report.scopedName} ({report.scopedLabel})
+            {report.hasBaseline ? `, measured against the total test plan in ${report.baselineName} (${report.baselineLabel}).` : "."}
           </p>
         </div>
         <Badge tone={STATUS_TONE[report.status]}>Overall {report.status.toUpperCase()}</Badge>
       </div>
       <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Figure label="Total test plan" value={k.plan.toLocaleString()} hint={report.hasBaseline ? splitText(k.split.plan, report.streams) : undefined} />
+        {report.hasBaseline ? (
+          <Figure label="Total test plan" value={k.plan.toLocaleString()} hint={splitText(k.split.plan, report.streams)} />
+        ) : (
+          <Figure label="Modules" value={report.modules.length.toLocaleString()} hint={`${report.readiness.ready} ready for UAT`} />
+        )}
         <Figure label={report.labels.build} value={k.inScope.toLocaleString()} hint={splitText(k.split.inScope, report.streams)} />
         <Figure label="Executed" value={k.executed.toLocaleString()} hint={`${formatPct(k.execPct)} of ${report.labels.name}`} />
         <Figure label="Pass rate" value={formatPct(k.passPct)} hint={`${k.outcomes.passed.toLocaleString()} passed · ${k.outcomes.failed.toLocaleString()} failed`} />
@@ -262,19 +220,27 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     }
   };
 
-  // Presentation choices apply at once; the scope applies to the data read for it.
-  const reportOptions = useMemo(
-    () => (data && options ? { ...options, baseline: data.input.options.baseline, scoped: data.input.options.scoped } : null),
-    [data, options],
-  );
+  const resolved = useMemo(() => (options ? resolveReportOptions(options) : null), [options]);
+  // Presentation choices apply at once; the report type and releases apply to the data read for them.
+  const reportOptions = useMemo(() => {
+    if (!data || !options) return null;
+    const read = data.input.options;
+    return { ...resolveReportOptions({ ...options, kind: read.kind }), baseline: read.baseline, scoped: read.scoped };
+  }, [data, options]);
   const report = useMemo(() => {
     if (!data || !reportOptions || data.input.catalog.projectId !== projectId) return null;
     return buildReport({ ...data.input, options: reportOptions });
   }, [data, reportOptions, projectId]);
-  const scopeChanged = !!(data && options && (!sameScope(data.input.options.scoped, options.scoped) || !sameScope(data.input.options.baseline, options.baseline)));
+  const scopeChanged = !!(
+    data &&
+    resolved &&
+    (data.input.options.kind !== resolved.kind || !sameScope(data.input.options.scoped, resolved.scoped) || !sameScope(data.input.options.baseline, resolved.baseline))
+  );
+  const scopedSets = catalog && resolved ? setsInScope(catalog, resolved.scoped).length : 0;
+  const missingPlan = resolved?.kind === "buildVsPlan" && resolved.baseline.releaseId === null;
 
   const generate = async () => {
-    if (!options || projectId === null || !catalog || setsInScope(catalog, options.scoped).length === 0) return;
+    if (!options || !resolved || projectId === null || !catalog || scopedSets === 0 || missingPlan) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
@@ -283,9 +249,9 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     try {
       const fresh = await loadCatalog(projectId, controller.signal);
       setCatalogState({ projectId, catalog: fresh, error: null });
-      const input = await readReportData({ catalog: fresh, options, mappings: settings?.mappings ?? [], onProgress: setProgress, signal: controller.signal });
+      const input = await readReportData({ catalog: fresh, options: resolved, mappings: settings?.mappings ?? [], onProgress: setProgress, signal: controller.signal });
       const built = buildReport(input);
-      const before = recordSnapshot(built, options);
+      const before = recordSnapshot(built, resolved);
       const previous = previousSnapshot(before, built);
       setData({ input, changes: previous ? { since: previous.at, rows: compareSnapshots(previous, snapshotOf(built)) } : null });
       setViewerOpen(true);
@@ -297,8 +263,8 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   };
 
   const shareLink = async () => {
-    if (!reportOptions || projectId === null) return;
-    const url = `${window.location.origin}/reports?share=${encodeShare(projectId, reportOptions)}`;
+    if (!options || projectId === null) return;
+    const url = `${window.location.origin}/reports?share=${encodeShare(projectId, options)}`;
     try {
       await navigator.clipboard.writeText(url);
       toast.success("Link copied. Whoever opens it signs in first, then generates the same report live from Spira.");
@@ -309,7 +275,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
 
   const closeViewer = useCallback(() => setViewerOpen(false), []);
   const busy = progress !== null;
-  const scopedSets = catalog && options ? setsInScope(catalog, options.scoped).length : 0;
+  const phaseName = options?.phase.trim() || "Phase 1";
   const fileName = report ? `${report.title} ${report.generatedAt.slice(0, 10)}`.replace(/[\\/:*?"<>|]+/g, "-") : "";
 
   return (
@@ -322,7 +288,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             </>
           }
           title="Executive test report"
-          description="Read live from Spira every time: this build is the test cases in the release's test sets, measured against the full test plan. Nothing is written to Spira."
+          description="Read live from Spira every time. Choose the report, add the header details and generate. Nothing is written to Spira."
         />
 
         {share && !shared && (
@@ -337,7 +303,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
         )}
         {shared && shared.projectId === projectId && !data && !busy && (
           <Notice tone="info" title="Report setup from a shared link">
-            Generate the report to read it live from Spira with the same release, baseline and settings.
+            Generate the report to read it live from Spira with the same report type, releases and settings.
           </Notice>
         )}
 
@@ -372,30 +338,32 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               </Button>
             }
           >
-            <div className="grid gap-4 lg:grid-cols-2">
-              <ScopePicker
-                title="This build"
-                hint="The release being tested, for example 1.0.0.0002 in SIT Cycle 2. The build is every case in its test sets, which hold the reconciled scope once each module is applied."
-                catalog={catalog}
-                scope={options.scoped}
-                onChange={(scoped) => update({ scoped })}
-              />
-              <ScopePicker
-                title="Total test plan"
-                hint="The full set of test cases across modules and platforms, for example 1.0.0.0001 in SIT Cycle 1. Used for the total plan and the comparison."
-                catalog={catalog}
-                scope={options.baseline}
-                optional
-                onChange={(baseline) => update({ baseline })}
-              />
-            </div>
+            <KindPicker value={options.kind} phase={phaseName} onChange={(kind) => update({ kind })} />
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <Field label="Report title" hint="Empty uses the project name.">
                 {(props) => <input {...props} className="input" value={options.title} placeholder={`${catalog.projectName} — Test Report`} onChange={(e) => update({ title: e.target.value })} />}
               </Field>
-              <Field label="Cycle" hint="Shown in the header.">
-                {(props) => <input {...props} className="input" value={options.environment} placeholder="SIT Cycle 2" onChange={(e) => update({ environment: e.target.value })} />}
+              <Field label="Cycle" hint="Shown in the header. Empty uses the test sets' folder.">
+                {(props) =>
+                  options.kind === "plan" ? (
+                    <input
+                      {...props}
+                      className="input"
+                      value={options.baselineName}
+                      placeholder={resolved ? scopeName(catalog, resolved.scoped) : ""}
+                      onChange={(e) => update({ baselineName: e.target.value })}
+                    />
+                  ) : (
+                    <input
+                      {...props}
+                      className="input"
+                      value={options.environment}
+                      placeholder={resolved ? scopeName(catalog, resolved.scoped) : ""}
+                      onChange={(e) => update({ environment: e.target.value })}
+                    />
+                  )
+                }
               </Field>
               <Field label="Prepared by">
                 {(props) => <input {...props} className="input" value={options.preparedBy} onChange={(e) => update({ preparedBy: e.target.value })} />}
@@ -412,17 +380,41 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               className="mt-4 inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-white"
             >
               <ChevronDown className={clsx("size-4 transition-transform", moreOpen && "rotate-180")} aria-hidden />
-              More options: names, exit targets, status, notes and appendix
+              More options: releases, names, exit targets, status, notes and appendix
             </button>
             {moreOpen && (
               <div className="mt-3 flex flex-col gap-4 border-t border-slate-100 pt-4 dark:border-white/[0.06]">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <ReleaseSelect
+                    label={`${phaseName} release`}
+                    catalog={catalog}
+                    releaseId={options.scoped.releaseId}
+                    onChange={(releaseId) => update({ scoped: { releaseId, folderId: null } })}
+                  />
+                  <ReleaseSelect
+                    label="Total test plan release"
+                    catalog={catalog}
+                    releaseId={options.baseline.releaseId}
+                    onChange={(releaseId) => update({ baseline: { releaseId, folderId: null } })}
+                  />
+                </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <Field label="Build name" hint={`Shown as "This build (Phase 1)" and in the defect register.`}>
+                  <Field label="Build name" hint={`Shown as "This build (Phase 1)", on the report choices and in the defect register.`}>
                     {(props) => <input {...props} className="input" value={options.phase} placeholder="Phase 1" onChange={(e) => update({ phase: e.target.value })} />}
                   </Field>
-                  <Field label="Baseline name" hint="Used in the cycle comparison. Empty uses the baseline folder.">
-                    {(props) => <input {...props} className="input" value={options.baselineName} placeholder="Cycle 1" onChange={(e) => update({ baselineName: e.target.value })} />}
-                  </Field>
+                  {options.kind === "buildVsPlan" && (
+                    <Field label="Total plan cycle" hint="Used in the cycle comparison. Empty uses its test sets' folder.">
+                      {(props) => (
+                        <input
+                          {...props}
+                          className="input"
+                          value={options.baselineName}
+                          placeholder={resolved ? scopeName(catalog, resolved.baseline) : ""}
+                          onChange={(e) => update({ baselineName: e.target.value })}
+                        />
+                      )}
+                    </Field>
+                  )}
                   <Field
                     label="Executions"
                     hint={report?.window.first ? `Empty reads the run dates: ${report.window.first.slice(0, 10)} to ${report.window.last?.slice(0, 10)}.` : "Empty reads the run dates from Spira."}
@@ -491,13 +483,20 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             )}
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
-              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0}>
+              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0 || missingPlan}>
                 {data ? "Read Spira again" : "Generate report"}
               </Button>
-              {options.scoped.releaseId === null ? (
-                <span className="text-sm text-slate-500">Choose the release for this build first.</span>
-              ) : (
-                scopedSets === 0 && <span className="text-sm text-slate-500">No test sets are in scope; pick a release and folder that hold test sets.</span>
+              {(scopedSets === 0 || missingPlan) && (
+                <span className="text-sm text-slate-500">
+                  {resolved?.scoped.releaseId === null || missingPlan
+                    ? `Choose the ${resolved?.kind === "plan" || missingPlan ? "total test plan" : phaseName} release`
+                    : "That release has no test sets in Spira; choose another"}{" "}
+                  under{" "}
+                  <button type="button" className="cursor-pointer font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400" onClick={() => setMoreOpen(true)}>
+                    More options
+                  </button>
+                  .
+                </span>
               )}
               {busy && progress && (
                 <div className="flex min-w-60 flex-1 flex-col gap-1.5">
@@ -511,7 +510,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             </div>
             {scopeChanged && !busy && (
               <Notice tone="info" className="mt-4">
-                The release or baseline changed since Spira was read. Read Spira again to report on them; the report you have is still for the previous choice.
+                The report type or releases changed since Spira was read. Read Spira again to report on them; the report you have is still for the previous choice.
               </Notice>
             )}
           </Section>
@@ -579,7 +578,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
 
         {!report && catalog && options && !busy && (
           <EmptyState icon={FileChartColumn} title="No report yet">
-            Choose the release for this build and the total test plan, then generate. Every figure is read from Spira at that moment, and the report opens over this page.
+            Choose the report and generate. Every figure is read from Spira at that moment, and the report opens over this page.
           </EmptyState>
         )}
       </div>

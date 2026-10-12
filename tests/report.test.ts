@@ -18,6 +18,7 @@ import {
   previousSnapshot,
   previousVersion,
   releaseFamily,
+  resolveReportOptions,
   retestState,
   scopeHints,
   setsInScope,
@@ -222,7 +223,7 @@ describe("buildReport", () => {
   });
 
   it("compares the cycles on iOS, module by module", () => {
-    expect(report.cycle).toMatchObject({ stream: "iOS", baselineName: "1.0.0.0001", scopedName: "1.0.0.0002" });
+    expect(report.cycle).toMatchObject({ stream: "iOS", baselineName: "SIT Cycle 1", scopedName: "SIT Cycle 2" });
     const named = buildReport(input({ options: options({ baselineName: "Cycle 1", environment: "SIT Cycle 2", phase: "Phase 1" }) }));
     expect(named.cycle).toMatchObject({ baselineName: "Cycle 1", scopedName: "SIT Cycle 2" });
     expect(named.cycle!.rows).toEqual([
@@ -230,9 +231,9 @@ describe("buildReport", () => {
       { name: "Profile", before: "Not run (2 planned)", now: "Not started", movement: "Not started", tone: "neutral" },
       { name: "Cards", before: "Not planned", now: "Not in Phase 1", movement: "Later build", tone: "neutral" },
     ]);
-    expect(named.labels).toEqual({ build: "This build (Phase 1)", name: "Phase 1", inBuild: "In Phase 1", outside: "Outside Phase 1" });
+    expect(named.labels).toEqual({ build: "This build (Phase 1)", name: "Phase 1", short: "Phase 1", named: true, inBuild: "In Phase 1", outside: "Outside Phase 1" });
     expect(named.title).toBe("Project-Simba — Daily SIT Test Report");
-    expect(report.title).toBe("Project-Simba — Daily Test Report");
+    expect(report.title).toBe("Project-Simba — Daily SIT Test Report");
     expect(named.narrative.scopeNote).toBe(
       "SIT Cycle 2 ran Sat 10 – Sun 11 Oct 2026. Test cases were scoped from the full plan (iOS 6 · Android 4, 10 runs) to Phase 1 (iOS 5 · Android 3, 8 runs, including 1 per platform added in testing). This build (Phase 1) is every case in the test sets of release 1.0.0.0002, run on iOS and Android. Cards is not part of Phase 1. The API stream (1 case, 1 executed) is reported separately.",
     );
@@ -325,6 +326,30 @@ describe("buildReport", () => {
     expect(report.narrative.scopeNote).toContain("Cards is not part of Phase 1.");
   });
 
+  it("reads whole releases for each report type", () => {
+    const setup = options({ scoped: { releaseId: 2, folderId: 1 }, baseline: { releaseId: 1, folderId: 3 }, environment: "SIT Cycle 2", baselineName: "Cycle 1" });
+    expect(resolveReportOptions(setup)).toMatchObject({ scoped: { releaseId: 2, folderId: null }, baseline: { releaseId: 1, folderId: null }, environment: "SIT Cycle 2" });
+    expect(resolveReportOptions({ ...setup, kind: "build" })).toMatchObject({ scoped: { releaseId: 2, folderId: null }, baseline: { releaseId: null, folderId: null } });
+    expect(resolveReportOptions({ ...setup, kind: "plan" })).toMatchObject({ scoped: { releaseId: 1, folderId: null }, baseline: { releaseId: null, folderId: null }, environment: "Cycle 1" });
+  });
+
+  it("reports this build alone, or the total test plan alone", () => {
+    const build = buildReport(input({ options: resolveReportOptions(options({ kind: "build", phase: "Phase 1" })) }));
+    expect(build).toMatchObject({ kind: "build", hasBaseline: false, scopedName: "SIT Cycle 2" });
+    expect(build.kpis).toMatchObject({ plan: 8, inScope: 8 });
+    expect(build.labels.build).toBe("This build (Phase 1)");
+
+    const plan = buildReport(input({ options: resolveReportOptions(options({ kind: "plan", phase: "Phase 1" })) }));
+    expect(plan).toMatchObject({ kind: "plan", hasBaseline: false, scopedName: "SIT Cycle 1", scopedLabel: "1.0.0.0001" });
+    expect(plan.kpis).toMatchObject({ plan: 10, inScope: 10, executed: 0 });
+    expect(plan.labels).toMatchObject({ build: "Total test plan", named: false, short: "Plan" });
+    expect(plan.narrative.scopeNote).toContain("Total test plan is every case in the test sets of release 1.0.0.0001");
+    const html = renderToStaticMarkup(createElement(ReportDocument, { report: plan, changes: null, siteUrl: null }));
+    expect(html.match(/report-page/g)).toHaveLength(4);
+    expect(html).toContain("1. Total test plan: by module");
+    expect(html).not.toContain("Total test plan vs");
+  });
+
   it("works without a baseline", () => {
     const alone = buildReport(input({ options: options({ baseline: { releaseId: null, folderId: null } }) }));
     expect(alone.hasBaseline).toBe(false);
@@ -366,6 +391,13 @@ describe("report share links", () => {
     const link = encodeShare(24, { ...setup, scopeSource: "drafts" } as ReportOptions);
     expect(link).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(decodeShare(link)).toEqual({ projectId: 24, options: setup });
+  });
+
+  it("keeps the report type, and reads older links as the comparison report", () => {
+    expect(decodeShare(encodeShare(24, options({ kind: "plan" })))?.options.kind).toBe("plan");
+    const older: Partial<ReportOptions> = options();
+    delete older.kind;
+    expect(decodeShare(encodeShare(24, older as ReportOptions))?.options.kind).toBe("buildVsPlan");
   });
 
   it("refuses text that is not a report link", () => {

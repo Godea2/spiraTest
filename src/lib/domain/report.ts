@@ -49,14 +49,21 @@ export interface ReportTargets {
   agingDays: number;
 }
 
+/** This build alone, this build against the total test plan, or the total test plan alone. */
+export type ReportKind = "build" | "buildVsPlan" | "plan";
+export const REPORT_KINDS: ReportKind[] = ["build", "buildVsPlan", "plan"];
+
 export interface ReportOptions {
+  kind: ReportKind;
   title: string;
   /** Cycle or environment shown in the header, e.g. "SIT Cycle 2". */
   environment: string;
   preparedBy: string;
   /** yyyy-mm-dd */
   goLive: string | null;
+  /** The release holding the total test plan. */
   baseline: ReportScope;
+  /** The release being tested. */
   scoped: ReportScope;
   targets: ReportTargets;
   status: "auto" | RagStatus;
@@ -84,6 +91,7 @@ export interface DefectNote {
 
 export function defaultReportOptions(): ReportOptions {
   return {
+    kind: "buildVsPlan",
     title: "",
     environment: "",
     preparedBy: "",
@@ -106,6 +114,7 @@ const text = (max: number) => z.string().max(max).catch("");
 const shareSchema = z.object({
   p: z.number().int().positive(),
   o: z.object({
+    kind: z.enum(REPORT_KINDS).catch("buildVsPlan"),
     title: text(200),
     environment: text(120),
     preparedBy: text(120),
@@ -316,6 +325,19 @@ export function initialReportOptions(releases: SpiraRelease[], releaseId: number
 }
 
 export const sameScope = (a: ReportScope, b: ReportScope) => a.releaseId === b.releaseId && a.folderId === b.folderId;
+
+/**
+ * The scopes a report reads, from its kind: whole releases, every folder. The total test plan alone is
+ * reported as the build, under its own cycle name.
+ */
+export function resolveReportOptions(options: ReportOptions): ReportOptions {
+  const build = { releaseId: options.scoped.releaseId, folderId: null };
+  const plan = { releaseId: options.baseline.releaseId, folderId: null };
+  const none = { releaseId: null, folderId: null };
+  if (options.kind === "build") return { ...options, scoped: build, baseline: none };
+  if (options.kind === "plan") return { ...options, scoped: plan, baseline: none, environment: options.baselineName };
+  return { ...options, scoped: build, baseline: plan };
+}
 
 const API_WORD = /\bapi\b/i;
 
@@ -602,6 +624,10 @@ export interface PhaseLabels {
   build: string;
   /** "Phase 1" or "this build" */
   name: string;
+  /** "Phase 1" or "Build", for column headings */
+  short: string;
+  /** False when the build has no name, so phase-specific wording is left out. */
+  named: boolean;
   inBuild: string;
   outside: string;
 }
@@ -613,6 +639,7 @@ export interface Report {
   title: string;
   environment: string;
   preparedBy: string;
+  kind: ReportKind;
   hasBaseline: boolean;
   baselineLabel: string;
   scopedLabel: string;
@@ -819,18 +846,23 @@ const shortDay = (iso: string) =>
     timeZone: "UTC",
   });
 
-export function phaseLabels(phase: string): PhaseLabels {
+export function phaseLabels(phase: string, kind: ReportKind = "buildVsPlan"): PhaseLabels {
   const name = phase.trim();
+  if (kind === "plan") return { build: "Total test plan", name: "the total test plan", short: "Plan", named: false, inBuild: "In the plan", outside: "Outside the plan" };
   return name
     ? {
         build: `This build (${name})`,
         name,
+        short: name,
+        named: true,
         inBuild: `In ${name}`,
         outside: `Outside ${name}`,
       }
     : {
         build: "This build",
         name: "this build",
+        short: "Build",
+        named: false,
         inBuild: "In this build",
         outside: "Outside this build",
       };
@@ -869,19 +901,27 @@ function runsText(split: PlatformSplit, unit = "cases per platform"): string {
   return present.length ? `${plural(total, "case")} on ${present[0]}` : "no cases";
 }
 
-function scopeName(catalog: ReportCatalog, scope: ReportScope): string {
-  if (scope.folderId !== null) {
-    const path = folderPath(catalog.folders, scope.folderId);
-    if (path.length) return path[path.length - 1];
+/** The scope's cycle: its folder, or the deepest folder holding all its test sets ("SIT Cycle 2"); else the release. */
+export function scopeName(catalog: Pick<ReportCatalog, "releases" | "folders" | "testSets">, scope: ReportScope): string {
+  let path: string[] = [];
+  if (scope.folderId !== null) path = folderPath(catalog.folders, scope.folderId);
+  else {
+    const paths = setsInScope(catalog, scope).map((s) => folderPath(catalog.folders, s.folderId));
+    path = paths[0] ?? [];
+    for (const other of paths.slice(1)) {
+      let i = 0;
+      while (i < path.length && path[i] === other[i]) i += 1;
+      path = path.slice(0, i);
+    }
   }
-  return scopeLabel(catalog, scope);
+  return path.length ? path[path.length - 1] : scopeLabel(catalog, scope);
 }
 
 export function buildReport(input: ReportInput): Report {
   const { catalog, options, generatedAt } = input;
   const targets = options.targets;
   const today = generatedAt;
-  const labels = phaseLabels(options.phase ?? "");
+  const labels = phaseLabels(options.phase ?? "", options.kind);
   const notesById = options.defectNotes ?? {};
   const baseline = readSide(input, options.baseline);
   // This build is every case in the release's test sets, once per platform whose test sets hold it.
@@ -1147,7 +1187,7 @@ export function buildReport(input: ReportInput): Report {
       ? `${plural(openCriticalHigh, "open defect")} ${openCriticalHigh === 1 ? "is" : "are"} Critical or High severity`
       : `None ${open.length === 1 ? "open " : ""}is Critical or High severity`;
     const priority = highPriority
-      ? `; ${highPriority} ${highPriority === 1 ? "is" : "are"} Critical or High priority${byPriorityInBuild.Critical + byPriorityInBuild.High === highPriority && labels.name !== "this build" ? ` and in ${labels.name} journeys` : ""}`
+      ? `; ${highPriority} ${highPriority === 1 ? "is" : "are"} Critical or High priority${byPriorityInBuild.Critical + byPriorityInBuild.High === highPriority && labels.named ? ` and in ${labels.name} journeys` : ""}`
       : "";
     return `${parts[0]}${parts.length > 1 ? `, ${parts.slice(1).join(" and ")}` : ""}${covering}. ${open.length} open, ${defectRows.length - open.length} closed. ${severity}${priority}.`;
   })();
@@ -1625,7 +1665,7 @@ export function buildReport(input: ReportInput): Report {
     });
   }
   const outside = open.filter((d) => d.phase === "out" || d.phase === "tbc");
-  if (outside.length && labels.name !== "this build") {
+  if (outside.length && labels.named) {
     const byFeature = groupBy(outside, (d) => d.feature || "Unassigned");
     const modulesOut = [...new Set(outside.flatMap((d) => d.modules))];
     actions.push({
@@ -1714,6 +1754,7 @@ export function buildReport(input: ReportInput): Report {
     title: options.title.trim() || `${catalog.projectName} — Daily ${/^[A-Z]{2,5}\b/.exec(scopedName)?.[0] ?? ""} Test Report`.replace(/\s+/g, " "),
     environment: options.environment.trim(),
     preparedBy: options.preparedBy.trim(),
+    kind: options.kind,
     hasBaseline,
     baselineLabel: scopeLabel(catalog, options.baseline),
     scopedLabel: scopeLabel(catalog, options.scoped),

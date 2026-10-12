@@ -543,7 +543,7 @@ function PlanTable({ report }: { report: Report }) {
   );
   return (
     <div>
-      <Heading>1. Total test plan vs {labels.name}: by module</Heading>
+      <Heading>{hasBaseline ? `1. Total test plan vs ${labels.name}: by module` : `1. ${labels.build}: by module`}</Heading>
       <Table
         head={head}
         numeric={Array.from({ length: head.length - 1 }, (_, i) => i + 1)}
@@ -866,7 +866,7 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
       {d.rows.length > 0 && (
         <div>
           <SubHeading>4d. Defect register: severity and priority</SubHeading>
-          <Table head={["ID", "Defect", "Feature", `${labels.name === "this build" ? "Build" : labels.name} scope`, "Severity", "Priority", "Rationale"]}>
+          <Table head={["ID", "Defect", "Feature", `${labels.short} scope`, "Severity", "Priority", "Rationale"]}>
             {shown.map((r) => (
               <tr key={r.incident.incidentId} className={r.incident.open ? undefined : "text-slate-500"}>
                 <td className={`${td} whitespace-nowrap`}>
