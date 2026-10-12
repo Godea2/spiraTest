@@ -1,12 +1,14 @@
+import { z } from "zod";
 import { EXECUTION_STATUS } from "./execution";
 import { guessMapping } from "./settings";
 import { moduleKey } from "./test-set-suggest";
-import { effectiveColumn, isCompleted } from "./board";
-import type { Draft, ReportCase, ReportCatalog, ReportFolder, ReportIncident, ReportTestSet, SpiraRelease, TestSetMapping } from "./types";
+import type { ReportCase, ReportCatalog, ReportFolder, ReportIncident, ReportTestSet, SpiraRelease, TestSetMapping } from "./types";
 
 /** Test sets read per request, and test cases whose incidents are looked up per request. */
 export const MAX_REPORT_SETS = 10;
 export const MAX_REPORT_LINKS = 25;
+/** A release and its sprints whose test case mappings are read in one request. */
+export const MAX_REPORT_RELEASES = 50;
 /** Failed and blocked cases whose linked incidents are looked up; beyond this the link check is partial. */
 export const MAX_LINKED_CASES = 400;
 
@@ -71,24 +73,6 @@ export interface ReportOptions {
   appendix: boolean;
   /** QA's reading of each defect, keyed by incident ID. */
   defectNotes: Record<string, DefectNote>;
-  /** "drafts": a test set reviewed in this app counts only the cases its board keeps; "spira": every case in the test set. */
-  scopeSource: "drafts" | "spira";
-  /** Modules (by module ID) left out of this build, shown as later builds. */
-  excludedModules: string[];
-}
-
-/** One test set's scope as decided on a draft's board, by test case. */
-export interface BuildScopeSet {
-  testSetId: number;
-  draftId: string;
-  draftName: string;
-  applied: boolean;
-  comparedAt: string;
-  /** In Scope, Defects or Blocked. */
-  kept: number[];
-  review: number[];
-  /** Out of Scope, and not kept by another membership of the same case. */
-  excluded: number[];
 }
 
 export type DefectPhase = "in" | "out" | "tbc";
@@ -116,9 +100,52 @@ export function defaultReportOptions(): ReportOptions {
     windowText: "",
     appendix: false,
     defectNotes: {},
-    scopeSource: "drafts",
-    excludedModules: [],
   };
+}
+
+const scopeSchema = z.object({ releaseId: z.number().int().positive().nullable(), folderId: z.number().int().positive().nullable() });
+const text = (max: number) => z.string().max(max).catch("");
+const shareSchema = z.object({
+  p: z.number().int().positive(),
+  o: z.object({
+    title: text(200),
+    environment: text(120),
+    preparedBy: text(120),
+    goLive: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().catch(null),
+    baseline: scopeSchema,
+    scoped: scopeSchema,
+    targets: z.object({ executedPct: z.number().min(1).max(100), passRatePct: z.number().min(1).max(100), agingDays: z.number().int().min(1).max(365) }),
+    status: z.enum(["auto", "green", "amber", "red"]).catch("auto"),
+    notes: text(4000),
+    phase: text(120),
+    baselineName: text(120),
+    windowText: text(120),
+    appendix: z.boolean().catch(false),
+    defectNotes: z
+      .record(z.string().regex(/^\d+$/), z.object({ feature: text(200), phase: z.enum(["in", "out", "tbc", ""]).catch(""), rationale: text(500) }))
+      .catch({}),
+  }),
+});
+
+/** The report's setup as URL-safe text, so a signed-in colleague can read the same report from Spira. */
+export function encodeShare(projectId: number, options: ReportOptions): string {
+  const o = shareSchema.shape.o.parse(options);
+  const bytes = new TextEncoder().encode(JSON.stringify({ p: projectId, o }));
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Null when the text is not a report link. */
+export function decodeShare(value: string): { projectId: number; options: ReportOptions } | null {
+  try {
+    const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/"));
+    const json = new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    const parsed = shareSchema.safeParse(JSON.parse(json));
+    return parsed.success ? { projectId: parsed.data.p, options: { ...defaultReportOptions(), ...parsed.data.o } } : null;
+  } catch {
+    return null;
+  }
 }
 
 export function emptyCounts(): OutcomeCounts {
@@ -633,14 +660,8 @@ export interface Report {
   targets: ReportTargets;
   notes: string;
   appendix: boolean;
-  /** Where each module's cases in this build come from. */
-  buildSource: {
-    modules: ModuleScopeSource[];
-    fromDrafts: boolean;
-    review: number;
-    outOfScope: number;
-    outOfScopeExecuted: number;
-  };
+  /** How this build was taken from the test cases mapped to the release in scope. */
+  build: BuildSource;
   sources: {
     incidentsComplete: boolean;
     linksPartial: boolean;
@@ -660,65 +681,24 @@ export interface ReportInput {
   /** Incidents linked to each looked-up test case. */
   links: Record<number, number[]>;
   generatedAt: string;
-  /** Boards of the drafts in this browser, keyed by test set ID. */
-  buildScope?: Record<number, BuildScopeSet>;
+  /**
+   * Test case IDs mapped to the release in scope (and its sprints) in Spira. Undefined when not read;
+   * when read but empty, every case in the release's test sets counts.
+   */
+  releaseCases?: number[];
 }
 
-/**
- * The scope each test set was given on a draft's board, by test case. When several drafts cover a test
- * set, an applied one wins over one still in review, then the latest comparison.
- */
-export function draftBuildScope(drafts: Draft[], projectId: number): Record<number, BuildScopeSet> {
-  const out: Record<number, BuildScopeSet> = {};
-  for (const draft of drafts) {
-    if (draft.projectId !== projectId) continue;
-    const applied = isCompleted(draft.status);
-    for (const set of draft.testSets) {
-      const current = out[set.testSetId];
-      if (current && (Number(current.applied) - Number(applied) || current.comparedAt.localeCompare(set.comparedAt)) >= 0) continue;
-      const kept = new Set<number>();
-      const review = new Set<number>();
-      const outOfScope = new Set<number>();
-      for (const card of set.cards) {
-        const column = effectiveColumn(card, draft.decisions);
-        (column === "outOfScope" ? outOfScope : column === "needsReview" ? review : kept).add(card.testCaseId);
-      }
-      out[set.testSetId] = {
-        testSetId: set.testSetId,
-        draftId: draft.id,
-        draftName: draft.name,
-        applied,
-        comparedAt: set.comparedAt,
-        kept: [...kept],
-        review: [...review].filter((id) => !kept.has(id)),
-        excluded: [...outOfScope].filter((id) => !kept.has(id) && !review.has(id)),
-      };
-    }
-  }
-  return out;
-}
-
-export type ScopeSourceKind = "drafts" | "partial" | "spira" | "excluded";
-
-export const SCOPE_SOURCE_LABEL: Record<ScopeSourceKind, string> = {
-  drafts: "In-scope list in this app",
-  partial: "In-scope list for some test sets",
-  spira: "Full Spira test sets",
-  excluded: "Not in this build",
-};
-
-export interface ModuleScopeSource {
-  id: string;
-  name: string;
-  source: ScopeSourceKind;
-  drafts: string[];
-  /** Every draft used has been applied, so Spira's test sets match it. */
-  applied: boolean;
-  sets: number;
-  setsFromDrafts: number;
-  /** Cases in Spira's test sets that the drafts put out of scope. */
-  outOfScope: number;
-  review: number;
+export interface BuildSource {
+  /** This build is the cases mapped to the release; false when the mapping was not read or is empty. */
+  fromRelease: boolean;
+  release: string;
+  /** Test cases mapped to the release in Spira. */
+  mapped: number;
+  /** Mapped cases with no place in the release's iOS or Android test sets, so no runs. */
+  notInTestSets: number[];
+  /** Runs in the release's test sets on cases not mapped to it, left out. */
+  unmappedRuns: number;
+  unmappedExecuted: number;
 }
 
 interface Placement {
@@ -750,7 +730,7 @@ interface Side {
   moduleNames: Map<string, string>;
 }
 
-type Keep = (set: ReportTestSet, moduleId: string, testCaseId: number) => boolean;
+type Keep = (stream: Stream, testCaseId: number) => boolean;
 
 /** One planned run: a case on one platform of a module. */
 interface Run {
@@ -776,7 +756,7 @@ function readSide(input: ReportInput, scope: ReportScope, keep: Keep = () => tru
     if (!moduleNames.has(s.moduleId)) moduleNames.set(s.moduleId, s.module);
     for (const c of input.results[s.set.testSetId] ?? []) {
       const key = `${s.moduleId}:${c.testCaseId}`;
-      const cases = keep(s.set, s.moduleId, c.testCaseId) ? kept : outside;
+      const cases = keep(s.stream, c.testCaseId) ? kept : outside;
       const planned = cases.get(key) ?? {
         testCaseId: c.testCaseId,
         name: c.name,
@@ -933,12 +913,10 @@ export function buildReport(input: ReportInput): Report {
   const labels = phaseLabels(options.phase ?? "");
   const notesById = options.defectNotes ?? {};
   const baseline = readSide(input, options.baseline);
-  const fromDrafts = (options.scopeSource ?? "drafts") === "drafts";
-  const boards = new Map(
-    Object.values(fromDrafts ? (input.buildScope ?? {}) : {}).map((b) => [b.testSetId, { board: b, excluded: new Set(b.excluded), review: new Set(b.review) }]),
-  );
-  const excludedModules = new Set(options.excludedModules ?? []);
-  const scoped = readSide(input, options.scoped, (set, module, testCaseId) => !excludedModules.has(module) && !boards.get(set.testSetId)?.excluded.has(testCaseId));
+  // This build is the cases mapped to the release in Spira, on each platform whose test sets hold them.
+  const mapped = new Set(input.releaseCases ?? []);
+  const fromRelease = mapped.size > 0;
+  const scoped = readSide(input, options.scoped, (stream, testCaseId) => !fromRelease || !isRunStream(stream) || mapped.has(testCaseId));
   const hasBaseline = options.baseline.releaseId !== null;
   const names = new Map([...baseline.moduleNames, ...scoped.moduleNames]);
   const nameOf = (id: string) => names.get(id) ?? id;
@@ -1056,7 +1034,7 @@ export function buildReport(input: ReportInput): Report {
 
   const modules = [...runsByModule.keys()].map((id) => moduleRow(id, runsByModule.get(id)!, baseByModule.get(id) ?? [], true));
   modules.sort((a, b) => (b.execPct ?? -1) - (a.execPct ?? -1) || b.inScope - a.inScope || a.name.localeCompare(b.name));
-  const laterModules = [...new Set([...baseByModule.keys(), ...[...excludedModules].filter((id) => scoped.moduleNames.has(id))])]
+  const laterModules = [...baseByModule.keys()]
     .filter((id) => !runsByModule.has(id))
     .map((id) => moduleRow(id, [], baseByModule.get(id)!, false))
     .sort((a, b) => b.plan - a.plan || a.name.localeCompare(b.name));
@@ -1069,7 +1047,7 @@ export function buildReport(input: ReportInput): Report {
   const apiTotal = tally(apiRuns);
   const spiraRollup = emptyCounts();
   for (const s of scoped.sets) {
-    if (!isRunStream(s.stream) || excludedModules.has(s.moduleId)) continue;
+    if (!isRunStream(s.stream)) continue;
     spiraRollup.passed += s.set.counts.passed;
     spiraRollup.failed += s.set.counts.failed;
     spiraRollup.blocked += s.set.counts.blocked;
@@ -1419,60 +1397,47 @@ export function buildReport(input: ReportInput): Report {
   const addedCases = hasBaseline ? caseRefs(runs.filter((r) => !baseKeys.has(r.key))) : [];
   const deferredCases = caseRefs(baseRuns.filter((r) => !runKeys.has(r.key)));
 
-  // Where each module's cases in this build come from.
-  const outsideRuns = runsOf({ ...scoped, cases: scoped.outside }, isRunStream).filter((r) => !excludedModules.has(r.moduleId));
-  const sourceModules: ModuleScopeSource[] = [...scoped.moduleNames]
-    .map(([id, name]) => {
-      const sets = scoped.sets.filter((s) => s.moduleId === id && isRunStream(s.stream));
-      const used = sets.flatMap((s) => {
-        const b = boards.get(s.set.testSetId);
-        return b ? [b.board] : [];
-      });
-      const review = [...scoped.cases.values()].filter((c) => c.moduleId === id && c.placements.some((p) => boards.get(p.set.testSetId)?.review.has(c.testCaseId))).length;
-      const source: ScopeSourceKind = excludedModules.has(id) ? "excluded" : used.length === 0 ? "spira" : used.length < sets.length ? "partial" : "drafts";
-      return {
-        id,
-        name,
-        source,
-        drafts: [...new Set(used.map((b) => b.draftName))],
-        applied: used.length > 0 && used.every((b) => b.applied),
-        sets: sets.length,
-        setsFromDrafts: used.length,
-        outOfScope: outsideRuns.filter((r) => r.moduleId === id).length,
-        review,
-      };
-    })
-    .filter((m) => m.sets > 0)
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const unlisted = fromDrafts ? sourceModules.filter((m) => m.source === "spira" || m.source === "partial") : [];
-  const listed = sourceModules.filter((m) => m.source === "drafts" || m.source === "partial");
-  const reviewCases = sourceModules.reduce((n, m) => n + m.review, 0);
+  // This build against the release's test case mapping.
+  const releaseName = scopeLabel(catalog, { releaseId: options.scoped.releaseId, folderId: null });
+  const outsideRuns = runsOf({ ...scoped, cases: scoped.outside }, isRunStream);
   const outsideExecuted = outsideRuns.filter((r) => isExecuted(r.outcome)).length;
+  const runCaseIds = new Set(runs.map((r) => r.testCaseId));
+  const notInTestSets = fromRelease ? [...mapped].filter((id) => !runCaseIds.has(id)).sort((a, b) => a - b) : [];
+  const build: BuildSource = {
+    fromRelease,
+    release: releaseName,
+    mapped: mapped.size,
+    notInTestSets,
+    unmappedRuns: outsideRuns.length,
+    unmappedExecuted: outsideExecuted,
+  };
 
   // Data checks.
   const findings: Finding[] = [];
-  if (unlisted.length && listed.length) {
+  if (input.releaseCases && !fromRelease) {
     findings.push({
-      severity: "Medium",
-      check: "Modules without an in-scope list in this app",
-      appliesTo: list(unlisted.map((m) => m.name)),
-      detail: "Their full Spira test sets are counted in this build. Compare them with their in-scope workbook to set their scope",
+      severity: "High",
+      check: "No test cases mapped to the release",
+      appliesTo: releaseName,
+      detail: `Every case in its test sets is counted in ${labels.name}. Map the in-scope cases to ${releaseName} in Spira to scope it`,
     });
   }
-  if (reviewCases) {
+  if (notInTestSets.length) {
     findings.push({
-      severity: "Low",
-      check: "Cases still in Needs Review",
-      appliesTo: list(sourceModules.filter((m) => m.review).map((m) => m.name)),
-      detail: `${plural(reviewCases, "case")} counted in this build until reviewed`,
+      severity: "Medium",
+      check: "Mapped cases in no test set",
+      appliesTo: notInTestSets.length <= 8 ? notInTestSets.map((id) => `TC:${id}`).join(", ") : releaseName,
+      detail: `${plural(notInTestSets.length, "case")} mapped to ${releaseName} ${notInTestSets.length === 1 ? "is" : "are"} in none of its iOS or Android test sets, so ${
+        notInTestSets.length === 1 ? "it has" : "they have"
+      } no runs here`,
     });
   }
   if (outsideExecuted) {
     findings.push({
       severity: "Low",
-      check: "Results on cases outside this build",
+      check: "Results on cases not mapped to the release",
       appliesTo: list([...new Set(outsideRuns.filter((r) => isExecuted(r.outcome)).map((r) => r.module))].sort()),
-      detail: `${plural(outsideExecuted, "run")} put out of scope in this app ${outsideExecuted === 1 ? "has" : "have"} a result in Spira and ${outsideExecuted === 1 ? "is" : "are"} left out`,
+      detail: `${plural(outsideExecuted, "run")} in the test sets ${outsideExecuted === 1 ? "has" : "have"} a result but ${outsideExecuted === 1 ? "is" : "are"} on cases not mapped to ${releaseName}, so ${outsideExecuted === 1 ? "it is" : "they are"} left out`,
     });
   }
   const modulesOf = (cases: CaseRef[]) => list([...new Set(cases.map((c) => c.module))].sort());
@@ -1790,11 +1755,8 @@ export function buildReport(input: ReportInput): Report {
     hasBaseline
       ? `Test cases were scoped from the full plan (${planText}) to ${labels.name} (${buildText}${kpis.added ? `, including ${addedText} added in testing` : ""}).`
       : `${labels.build}: ${buildText}.`,
-    fromDrafts && listed.length ? `${labels.build} follows the in-scope lists reviewed in this app for ${list(listed.map((m) => m.name))}.` : "",
-    unlisted.length && listed.length
-      ? `${list(unlisted.map((m) => (m.source === "partial" ? `${m.name} (some test sets)` : m.name)))} ${unlisted.length === 1 ? "has" : "have"} no in-scope list in this app yet, so ${
-          unlisted.length === 1 ? "its" : "their"
-        } full Spira test sets are counted.`
+    fromRelease
+      ? `${labels.build} is the ${plural(mapped.size, "test case")} mapped to release ${releaseName} in Spira${streams.length > 1 ? `, each run on ${list(streams)}` : ""}.`
       : "",
     laterModules.length ? `${list(laterModules.map((m) => m.name))} ${laterModules.length === 1 ? "is" : "are"} not part of ${labels.name}.` : "",
     kpis.api.inScope ? `The API stream (${plural(kpis.api.inScope, "case")}, ${kpis.api.executed.toLocaleString()} executed) is reported separately.` : "",
@@ -1813,7 +1775,7 @@ export function buildReport(input: ReportInput): Report {
       spiraRollup.passed === kpis.outcomes.passed && spiraRollup.failed === kpis.outcomes.failed
         ? ", matching this report"
         : outsideRuns.length
-          ? `; ${plural(outsideRuns.length, "case")} put out of scope in this app ${outsideRuns.length === 1 ? "is" : "are"} still in Spira's test sets and left out here`
+          ? `; ${plural(outsideRuns.length, "run")} in those test sets ${outsideRuns.length === 1 ? "is" : "are"} on cases not mapped to the release and left out here`
           : "; this report counts each case once per platform from the cases read"
     }.`,
     hasBaseline ? `${baselineName} is used for the total plan and the comparison only.` : "",
@@ -1865,7 +1827,7 @@ export function buildReport(input: ReportInput): Report {
     targets,
     notes: options.notes.trim(),
     appendix: options.appendix ?? false,
-    buildSource: { modules: sourceModules, fromDrafts, review: reviewCases, outOfScope: outsideRuns.length, outOfScopeExecuted: outsideExecuted },
+    build,
     sources: {
       incidentsComplete: input.incidentsComplete,
       linksPartial,

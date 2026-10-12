@@ -1,95 +1,43 @@
 "use client";
 
 import clsx from "clsx";
-import { FileChartColumn, FileSpreadsheet, ListChecks, NotebookPen, Printer, RefreshCw, Settings2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, Eye, FileChartColumn, Link2, NotebookPen, RefreshCw, Settings2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
 import {
   buildReport,
-  classifySet,
   compareSnapshots,
+  decodeShare,
+  encodeShare,
   folderFamily,
   folderPath,
+  formatPct,
   initialReportOptions,
-  isRunStream,
-  moduleId,
   previousSnapshot,
   sameScope,
-  SCOPE_SOURCE_LABEL,
   scopeHints,
   setsInScope,
   snapshotOf,
+  splitText,
   type DefectNote,
-  type Report,
-  type ScopeSourceKind,
   type RagStatus,
+  type Report,
   type ReportInput,
   type ReportOptions,
   type ReportScope,
   type ScopeHint,
 } from "@/lib/domain/report";
 import type { ReportCatalog } from "@/lib/domain/types";
-import { ReportDocument, type ReportChanges } from "./report-document";
+import { type ReportChanges } from "./report-document";
+import { ReportViewer } from "./report-viewer";
 
 type CatalogState = { projectId: number; catalog: ReportCatalog | null; error: string | null };
 
-const SOURCE_TONE: Record<ScopeSourceKind, "success" | "warning" | "neutral"> = { drafts: "success", partial: "warning", spira: "warning", excluded: "neutral" };
-
-function BuildSourcePanel({ report, open, onToggle }: { report: Report; open: boolean; onToggle: () => void }) {
-  const { modules } = report.buildSource;
-  const unlisted = modules.filter((m) => m.source === "spira" || m.source === "partial");
-  return (
-    <Collapsible title={`Where ${report.labels.name === "this build" ? "this build" : report.labels.name} comes from`} count={modules.length} icon={ListChecks} open={open} onToggle={onToggle}>
-      <div className="flex flex-col gap-3 px-5 pt-2 pb-5 text-sm">
-        <p className="text-slate-600 dark:text-zinc-400">
-          {report.buildSource.fromDrafts
-            ? "Each module's cases in this build, from the boards of your drafts in this browser where a test set was compared, otherwise from Spira's test set. Results always come from Spira."
-            : "Every case in Spira's test sets counts in this build."}
-        </p>
-        {report.buildSource.fromDrafts && unlisted.length > 0 && (
-          <Notice tone="warning" title={`${unlisted.length} module${unlisted.length === 1 ? " has" : "s have"} no in-scope list in this app`}>
-            {unlisted.map((m) => m.name).join(", ")} count{unlisted.length === 1 ? "s" : ""} every case in Spira&apos;s test sets. Compare {unlisted.length === 1 ? "it" : "each"} with its in-scope workbook
-            (no live apply is needed for the report), or mark it as not in this build above.
-          </Notice>
-        )}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="text-left text-xs text-slate-500 dark:text-zinc-400">
-                <th className="py-1.5 pr-3 font-medium">Module</th>
-                <th className="py-1.5 pr-3 font-medium">Source</th>
-                <th className="py-1.5 pr-3 font-medium">Drafts</th>
-                <th className="py-1.5 pr-3 text-right font-medium">In this build</th>
-                <th className="py-1.5 pr-3 text-right font-medium">Out of scope, still in Spira</th>
-                <th className="py-1.5 text-right font-medium">Needs review</th>
-              </tr>
-            </thead>
-            <tbody>
-              {modules.map((m) => {
-                const row = report.modules.find((r) => r.id === m.id);
-                return (
-                  <tr key={m.id} className="border-t border-slate-100 dark:border-white/[0.06]">
-                    <td className="py-2 pr-3 font-medium">{m.name}</td>
-                    <td className="py-2 pr-3">
-                      <Badge tone={SOURCE_TONE[m.source]}>{SOURCE_TONE[m.source] === "success" && m.applied ? `${SCOPE_SOURCE_LABEL[m.source]} · applied` : SCOPE_SOURCE_LABEL[m.source]}</Badge>
-                    </td>
-                    <td className="py-2 pr-3 text-slate-600 dark:text-zinc-400">{m.drafts.join(", ") || "—"}</td>
-                    <td className="py-2 pr-3 text-right tabular-nums">{row ? `${row.inScope.toLocaleString()} runs` : "—"}</td>
-                    <td className="py-2 pr-3 text-right tabular-nums">{m.outOfScope ? m.outOfScope.toLocaleString() : "—"}</td>
-                    <td className="py-2 text-right tabular-nums">{m.review ? m.review.toLocaleString() : "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </Collapsible>
-  );
-}
+const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green: "success", amber: "warning", red: "danger" };
 
 function HintRow({ text, hints, empty, onPick }: { text: string; hints: ScopeHint[]; empty: string; onPick: (scope: ReportScope) => void }) {
   if (hints.length === 0) return <p>{empty}</p>;
@@ -216,10 +164,68 @@ function ScopePicker({
   );
 }
 
-export function ReportWorkspace() {
+function Figure({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium text-slate-500 dark:text-zinc-400">{label}</dt>
+      <dd className="mt-0.5 text-xl leading-none font-semibold tracking-tight tabular-nums">{value}</dd>
+      {hint && <dd className="mt-1 text-xs text-slate-500 tabular-nums dark:text-zinc-500">{hint}</dd>}
+    </div>
+  );
+}
+
+/** The generated report in brief, with the button that opens it. */
+function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: () => void; onShare: () => void }) {
+  const k = report.kpis;
+  const { build } = report;
+  return (
+    <section className="surface flex flex-col gap-4 p-5">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold tracking-tight">{report.title}</p>
+          <p className="mt-0.5 text-sm text-slate-600 dark:text-zinc-400">
+            {build.fromRelease
+              ? `${report.labels.build}: the ${build.mapped.toLocaleString()} test cases mapped to release ${build.release} in Spira.`
+              : `${report.labels.build}: every case in the test sets of ${build.release}.`}
+          </p>
+        </div>
+        <Badge tone={STATUS_TONE[report.status]}>Overall {report.status.toUpperCase()}</Badge>
+      </div>
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Figure label="Total test plan" value={k.plan.toLocaleString()} hint={report.hasBaseline ? splitText(k.split.plan, report.streams) : undefined} />
+        <Figure label={report.labels.build} value={k.inScope.toLocaleString()} hint={splitText(k.split.inScope, report.streams)} />
+        <Figure label="Executed" value={k.executed.toLocaleString()} hint={`${formatPct(k.execPct)} of ${report.labels.name}`} />
+        <Figure label="Pass rate" value={formatPct(k.passPct)} hint={`${k.outcomes.passed.toLocaleString()} passed · ${k.outcomes.failed.toLocaleString()} failed`} />
+      </dl>
+      {!build.fromRelease && (
+        <Notice tone="warning" title={`No test cases are mapped to release ${build.release} in Spira`}>
+          Every case in its test sets is counted. Map the in-scope cases to the release in Spira, then read Spira again.
+        </Notice>
+      )}
+      {build.fromRelease && build.notInTestSets.length > 0 && (
+        <Notice tone="info" title={`${build.notInTestSets.length.toLocaleString()} mapped case${build.notInTestSets.length === 1 ? " is" : "s are"} in no test set`}>
+          {build.notInTestSets.length === 1 ? "It is" : "They are"} mapped to release {build.release} but not in any of its iOS or Android test sets, so{" "}
+          {build.notInTestSets.length === 1 ? "it has" : "they have"} no runs in the report: {build.notInTestSets.slice(0, 12).map((id) => `TC:${id}`).join(", ")}
+          {build.notInTestSets.length > 12 ? "…" : "."}
+        </Notice>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" icon={Eye} onClick={onOpen}>
+          Open report
+        </Button>
+        <Button icon={Link2} onClick={onShare}>
+          Share link
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+export function ReportWorkspace({ share }: { share: string | null }) {
   const { settings, spira } = useSettings();
   const projectId = settings?.projectId ?? null;
   const configured = spira?.configured === true;
+  const shared = useMemo(() => (share ? decodeShare(share) : null), [share]);
 
   const [catalogState, setCatalogState] = useState<CatalogState | null>(null);
   const [stored, setStored] = useState<{ projectId: number; options: ReportOptions | null } | null>(null);
@@ -227,8 +233,9 @@ export function ReportWorkspace() {
   const [data, setData] = useState<{ input: ReportInput; changes: ReportChanges | null } | null>(null);
   const [progress, setProgress] = useState<ReportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const [sourceOpen, setSourceOpen] = useState<boolean | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -238,14 +245,16 @@ export function ReportWorkspace() {
       (catalog) => {
         if (cancelled) return;
         setCatalogState({ projectId, catalog, error: null });
-        setStored((current) => (current?.projectId === projectId ? current : { projectId, options: loadReportOptions(projectId) }));
+        setStored((current) =>
+          current?.projectId === projectId ? current : { projectId, options: shared?.projectId === projectId ? shared.options : loadReportOptions(projectId) },
+        );
       },
       (err) => !cancelled && setCatalogState({ projectId, catalog: null, error: errorMessage(err) }),
     );
     return () => {
       cancelled = true;
     };
-  }, [configured, projectId, reload]);
+  }, [configured, projectId, reload, shared]);
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -269,10 +278,14 @@ export function ReportWorkspace() {
   };
 
   // Presentation choices apply at once; the scope applies to the data read for it.
+  const reportOptions = useMemo(
+    () => (data && options ? { ...options, baseline: data.input.options.baseline, scoped: data.input.options.scoped } : null),
+    [data, options],
+  );
   const report = useMemo(() => {
-    if (!data || !options || data.input.catalog.projectId !== projectId) return null;
-    return buildReport({ ...data.input, options: { ...options, baseline: data.input.options.baseline, scoped: data.input.options.scoped } });
-  }, [data, options, projectId]);
+    if (!data || !reportOptions || data.input.catalog.projectId !== projectId) return null;
+    return buildReport({ ...data.input, options: reportOptions });
+  }, [data, reportOptions, projectId]);
   const scopeChanged = !!(data && options && (!sameScope(data.input.options.scoped, options.scoped) || !sameScope(data.input.options.baseline, options.baseline)));
 
   const generate = async () => {
@@ -290,6 +303,7 @@ export function ReportWorkspace() {
       const before = recordSnapshot(built, options);
       const previous = previousSnapshot(before, built);
       setData({ input, changes: previous ? { since: previous.at, rows: compareSnapshots(previous, snapshotOf(built)) } : null });
+      setViewerOpen(true);
     } catch (err) {
       if ((err as Error).name !== "AbortError") setError(errorMessage(err));
     } finally {
@@ -297,33 +311,25 @@ export function ReportWorkspace() {
     }
   };
 
-  const busy = progress !== null;
-  const sourcePanelOpen = sourceOpen ?? !!report?.buildSource.modules.some((m) => m.source === "spira" || m.source === "partial");
-  const scopedSets = catalog && options ? setsInScope(catalog, options.scoped).length : 0;
-  const mappings = settings?.mappings;
-  const scopedModules = useMemo(() => {
-    if (!catalog || !options) return [];
-    const modules = new Map<string, string>();
-    for (const set of setsInScope(catalog, options.scoped)) {
-      const { module, stream } = classifySet(set, catalog.folders, mappings ?? []);
-      if (isRunStream(stream) && !modules.has(moduleId(module))) modules.set(moduleId(module), module);
+  const shareLink = async () => {
+    if (!reportOptions || projectId === null) return;
+    const url = `${window.location.origin}/reports?share=${encodeShare(projectId, reportOptions)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success("Link copied. Whoever opens it signs in first, then generates the same report live from Spira.");
+    } catch {
+      window.prompt("Copy this link to share the report", url);
     }
-    return [...modules].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [catalog, options, mappings]);
-  const actions = report && (
-    <>
-      <Button icon={Printer} onClick={() => window.print()}>
-        Print or save PDF
-      </Button>
-      <Button icon={FileSpreadsheet} onClick={() => void exportReportWorkbook(report, spira?.siteUrl ?? null)}>
-        Excel
-      </Button>
-    </>
-  );
+  };
+
+  const closeViewer = useCallback(() => setViewerOpen(false), []);
+  const busy = progress !== null;
+  const scopedSets = catalog && options ? setsInScope(catalog, options.scoped).length : 0;
+  const fileName = report ? `${report.title} ${report.generatedAt.slice(0, 10)}`.replace(/[\\/:*?"<>|]+/g, "-") : "";
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="print:hidden">
+      <div className={clsx("flex flex-col gap-6", viewerOpen && "print:hidden")}>
         <PageHeader
           eyebrow={
             <>
@@ -331,227 +337,210 @@ export function ReportWorkspace() {
             </>
           }
           title="Executive test report"
-          description="Read live from Spira every time: progress, readiness against exit criteria, defects and retesting, and the scope compared with the baseline release. Nothing is written to Spira."
-          actions={actions}
+          description="Read live from Spira every time: this build is the test cases mapped to the release in scope, measured against the full test plan. Nothing is written to Spira."
         />
-      </div>
 
-      {spira && !configured && (
-        <Notice tone="warning" title="Spira is not connected" className="print:hidden" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
-          The report reads everything from Spira. Connect it in Settings first.
-        </Notice>
-      )}
-      {configured && settings && projectId === null && (
-        <Notice tone="warning" title="Choose a project" className="print:hidden" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
-          Pick the Spira project in Settings, then come back here.
-        </Notice>
-      )}
-      {current?.error && (
-        <Notice tone="danger" title="Could not read the project from Spira" className="print:hidden" action={<Button size="sm" icon={RefreshCw} onClick={() => setReload((n) => n + 1)}>Try again</Button>}>
-          {current.error}
-        </Notice>
-      )}
-      {configured && projectId !== null && !current && (
-        <div className="surface flex items-center gap-3 p-6 text-sm text-slate-600 print:hidden dark:text-zinc-400">
-          <Spinner /> Reading releases, folders and test sets from Spira…
-        </div>
-      )}
+        {share && !shared && (
+          <Notice tone="danger" title="This report link is not valid">
+            It may have been cut short when it was copied. Ask for the link again, or set the report up below.
+          </Notice>
+        )}
+        {shared && projectId !== null && shared.projectId !== projectId && (
+          <Notice tone="warning" title="This report link is for another project" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
+            It reports on Spira project {shared.projectId}. Choose that project in Settings, then open the link again.
+          </Notice>
+        )}
+        {shared && shared.projectId === projectId && !data && !busy && (
+          <Notice tone="info" title="Report setup from a shared link">
+            Generate the report to read it live from Spira with the same release, baseline and settings.
+          </Notice>
+        )}
 
-      {catalog && options && (
-        <Section
-          className="print:hidden"
-          title="Report setup"
-          description={`${catalog.projectName}: ${catalog.releases.length} releases, ${catalog.testSets.length} test sets. Your choices are kept in this browser.`}
-          actions={
-            <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => setReload((n) => n + 1)} disabled={busy}>
-              Refresh lists
-            </Button>
-          }
-        >
-          <div className="grid gap-4 lg:grid-cols-2">
-            <ScopePicker
-              title="In scope"
-              hint="The release being executed, for example 1.0.0.0002. Progress, readiness and defects are measured here."
-              catalog={catalog}
-              scope={options.scoped}
-              onChange={(scoped) => update({ scoped })}
-            />
-            <ScopePicker
-              title="Baseline"
-              hint="The full set of test cases across modules and platforms, for example 1.0.0.0001. The scope is compared with it."
-              catalog={catalog}
-              scope={options.baseline}
-              optional
-              onChange={(baseline) => update({ baseline })}
-            />
+        {spira && !configured && (
+          <Notice tone="warning" title="Spira is not connected" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
+            The report reads everything from Spira. Connect it in Settings first.
+          </Notice>
+        )}
+        {configured && settings && projectId === null && (
+          <Notice tone="warning" title="Choose a project" action={<ButtonLink href="/settings" icon={Settings2} size="sm">Settings</ButtonLink>}>
+            Pick the Spira project in Settings, then come back here.
+          </Notice>
+        )}
+        {current?.error && (
+          <Notice tone="danger" title="Could not read the project from Spira" action={<Button size="sm" icon={RefreshCw} onClick={() => setReload((n) => n + 1)}>Try again</Button>}>
+            {current.error}
+          </Notice>
+        )}
+        {configured && projectId !== null && !current && (
+          <div className="surface flex items-center gap-3 p-6 text-sm text-slate-600 dark:text-zinc-400">
+            <Spinner /> Reading releases, folders and test sets from Spira…
           </div>
+        )}
 
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Field label="Report title" hint="Empty uses the project name.">
-              {(props) => <input {...props} className="input" value={options.title} placeholder={`${catalog.projectName} — Test Report`} onChange={(e) => update({ title: e.target.value })} />}
-            </Field>
-            <Field label="Cycle" hint="Shown in the header.">
-              {(props) => <input {...props} className="input" value={options.environment} placeholder="SIT Cycle 2" onChange={(e) => update({ environment: e.target.value })} />}
-            </Field>
-            <Field label="Prepared by">
-              {(props) => <input {...props} className="input" value={options.preparedBy} onChange={(e) => update({ preparedBy: e.target.value })} />}
-            </Field>
-            <Field label="Go-live date">
-              {(props) => <input {...props} type="date" className="input" value={options.goLive ?? ""} onChange={(e) => update({ goLive: e.target.value || null })} />}
-            </Field>
-          </div>
-
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Field label="Exit target: executed (%)">
-              {(props) => (
-                <input
-                  {...props}
-                  type="number"
-                  min={1}
-                  max={100}
-                  className="input"
-                  value={options.targets.executedPct}
-                  onChange={(e) => update({ targets: { ...options.targets, executedPct: Math.min(100, Math.max(1, Number(e.target.value) || 100)) } })}
-                />
-              )}
-            </Field>
-            <Field label="Exit target: pass rate (%)">
-              {(props) => (
-                <input
-                  {...props}
-                  type="number"
-                  min={1}
-                  max={100}
-                  className="input"
-                  value={options.targets.passRatePct}
-                  onChange={(e) => update({ targets: { ...options.targets, passRatePct: Math.min(100, Math.max(1, Number(e.target.value) || 95)) } })}
-                />
-              )}
-            </Field>
-            <Field label="Defect ageing SLA (days)">
-              {(props) => (
-                <input
-                  {...props}
-                  type="number"
-                  min={1}
-                  max={365}
-                  className="input"
-                  value={options.targets.agingDays}
-                  onChange={(e) => update({ targets: { ...options.targets, agingDays: Math.min(365, Math.max(1, Number(e.target.value) || 10)) } })}
-                />
-              )}
-            </Field>
-            <Field label="Overall status" hint={report ? `From the exit criteria: ${report.autoStatus.toUpperCase()}` : "From the exit criteria unless you set it."}>
-              {(props) => (
-                <select {...props} className="input" value={options.status} onChange={(e) => update({ status: e.target.value as "auto" | RagStatus })}>
-                  <option value="auto">From the exit criteria</option>
-                  <option value="green">Green</option>
-                  <option value="amber">Amber</option>
-                  <option value="red">Red</option>
-                </select>
-              )}
-            </Field>
-          </div>
-
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Field label="Build name" hint={`Shown as "This build (Phase 1)" and in the defect register.`}>
-              {(props) => <input {...props} className="input" value={options.phase} placeholder="Phase 1" onChange={(e) => update({ phase: e.target.value })} />}
-            </Field>
-            <Field label="Baseline name" hint="Used in the cycle comparison. Empty uses the baseline folder.">
-              {(props) => <input {...props} className="input" value={options.baselineName} placeholder="Cycle 1" onChange={(e) => update({ baselineName: e.target.value })} />}
-            </Field>
-            <Field label="Executions" hint={report?.window.first ? `Empty reads the run dates: ${report.window.first.slice(0, 10)} to ${report.window.last?.slice(0, 10)}.` : "Empty reads the run dates from Spira."}>
-              {(props) => <input {...props} className="input" value={options.windowText} placeholder="Fri 9 – Sun 11 Oct 2026" onChange={(e) => update({ windowText: e.target.value })} />}
-            </Field>
-            <div className="pt-6">
-              <Switch checked={options.appendix} onChange={(appendix) => update({ appendix })} label="Add appendix" description="Data checks, trend, test sets and failed cases after the four pages." />
+        {catalog && options && (
+          <Section
+            title="Report setup"
+            description={`${catalog.projectName}: ${catalog.releases.length} releases, ${catalog.testSets.length} test sets. Your choices are kept in this browser.`}
+            actions={
+              <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => setReload((n) => n + 1)} disabled={busy}>
+                Refresh lists
+              </Button>
+            }
+          >
+            <div className="grid gap-4 lg:grid-cols-2">
+              <ScopePicker
+                title="This build"
+                hint="The release being tested, for example 1.0.0.0002. The build is the test cases mapped to this release in Spira; their results come from its test sets."
+                catalog={catalog}
+                scope={options.scoped}
+                onChange={(scoped) => update({ scoped })}
+              />
+              <ScopePicker
+                title="Total test plan"
+                hint="The full set of test cases across modules and platforms, for example 1.0.0.0001 in SIT Cycle 1. Used for the total plan and the comparison."
+                catalog={catalog}
+                scope={options.baseline}
+                optional
+                onChange={(baseline) => update({ baseline })}
+              />
             </div>
-          </div>
 
-          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-            <Field
-              label="This build comes from"
-              hint="A test set compared in this app counts only the cases its board keeps (In Scope, Defects, Blocked, Needs Review); its Out of Scope cases count as later builds. Results always come from Spira."
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Field label="Report title" hint="Empty uses the project name.">
+                {(props) => <input {...props} className="input" value={options.title} placeholder={`${catalog.projectName} — Test Report`} onChange={(e) => update({ title: e.target.value })} />}
+              </Field>
+              <Field label="Cycle" hint="Shown in the header.">
+                {(props) => <input {...props} className="input" value={options.environment} placeholder="SIT Cycle 2" onChange={(e) => update({ environment: e.target.value })} />}
+              </Field>
+              <Field label="Prepared by">
+                {(props) => <input {...props} className="input" value={options.preparedBy} onChange={(e) => update({ preparedBy: e.target.value })} />}
+              </Field>
+              <Field label="Go-live date">
+                {(props) => <input {...props} type="date" className="input" value={options.goLive ?? ""} onChange={(e) => update({ goLive: e.target.value || null })} />}
+              </Field>
+            </div>
+
+            <button
+              type="button"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((o) => !o)}
+              className="mt-4 inline-flex cursor-pointer items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-white"
             >
-              {(props) => (
-                <select {...props} className="input" value={options.scopeSource} onChange={(e) => update({ scopeSource: e.target.value as ReportOptions["scopeSource"] })}>
-                  <option value="drafts">In-scope lists in this app, else Spira</option>
-                  <option value="spira">Spira test sets only</option>
-                </select>
+              <ChevronDown className={clsx("size-4 transition-transform", moreOpen && "rotate-180")} aria-hidden />
+              More options: names, exit targets, status, notes and appendix
+            </button>
+            {moreOpen && (
+              <div className="mt-3 flex flex-col gap-4 border-t border-slate-100 pt-4 dark:border-white/[0.06]">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Field label="Build name" hint={`Shown as "This build (Phase 1)" and in the defect register.`}>
+                    {(props) => <input {...props} className="input" value={options.phase} placeholder="Phase 1" onChange={(e) => update({ phase: e.target.value })} />}
+                  </Field>
+                  <Field label="Baseline name" hint="Used in the cycle comparison. Empty uses the baseline folder.">
+                    {(props) => <input {...props} className="input" value={options.baselineName} placeholder="Cycle 1" onChange={(e) => update({ baselineName: e.target.value })} />}
+                  </Field>
+                  <Field
+                    label="Executions"
+                    hint={report?.window.first ? `Empty reads the run dates: ${report.window.first.slice(0, 10)} to ${report.window.last?.slice(0, 10)}.` : "Empty reads the run dates from Spira."}
+                  >
+                    {(props) => <input {...props} className="input" value={options.windowText} placeholder="Fri 9 – Sun 11 Oct 2026" onChange={(e) => update({ windowText: e.target.value })} />}
+                  </Field>
+                  <Field label="Overall status" hint={report ? `From the exit criteria: ${report.autoStatus.toUpperCase()}` : "From the exit criteria unless you set it."}>
+                    {(props) => (
+                      <select {...props} className="input" value={options.status} onChange={(e) => update({ status: e.target.value as "auto" | RagStatus })}>
+                        <option value="auto">From the exit criteria</option>
+                        <option value="green">Green</option>
+                        <option value="amber">Amber</option>
+                        <option value="red">Red</option>
+                      </select>
+                    )}
+                  </Field>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Field label="Exit target: executed (%)">
+                    {(props) => (
+                      <input
+                        {...props}
+                        type="number"
+                        min={1}
+                        max={100}
+                        className="input"
+                        value={options.targets.executedPct}
+                        onChange={(e) => update({ targets: { ...options.targets, executedPct: Math.min(100, Math.max(1, Number(e.target.value) || 100)) } })}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Exit target: pass rate (%)">
+                    {(props) => (
+                      <input
+                        {...props}
+                        type="number"
+                        min={1}
+                        max={100}
+                        className="input"
+                        value={options.targets.passRatePct}
+                        onChange={(e) => update({ targets: { ...options.targets, passRatePct: Math.min(100, Math.max(1, Number(e.target.value) || 95)) } })}
+                      />
+                    )}
+                  </Field>
+                  <Field label="Defect ageing SLA (days)">
+                    {(props) => (
+                      <input
+                        {...props}
+                        type="number"
+                        min={1}
+                        max={365}
+                        className="input"
+                        value={options.targets.agingDays}
+                        onChange={(e) => update({ targets: { ...options.targets, agingDays: Math.min(365, Math.max(1, Number(e.target.value) || 10)) } })}
+                      />
+                    )}
+                  </Field>
+                  <div className="pt-6">
+                    <Switch checked={options.appendix} onChange={(appendix) => update({ appendix })} label="Add appendix" description="Data checks, trend, test sets and failed cases after the four pages." />
+                  </div>
+                </div>
+                <Field label="QA notes" hint="Optional. Shown on the first page, for example scope decisions or build notes.">
+                  {(props) => <textarea {...props} rows={3} className="input" value={options.notes} onChange={(e) => update({ notes: e.target.value })} />}
+                </Field>
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0}>
+                {data ? "Read Spira again" : "Generate report"}
+              </Button>
+              {options.scoped.releaseId === null ? (
+                <span className="text-sm text-slate-500">Choose the release for this build first.</span>
+              ) : (
+                scopedSets === 0 && <span className="text-sm text-slate-500">No test sets are in scope; pick a release and folder that hold test sets.</span>
               )}
-            </Field>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">Modules not in this build</span>
-              <div className="flex flex-wrap gap-1.5">
-                {scopedModules.map((m) => {
-                  const out = options.excludedModules.includes(m.id);
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      aria-pressed={out}
-                      onClick={() => update({ excludedModules: out ? options.excludedModules.filter((id) => id !== m.id) : [...options.excludedModules, m.id] })}
-                      className={clsx(
-                        "cursor-pointer rounded-full px-2.5 py-1 text-xs font-medium ring-1 transition ring-inset",
-                        out ? "bg-slate-700 text-white ring-slate-700 dark:bg-zinc-200 dark:text-zinc-900" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 dark:bg-white/[0.04] dark:text-zinc-300 dark:ring-white/10",
-                      )}
-                    >
-                      {out ? "✕ " : ""}
-                      {m.name}
-                    </button>
-                  );
-                })}
-                {scopedModules.length === 0 && <span className="text-xs text-slate-500">No modules in scope yet.</span>}
-              </div>
-              <span className="text-xs text-slate-500 dark:text-zinc-400">Pick modules that have test sets in scope but are planned for a later build; they show as later builds, like Accounts in Phase 1.</span>
+              {busy && progress && (
+                <div className="flex min-w-60 flex-1 flex-col gap-1.5">
+                  <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
+                    {progress.step}
+                    {progress.total > 1 && ` · ${progress.done} of ${progress.total}`}
+                  </span>
+                  <ProgressBar value={progress.done} max={Math.max(1, progress.total)} />
+                </div>
+              )}
             </div>
-          </div>
-
-          <Field label="QA notes" hint="Optional. Shown on the first page, for example scope decisions or build notes." className="mt-4">
-            {(props) => <textarea {...props} rows={3} className="input" value={options.notes} onChange={(e) => update({ notes: e.target.value })} />}
-          </Field>
-
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0}>
-              {data ? "Read Spira again" : "Generate report"}
-            </Button>
-            {options.scoped.releaseId === null ? (
-              <span className="text-sm text-slate-500">Choose the release in scope first.</span>
-            ) : (
-              scopedSets === 0 && <span className="text-sm text-slate-500">No test sets are in scope; pick a release and folder that hold test sets.</span>
+            {scopeChanged && !busy && (
+              <Notice tone="info" className="mt-4">
+                The release or baseline changed since Spira was read. Read Spira again to report on them; the report you have is still for the previous choice.
+              </Notice>
             )}
-            {busy && progress && (
-              <div className="flex min-w-60 flex-1 flex-col gap-1.5">
-                <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
-                  {progress.step}
-                  {progress.total > 1 && ` · ${progress.done} of ${progress.total}`}
-                </span>
-                <ProgressBar value={progress.done} max={Math.max(1, progress.total)} />
-              </div>
-            )}
-          </div>
-          {scopeChanged && !busy && (
-            <Notice tone="info" className="mt-4">
-              The scope changed since Spira was read. Read Spira again to report on the new scope; the report below is still for the previous one.
-            </Notice>
-          )}
-        </Section>
-      )}
+          </Section>
+        )}
 
-      {error && (
-        <Notice tone="danger" title="The report could not be read from Spira" className="print:hidden">
-          {error}
-        </Notice>
-      )}
+        {error && (
+          <Notice tone="danger" title="The report could not be read from Spira">
+            {error}
+          </Notice>
+        )}
 
-      {report && report.buildSource.modules.length > 0 && (
-        <div className="print:hidden">
-          <BuildSourcePanel report={report} open={sourcePanelOpen} onToggle={() => setSourceOpen(!sourcePanelOpen)} />
-        </div>
-      )}
+        {report && <ReportSummary report={report} onOpen={() => setViewerOpen(true)} onShare={() => void shareLink()} />}
 
-      {report && report.defects.rows.length > 0 && options && (
-        <div className="print:hidden">
+        {report && report.defects.rows.length > 0 && options && (
           <Collapsible title="Defect register notes" count={report.defects.rows.length} icon={NotebookPen} open={notesOpen} onToggle={() => setNotesOpen((o) => !o)}>
             <p className="px-5 pt-2 text-sm text-slate-600 dark:text-zinc-400">
               Your reading of each defect for the register on page 4: the feature, whether it is in {report.labels.name}, and why it has its severity and priority. Kept in this
@@ -601,21 +590,25 @@ export function ReportWorkspace() {
               </table>
             </div>
           </Collapsible>
-        </div>
-      )}
+        )}
 
-      {report ? (
-        <ReportDocument report={report} changes={data?.changes ?? null} siteUrl={spira?.siteUrl ?? null} />
-      ) : (
-        catalog &&
-        options &&
-        !busy && (
-          <div className="print:hidden">
-            <EmptyState icon={FileChartColumn} title="No report yet">
-              Choose the release in scope and the baseline, then generate. Every figure is read from Spira at that moment.
-            </EmptyState>
-          </div>
-        )
+        {!report && catalog && options && !busy && (
+          <EmptyState icon={FileChartColumn} title="No report yet">
+            Choose the release for this build and the total test plan, then generate. Every figure is read from Spira at that moment, and the report opens over this page.
+          </EmptyState>
+        )}
+      </div>
+
+      {viewerOpen && report && (
+        <ReportViewer
+          report={report}
+          changes={data?.changes ?? null}
+          siteUrl={spira?.siteUrl ?? null}
+          fileName={fileName}
+          onShare={() => void shareLink()}
+          onExcel={() => void exportReportWorkbook(report, spira?.siteUrl ?? null)}
+          onClose={closeViewer}
+        />
       )}
     </div>
   );

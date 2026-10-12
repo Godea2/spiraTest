@@ -8,8 +8,9 @@ import {
   classifySet,
   combineOutcomes,
   compareSnapshots,
+  decodeShare,
   defaultReportOptions,
-  draftBuildScope,
+  encodeShare,
   folderFamily,
   initialReportOptions,
   levelOf,
@@ -25,7 +26,7 @@ import {
   type ReportInput,
   type ReportOptions,
 } from "@/lib/domain/report";
-import type { Column, Draft, ReportCase, ReportCatalog, ReportIncident, ReportTestSet, SpiraRelease } from "@/lib/domain/types";
+import type { ReportCase, ReportCatalog, ReportIncident, ReportTestSet, SpiraRelease } from "@/lib/domain/types";
 
 const release = (releaseId: number, versionNumber: string, depth = 0): SpiraRelease => ({
   releaseId,
@@ -316,49 +317,36 @@ describe("buildReport", () => {
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
   });
 
-  it("takes this build from the drafts' boards, else from Spira", () => {
-    const board = (testSetId: number, columns: Record<number, Column>, extra: Partial<Draft> = {}) =>
-      ({
-        id: `d-${testSetId}-${extra.status ?? "draft"}`,
-        name: `Profile ${extra.status ?? "draft"}`,
-        projectId: 24,
-        status: "draft",
-        decisions: {},
-        testSets: [
-          {
-            testSetId,
-            comparedAt: extra.updatedAt ?? "2026-10-11T00:00:00Z",
-            cards: Object.entries(columns).map(([id, suggestion], i) => ({ key: `${testSetId}:${i}`, testCaseId: Number(id), suggestion })),
-          },
-        ],
-        ...extra,
-      }) as unknown as Draft;
-    const applied = board(22, { 200: "inScope", 201: "outOfScope" }, { status: "applied", updatedAt: "2026-10-10T00:00:00Z" });
-    const newer = board(22, { 200: "outOfScope", 201: "outOfScope" }, { updatedAt: "2026-10-12T00:00:00Z" });
-    const scope = draftBuildScope([newer, applied, { ...applied, projectId: 99 }], 24);
-    expect(scope[22]).toMatchObject({ draftName: "Profile applied", applied: true, kept: [200], excluded: [201] });
-
-    const fromDrafts = buildReport(input({ buildScope: scope }));
-    expect(fromDrafts.kpis).toMatchObject({ plan: 10, inScope: 7, laterBuilds: 3, stillToRun: 1 });
-    expect(fromDrafts.buildSource.modules.map((m) => [m.name, m.source, m.outOfScope])).toEqual([
-      ["Payments", "spira", 0],
-      ["Profile", "drafts", 1],
-    ]);
-    expect(fromDrafts.findings.find((f) => f.check === "Modules without an in-scope list in this app")?.appliesTo).toBe("Payments");
-    expect(fromDrafts.narrative.scopeNote).toContain("This build follows the in-scope lists reviewed in this app for Profile. Payments has no in-scope list in this app yet");
-    expect(buildReport(input({ buildScope: scope, options: options({ scopeSource: "spira" }) })).kpis.inScope).toBe(8);
+  it("takes this build from the test cases mapped to the release", () => {
+    const mapped = buildReport(input({ releaseCases: [100, 101, 200, 999] }));
+    expect(mapped.kpis).toMatchObject({ plan: 10, inScope: 5, laterBuilds: 5, executed: 4, stillToRun: 1 });
+    expect(mapped.kpis.split.inScope).toEqual({ iOS: 3, Android: 2 });
+    expect(mapped.build).toEqual({ fromRelease: true, release: "1.0.0.0002", mapped: 4, notInTestSets: [999], unmappedRuns: 3, unmappedExecuted: 2 });
+    expect(mapped.findings.find((f) => f.check === "Mapped cases in no test set")?.appliesTo).toBe("TC:999");
+    expect(mapped.findings.find((f) => f.check === "Results on cases not mapped to the release")?.appliesTo).toBe("Payments");
+    expect(mapped.narrative.scopeNote).toContain("This build is the 4 test cases mapped to release 1.0.0.0002 in Spira, each run on iOS and Android.");
+    expect(mapped.kpis.api.inScope).toBe(1);
   });
 
-  it("shows modules marked not in this build as later builds", () => {
-    const later = buildReport(input({ options: options({ excludedModules: [moduleId("Profile")], phase: "Phase 1" }) }));
+  it("shows modules with no case mapped to the release as later builds", () => {
+    const later = buildReport(input({ releaseCases: [100, 101, 103], options: options({ phase: "Phase 1" }) }));
     expect(later.modules.map((m) => m.name)).toEqual(["Payments"]);
     expect(later.laterModules.map((m) => [m.name, m.plan])).toEqual([
       ["Profile", 2],
       ["Cards", 1],
     ]);
     expect(later.kpis).toMatchObject({ inScope: 6, laterBuilds: 4, stillToRun: 0 });
-    expect(later.buildSource.modules.find((m) => m.name === "Profile")?.source).toBe("excluded");
-    expect(later.findings.some((f) => f.check === "Test sets past their planned date")).toBe(true);
+    expect(later.narrative.scopeNote).toContain("Profile and Cards are not part of Phase 1.");
+  });
+
+  it("counts every case in the test sets when nothing is mapped to the release, and says so", () => {
+    const empty = buildReport(input({ releaseCases: [] }));
+    expect(empty.kpis.inScope).toBe(8);
+    expect(empty.build.fromRelease).toBe(false);
+    expect(empty.findings.find((f) => f.check === "No test cases mapped to the release")?.severity).toBe("High");
+    const unread = buildReport(input());
+    expect(unread.kpis.inScope).toBe(8);
+    expect(unread.findings.some((f) => f.check === "No test cases mapped to the release")).toBe(false);
   });
 
   it("works without a baseline", () => {
@@ -393,6 +381,20 @@ describe("report document", () => {
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
+  });
+});
+
+describe("report share links", () => {
+  it("carries the report's setup and nothing else", () => {
+    const setup = options({ title: "Simba — Daily SIT Report", notes: "Wallet is next", defectNotes: { "258": { feature: "Wallet", phase: "out", rationale: "Phase 2" } } });
+    const link = encodeShare(24, { ...setup, scopeSource: "drafts" } as ReportOptions);
+    expect(link).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(decodeShare(link)).toEqual({ projectId: 24, options: setup });
+  });
+
+  it("refuses text that is not a report link", () => {
+    expect(decodeShare("not-a-link")).toBeNull();
+    expect(decodeShare(btoa(JSON.stringify({ p: 24, o: { title: "x" } })))).toBeNull();
   });
 });
 

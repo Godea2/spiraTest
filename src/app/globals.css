@@ -131,6 +131,9 @@ dialog[open] {
   .app-backdrop {
     background: #fff !important;
   }
+  body {
+    overflow: visible !important;
+  }
   .report-doc {
     gap: 0 !important;
     print-color-adjust: exact;
