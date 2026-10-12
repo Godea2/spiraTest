@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Play, Plus, Search, Smartphone, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -12,6 +12,7 @@ import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/clie
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { completeWithoutChanges } from "@/lib/client/workflow";
 import { isCompleted } from "@/lib/domain/board";
+import { pushTarget } from "@/lib/domain/mirror";
 import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
 
 type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
@@ -42,6 +43,30 @@ function ScopeBar({ counts }: { counts: DraftSummary["counts"] }) {
           </div>
         ))}
       </dl>
+    </div>
+  );
+}
+
+/** On a completed draft: push its cases and results to the other platform, or follow the copy already started. */
+function PushRow({ draft, copy }: { draft: DraftSummary; copy: DraftSummary | null }) {
+  const to = pushTarget(draft.platforms);
+  if (!to) return null;
+  const status = !copy
+    ? `Same cases and results on ${to}`
+    : !isCompleted(copy.status)
+      ? `${to} test sets being matched`
+      : copy.execution
+        ? `${copy.execution.executed} / ${copy.execution.total} executed on ${to}`
+        : `${to} test sets match`;
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-dashed border-slate-200 px-3 py-2.5 dark:border-white/10">
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-slate-500 dark:text-zinc-400">{to}</p>
+        <p className="truncate text-sm font-semibold tabular-nums">{status}</p>
+      </div>
+      <ButtonLink href={`/drafts/${draft.id}/push`} size="sm" icon={Smartphone}>
+        {copy ? "Continue" : `Push to ${to}`}
+      </ButtonLink>
     </div>
   );
 }
@@ -163,6 +188,11 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
     [drafts, bucket],
   );
   const otherCount = drafts && inBucket ? drafts.length - inBucket.length : 0;
+  /** The newest draft copying each draft to the other platform. */
+  const copies = useMemo(
+    () => new Map((drafts ?? []).filter((d) => d.mirror).reverse().map((d) => [d.mirror!.sourceDraftId, d])),
+    [drafts],
+  );
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -306,7 +336,10 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
                     </div>
                   )}
 
+                  {bucket === "completed" && !d.mirror && <PushRow draft={d} copy={copies.get(d.id) ?? null} />}
+
                   <div className="mt-auto flex items-center gap-1.5">
+                    {d.mirror && <Badge tone="brand">From {d.mirror.fromPlatform}</Badge>}
                     {!d.complete && <Badge tone="warning">Comparison incomplete</Badge>}
                     {d.completedWithoutChanges && <Badge tone="neutral">No changes needed</Badge>}
                     <div className="ml-auto flex gap-1 opacity-100 transition-opacity sm:opacity-60 sm:group-hover:opacity-100">

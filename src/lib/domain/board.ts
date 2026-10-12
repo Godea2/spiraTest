@@ -7,6 +7,7 @@ import type {
   Draft,
   DraftStatus,
   DraftSummary,
+  Platform,
   TestSetComparison,
 } from "./types";
 
@@ -212,5 +213,12 @@ export function summarizeDraft(draft: Draft): DraftSummary {
     manualDecisions: Object.keys(draft.decisions).length,
     readyToComplete: completionBlocker(draft) === null,
     completedWithoutChanges: isCompleted(draft.status) && !!draft.apply.completedWithoutChanges && !draft.apply.lastLiveRunAt,
+    platforms: draftPlatforms(draft),
+    mirror: draft.mirror ? { sourceDraftId: draft.mirror.sourceDraftId, fromPlatform: draft.mirror.fromPlatform, toPlatform: draft.mirror.toPlatform } : null,
   };
+}
+
+export function draftPlatforms(draft: Pick<Draft, "testSets" | "testSetRefs">): Platform[] {
+  const sets = draft.testSets.length ? draft.testSets : (draft.testSetRefs ?? []);
+  return [...new Set(sets.map((set) => set.platform))];
 }

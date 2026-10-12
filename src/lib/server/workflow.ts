@@ -3,7 +3,9 @@ import { ApplyValidationError, SIGN_OFF_COLUMN, validateApplyBatch, type ApplyBa
 import { allCards, cardKey, diffMembership, effectiveColumn, intendedMembership, isExecutedColumn, normalizeDecisions } from "@/lib/domain/board";
 import { expectedTestSetStatus, fillRunSteps, invalidResult, runNote, runReport, TEST_SET_STATUS_NAMES } from "@/lib/domain/execution";
 import { reconcileTestSet as matchTestSet } from "@/lib/domain/matching";
+import { isKeptColumn } from "@/lib/domain/mirror";
 import type {
+  AddedCaseResult,
   ApplyAction,
   ApplyActionResult,
   Column,
@@ -785,6 +787,63 @@ export async function deleteDefectCase(input: {
       }),
   );
   return { ok: true, message, comparisons };
+}
+
+/**
+ * Adds test cases to a test set because another platform's board keeps them, so both platforms hold
+ * the same cases. Both boards must verify; every case must be In Scope, in Defects or Blocked on the
+ * source test set. A case is skipped when the target already holds it as often as the source keeps it,
+ * on the board or in Spira as read now. Adds run one at a time and are never retried. The board is then
+ * compared again, so the new memberships come from Spira itself.
+ */
+export async function addCasesFromSource(input: {
+  target: { context: WorkflowContext; testSets: TestSetComparison[] };
+  source: { context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> };
+  testSetId: number;
+  sourceTestSetId: number;
+  testCaseIds: number[];
+}): Promise<{ results: AddedCaseResult[] }> {
+  const projectId = input.target.context.projectId;
+  if (input.source.context.projectId !== projectId) throw new ApplyValidationError("Both boards must be in the same Spira project.");
+  if (input.testSetId === input.sourceTestSetId) throw new ApplyValidationError("A test set cannot copy itself.");
+  const target = verifyComparisons(input.target.context, input.target.testSets).find((s) => s.testSetId === input.testSetId);
+  if (!target) throw new ApplyValidationError(`Test set ${input.testSetId} is not on the board that was sent.`);
+  const source = verifiedBoard(input.source.context, input.source.testSets, input.source.decisions);
+  const sourceSet = source.sets.find((s) => s.testSetId === input.sourceTestSetId);
+  if (!sourceSet) throw new ApplyValidationError(`Test set ${input.sourceTestSetId} is not on the source board.`);
+
+  const keptCount = new Map<number, number>();
+  for (const card of sourceSet.cards) {
+    if (isKeptColumn(effectiveColumn(card, source.decisions))) keptCount.set(card.testCaseId, (keptCount.get(card.testCaseId) ?? 0) + 1);
+  }
+  const seen = new Set<number>();
+  for (const testCaseId of input.testCaseIds) {
+    if (seen.has(testCaseId)) throw new ApplyValidationError(`TC${testCaseId} appears twice.`);
+    seen.add(testCaseId);
+    if (!keptCount.has(testCaseId)) throw new ApplyValidationError(`TC${testCaseId} is not kept on ${sourceSet.testSetName}, so it is not added.`);
+  }
+
+  const live = await getMembership(projectId, input.testSetId);
+  const held = (testCaseId: number, members: Iterable<number>) => [...members].filter((id) => id === testCaseId).length;
+  const results: AddedCaseResult[] = [];
+  for (const testCaseId of input.testCaseIds) {
+    const wanted = keptCount.get(testCaseId)!;
+    if (held(testCaseId, target.cards.map((c) => c.testCaseId)) >= wanted) {
+      results.push({ testCaseId, result: "skipped", testSetTestCaseId: null, message: "Already in the test set." });
+      continue;
+    }
+    if (held(testCaseId, live.values()) >= wanted) {
+      results.push({ testCaseId, result: "skipped", testSetTestCaseId: null, message: "Already added in Spira since the last compare." });
+      continue;
+    }
+    try {
+      results.push({ testCaseId, result: "added", testSetTestCaseId: await addToTestSet(projectId, input.testSetId, testCaseId), message: null });
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      results.push({ testCaseId, result: "failed", testSetTestCaseId: null, message: error.message });
+    }
+  }
+  return { results };
 }
 
 /** Deletes an incident this app logged; it is checked to be ours first. */

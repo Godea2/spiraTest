@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { getTestSetResults, incidentsForTestCase, listIncidents, listReportTestSets, listTestSetFolders, spiraDate, SPIRA_ENV } = await import("@/lib/server/spira");
+const { getRunDetail, getTestSetResults, incidentsForTestCase, listIncidents, listReportTestSets, listTestSetFolders, spiraDate, SPIRA_ENV } = await import("@/lib/server/spira");
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
@@ -15,6 +15,32 @@ describe("report reads", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  it("reads a recorded run step by step as plain text, only with GET", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      json({
+        TestRunId: 402,
+        TestCaseId: 1002,
+        ExecutionStatusId: 1,
+        TestRunSteps: [
+          { TestRunStepId: 1, TestStepId: 71, ExecutionStatusId: 2, ActualResult: null },
+          { TestRunStepId: 2, TestStepId: 72, ExecutionStatusId: 1, ActualResult: "<p>Spinner never stops</p>" },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    expect(await getRunDetail(24, 402)).toEqual({
+      testRunId: 402,
+      testCaseId: 1002,
+      statusId: 1,
+      steps: [
+        { testStepId: 71, statusId: 2, actualResult: "" },
+        { testStepId: 72, statusId: 1, actualResult: "Spinner never stops" },
+      ],
+    });
+    expect(String(fetch.mock.calls[0][0])).toContain("/projects/24/test-runs/402/manual");
+    expect(fetch.mock.calls.every(([, init]) => (init as RequestInit).method === "GET")).toBe(true);
   });
 
   it("reads Spira dates as UTC and ignores placeholders", () => {

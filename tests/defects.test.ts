@@ -20,7 +20,7 @@ import {
   type RawDefectVerdict,
   type VerifiedCase,
 } from "@/lib/domain/defects";
-import { emptyApplyState, recordDefectMoves } from "@/lib/domain/draft-ops";
+import { emptyApplyState, recordMoves } from "@/lib/domain/draft-ops";
 import { executedSteps, executionCards, fillRunSteps, invalidResult, runnableSteps, RUNNER_NAME } from "@/lib/domain/execution";
 import type { Card, DefectRecord, Draft, TestCaseStep } from "@/lib/domain/types";
 
@@ -252,7 +252,7 @@ describe("searching across modules", () => {
   it("moves cards to Defects and back as one board step that asks for a new membership check", () => {
     const d = draft("d1", "Onboarding", "draft", [card(1, 1, "inScope"), card(1, 2, "outOfScope")]);
     d.apply.preflight = { ok: true } as Draft["apply"]["preflight"];
-    const changes = recordDefectMoves(d, [{ key: "1:1", to: "defects" }, { key: "1:2", to: "defects" }], "Defect", "2026-10-11T09:00:00Z");
+    const changes = recordMoves(d, [{ key: "1:1", to: "defects" }, { key: "1:2", to: "defects" }], "Defect", "2026-10-11T09:00:00Z");
     expect(changes).toHaveLength(2);
     expect(d.decisions).toEqual({ "1:1": "defects", "1:2": "defects" });
     expect(d.apply.preflight).toBeNull();
@@ -261,9 +261,9 @@ describe("searching across modules", () => {
     expect(executionCards(d).map((c) => c.key)).toEqual(["1:1", "1:2"]);
     expect(countColumns(cards, d.decisions)).toMatchObject({ inScope: 0, defects: 2, outOfScope: 0 });
 
-    recordDefectMoves(d, [{ key: "1:1", to: "inScope" }, { key: "1:2", to: "outOfScope" }], "Undo", "2026-10-11T10:00:00Z");
+    recordMoves(d, [{ key: "1:1", to: "inScope" }, { key: "1:2", to: "outOfScope" }], "Undo", "2026-10-11T10:00:00Z");
     expect(d.decisions).toEqual({});
-    expect(recordDefectMoves(d, [{ key: "1:1", to: "inScope" }], "Nothing", "x")).toEqual([]);
+    expect(recordMoves(d, [{ key: "1:1", to: "inScope" }], "Nothing", "x")).toEqual([]);
     expect(d.history).toHaveLength(2);
   });
 

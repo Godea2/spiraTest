@@ -67,7 +67,8 @@ export function purgeMockData(): number {
 export type NewDraft = Pick<
   Draft,
   "name" | "module" | "projectId" | "releaseId" | "releaseLabel" | "source" | "rows" | "testSetIds" | "testSetRefs"
->;
+> &
+  Partial<Pick<Draft, "mirror">>;
 
 export function createDraft(input: NewDraft): Draft {
   const now = new Date().toISOString();

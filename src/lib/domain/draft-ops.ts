@@ -267,10 +267,10 @@ export function recordExecutionUndo(draft: Draft, deletedRunIds: number[]): void
 }
 
 /**
- * Moves cards for a defect (to Defects, or back where they were on undo) as one step in the board's
+ * Moves cards (for a defect, an undo, or to match another platform's board) as one step in the board's
  * history. Like any board edit it clears the last membership check. Returns the moves made.
  */
-export function recordDefectMoves(draft: Draft, moves: Array<{ key: string; to: Column }>, label: string, at: string): CardChange[] {
+export function recordMoves(draft: Draft, moves: Array<{ key: string; to: Column }>, label: string, at: string): CardChange[] {
   const cards = allCards(draft.testSets);
   let decisions = draft.decisions;
   const changes: CardChange[] = [];

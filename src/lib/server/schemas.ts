@@ -15,6 +15,7 @@ import {
 } from "@/lib/domain/defects";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
+import { MAX_RUN_DETAILS } from "@/lib/domain/mirror";
 import { MAX_REPORT_LINKS, MAX_REPORT_SETS } from "@/lib/domain/report";
 import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
 
@@ -210,6 +211,19 @@ export const executionRecordRequestSchema = z.object({
       .min(1)
       .max(MAX_EXECUTION_BATCH, `Send at most ${MAX_EXECUTION_BATCH} results per batch.`),
   }),
+});
+
+export const mirrorAddRequestSchema = z.object({
+  target: z.object({ context: contextSchema, testSets }),
+  source: z.object({ context: contextSchema, testSets, decisions }),
+  testSetId: id,
+  sourceTestSetId: id,
+  testCaseIds: z.array(id).min(1).max(MAX_APPLY_BATCH, `Send at most ${MAX_APPLY_BATCH} test cases per batch.`),
+});
+
+export const runDetailRequestSchema = z.object({
+  projectId: id,
+  testRunIds: z.array(id).min(1).max(MAX_RUN_DETAILS, `Send at most ${MAX_RUN_DETAILS} runs per request.`),
 });
 
 const defectText = z.string().trim().min(10, "Describe the defect in a sentence or two.").max(MAX_DEFECT_TEXT);

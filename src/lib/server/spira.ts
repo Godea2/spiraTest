@@ -9,6 +9,7 @@ import type {
   ReportFolder,
   ReportIncident,
   ReportTestSet,
+  RunDetail,
   SpiraProject,
   SpiraRelease,
   SpiraStatus,
@@ -556,8 +557,18 @@ const manualRunStepsSchema = z
     TestRunId: id,
     TestCaseId: id,
     ReleaseId: z.number().int().nullish(),
+    ExecutionStatusId: z.number().int().nullish(),
     TestRunSteps: z
-      .array(z.object({ TestRunStepId: z.number().int().nullish(), ExecutionStatusId: z.number().int().nullish(), ActualResult: z.string().nullish() }).passthrough())
+      .array(
+        z
+          .object({
+            TestRunStepId: z.number().int().nullish(),
+            TestStepId: z.number().int().nullish(),
+            ExecutionStatusId: z.number().int().nullish(),
+            ActualResult: z.string().nullish(),
+          })
+          .passthrough(),
+      )
       .nullish(),
   })
   .passthrough();
@@ -584,6 +595,22 @@ export async function getRecordedRunSteps(projectId: number, testRunId: number):
     releaseId: run.ReleaseId ?? null,
     ours: steps.some((s) => s.ActualResult?.includes(signature)),
     failedStepIds: steps.filter((s) => s.ExecutionStatusId === EXECUTION_STATUS.failed && s.TestRunStepId).map((s) => s.TestRunStepId!),
+  };
+}
+
+/** A manual run's result step by step, actual results as plain text, so it can be copied to another test set. Read-only. */
+export async function getRunDetail(projectId: number, testRunId: number): Promise<RunDetail> {
+  const what = `reading test run ${testRunId}`;
+  const run = parse(manualRunStepsSchema, await call("GET", `projects/${projectId}/test-runs/${testRunId}/manual`, what), what);
+  return {
+    testRunId: run.TestRunId,
+    testCaseId: run.TestCaseId,
+    statusId: run.ExecutionStatusId ?? null,
+    steps: (run.TestRunSteps ?? []).map((s) => ({
+      testStepId: s.TestStepId ?? null,
+      statusId: s.ExecutionStatusId ?? null,
+      actualResult: richText(s.ActualResult),
+    })),
   };
 }
 

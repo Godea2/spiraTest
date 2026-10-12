@@ -205,6 +205,38 @@ export interface Draft {
   keywordsFilteredAt?: string | null;
   /** Test execution of the In Scope cases, once the draft is completed. Missing until it starts. */
   execution?: DraftExecution;
+  /** Set on a draft made to bring another platform's test sets in line with a completed draft. */
+  mirror?: DraftMirror;
+}
+
+/** The completed draft whose board, and then results, a draft copies onto the other platform's test sets. */
+export interface DraftMirror {
+  sourceDraftId: string;
+  sourceName: string;
+  fromPlatform: Platform;
+  toPlatform: Platform;
+  pairs: MirrorPair[];
+}
+
+export interface MirrorPair {
+  sourceTestSetId: number;
+  targetTestSetId: number;
+}
+
+/** One case added to a test set because the other platform's board kept it. */
+export interface AddedCaseResult {
+  testCaseId: number;
+  result: "added" | "skipped" | "failed";
+  testSetTestCaseId: number | null;
+  message: string | null;
+}
+
+/** A recorded run's result, step by step, as read from Spira. */
+export interface RunDetail {
+  testRunId: number;
+  testCaseId: number | null;
+  statusId: number | null;
+  steps: Array<{ testStepId: number | null; statusId: number | null; actualResult: string }>;
 }
 
 /** A step as executed: its text from Spira and what the tester found. Labels are "3", or "3.2" inside a linked test case. */
@@ -460,6 +492,10 @@ export interface DraftSummary {
   readyToComplete: boolean;
   /** Completed without a live apply, because Spira already matched the board. */
   completedWithoutChanges: boolean;
+  /** Platforms of the draft's test sets. */
+  platforms: Platform[];
+  /** Set when the draft copies another platform's draft. */
+  mirror?: { sourceDraftId: string; fromPlatform: Platform; toPlatform: Platform } | null;
 }
 
 export interface TestSetRef {

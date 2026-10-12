@@ -22,7 +22,7 @@ import {
   type DefectTarget,
   type VerifiedCase,
 } from "@/lib/domain/defects";
-import { recordComparison, recordDefectMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
+import { recordComparison, recordMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
 import { executedSteps, RUNNER_NAME, runnableSteps, type RunnableStep } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import type {
@@ -706,7 +706,7 @@ export async function raiseDefect(
     const at = new Date().toISOString();
     let changes = 0;
     draft = mutateDraft(draftId, (d) => {
-      changes = recordDefectMoves(d, ready.map((p) => ({ key: p.target.card.key, to: "defects" as const })), `${label}: moved ${ready.length} card(s) to Defects`, at).length;
+      changes = recordMoves(d, ready.map((p) => ({ key: p.target.card.key, to: "defects" as const })), `${label}: moved ${ready.length} card(s) to Defects`, at).length;
     });
     if (changes > 0) moved.push({ draftId, module: draft.module, count: changes, completed: isCompleted(draft.status) });
 
@@ -746,7 +746,7 @@ export async function raiseDefect(
       .filter((m) => m.to !== "defects");
     if (back.length > 0) {
       mutateDraft(draftId, (d) => {
-        recordDefectMoves(d, back, `${label}: moved ${back.length} card(s) back, not recorded`, new Date().toISOString());
+        recordMoves(d, back, `${label}: moved ${back.length} card(s) back, not recorded`, new Date().toISOString());
       });
       const m = moved.find((x) => x.draftId === draftId);
       if (m) m.count = Math.max(0, m.count - back.length);
@@ -937,7 +937,7 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
         const card = cards.get(m.key);
         return card && effectiveColumn(card, d.decisions) === "defects";
       });
-      recordDefectMoves(d, stillThere, `Undid defect "${clip(record.title, 80)}": moved ${stillThere.length} card(s) back`, new Date().toISOString());
+      recordMoves(d, stillThere, `Undid defect "${clip(record.title, 80)}": moved ${stillThere.length} card(s) back`, new Date().toISOString());
     });
     try {
       await refreshExecution(draftId, [...new Set(cases.map((c) => c.testSetId))]);
