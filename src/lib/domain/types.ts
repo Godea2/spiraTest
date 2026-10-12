@@ -511,10 +511,12 @@ export interface TestSetMapping extends TestSetRef {
 
 /** Saved in the browser. Holds nothing secret; Spira credentials live on the server. */
 export interface AppSettings {
-  /** Null until chosen in Settings. */
   projectId: number | null;
+  /** The working release: Phase 1 on the report, and the release Compare uses. */
   releaseId: number | null;
   releaseLabel: string;
+  /** The release holding the total test plan on the report; null uses the release before the working one. */
+  planReleaseId: number | null;
   mappings: TestSetMapping[];
   moduleAliases: Record<string, string>;
   updatedAt: string | null;

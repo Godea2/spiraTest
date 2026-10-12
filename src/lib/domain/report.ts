@@ -312,13 +312,15 @@ export function previousVersion(version: string): string | null {
 }
 
 /** First-time setup: the working release from Settings in scope, compared with the release before it. */
-export function initialReportOptions(releases: SpiraRelease[], releaseId: number | null): ReportOptions {
+/** Phase 1 is the working release; the total test plan is the plan release when it exists, else the release before Phase 1. */
+export function initialReportOptions(releases: SpiraRelease[], releaseId: number | null, planReleaseId: number | null = null): ReportOptions {
   const options = defaultReportOptions();
   const scoped = releases.find((r) => r.releaseId === releaseId);
   if (!scoped) return options;
   options.scoped.releaseId = scoped.releaseId;
+  const chosen = planReleaseId !== scoped.releaseId ? releases.find((r) => r.releaseId === planReleaseId) : undefined;
   const previous = previousVersion(scoped.versionNumber);
-  const baseline = previous ? releases.find((r) => r.versionNumber.trim() === previous) : undefined;
+  const baseline = chosen ?? (previous ? releases.find((r) => r.versionNumber.trim() === previous) : undefined);
   if (baseline) options.baseline.releaseId = baseline.releaseId;
   return options;
 }

@@ -4,14 +4,21 @@ import { readItem, writeItem } from "./storage";
 
 const KEY = "settings";
 
+const id = (value: unknown) => (typeof value === "number" ? value : null);
+
+/** Saved settings, with the team's project and releases filling whatever was never chosen in this browser. */
 export function loadSettings(): AppSettings {
   const stored = readItem<Partial<AppSettings>>(KEY);
   const defaults = defaultSettings();
   if (!stored) return defaults;
+  const projectId = id(stored.projectId) ?? defaults.projectId;
+  const teamProject = projectId === defaults.projectId;
+  const releaseId = id(stored.releaseId) ?? (teamProject ? defaults.releaseId : null);
   return {
-    projectId: typeof stored.projectId === "number" ? stored.projectId : defaults.projectId,
-    releaseId: typeof stored.releaseId === "number" ? stored.releaseId : defaults.releaseId,
-    releaseLabel: stored.releaseLabel ?? defaults.releaseLabel,
+    projectId,
+    releaseId,
+    releaseLabel: id(stored.releaseId) !== null ? (stored.releaseLabel ?? "") : teamProject ? defaults.releaseLabel : "",
+    planReleaseId: "planReleaseId" in stored ? id(stored.planReleaseId) : teamProject ? defaults.planReleaseId : null,
     mappings: stored.mappings ?? defaults.mappings,
     moduleAliases: stored.moduleAliases ?? {},
     updatedAt: stored.updatedAt ?? null,

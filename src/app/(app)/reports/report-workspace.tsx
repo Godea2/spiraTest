@@ -174,17 +174,18 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const current = catalogState && catalogState.projectId === projectId ? catalogState : null;
   const catalog = current?.catalog ?? null;
   const settingsRelease = settings?.releaseId ?? null;
-  // The releases follow Settings (the working release, and the one before it as the total test plan);
+  const planRelease = settings?.planReleaseId ?? null;
+  // The releases follow Settings (the working release, and the total test plan release);
   // only the report and its header are chosen here.
   const options = useMemo((): ReportOptions | null => {
     if (!catalog || stored?.projectId !== projectId) return null;
     const saved = stored.options;
     if (stored.fromLink && saved) return saved;
-    const auto = { ...initialReportOptions(catalog.releases, settingsRelease), phase: PHASE };
+    const auto = { ...initialReportOptions(catalog.releases, settingsRelease, planRelease), phase: PHASE };
     if (!saved) return auto;
     const { kind, title, preparedBy, goLive, defectNotes } = saved;
     return { ...auto, kind, title, preparedBy, goLive, defectNotes };
-  }, [catalog, stored, projectId, settingsRelease]);
+  }, [catalog, stored, projectId, settingsRelease, planRelease]);
 
   const update = (patch: Partial<ReportOptions>) => {
     if (!options || projectId === null || !stored) return;
@@ -255,11 +256,11 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const setupProblem =
     options && resolved
       ? resolved.kind !== "plan" && options.scoped.releaseId === null
-        ? "Choose the working release in Settings; the report reads Phase 1 from it."
+        ? "Choose the Phase 1 release in Settings."
         : resolved.kind !== "build" && options.baseline.releaseId === null
-          ? `No release before ${releaseOf(options.scoped.releaseId) ?? "the working release"} was found for the total test plan. Check the working release in Settings.`
+          ? `No total test plan release was found for ${releaseOf(options.scoped.releaseId) ?? "the Phase 1 release"}. Choose the total test plan release in Settings.`
           : scopedSets === 0
-            ? `Release ${releaseOf(resolved.scoped.releaseId) ?? ""} has no test sets in Spira. Check the working release in Settings.`
+            ? `Release ${releaseOf(resolved.scoped.releaseId) ?? ""} has no test sets in Spira. Check the Phase 1 release in Settings.`
             : null
       : null;
 

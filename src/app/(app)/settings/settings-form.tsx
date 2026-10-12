@@ -30,6 +30,7 @@ interface FormState {
   projectId: string;
   releaseId: string;
   releaseLabel: string;
+  planReleaseId: string;
   mappings: MappingDraft[];
   moduleAliases: Record<string, string>;
 }
@@ -39,6 +40,7 @@ function toForm(s: AppSettings): FormState {
     projectId: s.projectId === null ? "" : String(s.projectId),
     releaseId: s.releaseId === null ? "" : String(s.releaseId),
     releaseLabel: s.releaseLabel,
+    planReleaseId: s.planReleaseId === null ? "" : String(s.planReleaseId),
     mappings: s.mappings.map((m) => ({ ...m, testSetId: String(m.testSetId) })),
     moduleAliases: { ...s.moduleAliases },
   };
@@ -188,6 +190,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     const e: Record<string, string> = {};
     if (form!.projectId.trim() && !positiveInt(form!.projectId)) e.projectId = "Enter a positive whole number.";
     if (form!.releaseId.trim() && !positiveInt(form!.releaseId)) e.releaseId = "Enter a positive whole number.";
+    if (form!.planReleaseId.trim() && !positiveInt(form!.planReleaseId)) e.planReleaseId = "Enter a positive whole number.";
     const seen = new Map<string, number>();
     form!.mappings.forEach((m, i) => {
       if (!m.module.trim()) e[`mappings.${i}.module`] = "Module name is required.";
@@ -212,6 +215,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         projectId: optionalId(form.projectId),
         releaseId: optionalId(form.releaseId),
         releaseLabel: form.releaseLabel.trim(),
+        planReleaseId: optionalId(form.planReleaseId),
         mappings: form.mappings.map((m) => ({
           id: m.id,
           module: m.module.trim(),
@@ -228,7 +232,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       logActivity({
         type: "settings.updated",
         message: "Settings saved.",
-        details: { projectId: saved.projectId, releaseId: saved.releaseId, mappings: saved.mappings.length },
+        details: { projectId: saved.projectId, releaseId: saved.releaseId, planReleaseId: saved.planReleaseId, mappings: saved.mappings.length },
       });
       const f = toForm(saved);
       setForm(f);
@@ -256,8 +260,12 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         <AiReviewStatus />
       </div>
 
-      <Section icon={FolderKanban} title="Spira project" description="Used for every new comparison. Existing drafts keep the values they were created with.">
-        <div className="grid gap-4 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
+      <Section
+        icon={FolderKanban}
+        title="Spira project"
+        description="Set to Project-Simba with Phase 1 in 1.0.0.0002 and the total test plan in 1.0.0.0001 unless changed here. Used for every new comparison and report; existing drafts keep the values they were created with."
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Project"
             error={errors.projectId}
@@ -280,11 +288,11 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             }
           </Field>
           <Field
-            label="Release (optional)"
+            label="Phase 1 release"
             error={errors.releaseId ?? releaseLookup.error}
             hint={
               releaseList
-                ? "Releases and sprints in this project."
+                ? "The release being tested now. Compare uses it, and the report shows it as Phase 1."
                 : releases.status === "loading"
                   ? "Reading releases from Spira…"
                   : releases.status === "error"
@@ -303,7 +311,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
                     update({ releaseId: e.target.value, releaseLabel: chosen?.label ?? "" });
                   }}
                 >
-                  <option value="">Choose a release…</option>
+                  <option value="">Choose the release being tested…</option>
                   {form.releaseId && !releaseList.some((r) => String(r.releaseId) === form.releaseId) && (
                     <option value={form.releaseId}>Release {form.releaseId} (not in this project)</option>
                   )}
@@ -338,7 +346,31 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
               )
             }
           </Field>
-          <Field label="Release label" hint="Shown on boards and exports. Filled from Spira when you choose a release.">
+          <Field
+            label="Total test plan release"
+            error={errors.planReleaseId}
+            hint={releaseList ? "The release holding every test case in the plan. The report measures Phase 1 against it." : "The release or sprint ID from Spira (RL:…). Empty uses the release before Phase 1."}
+          >
+            {(p) =>
+              releaseList ? (
+                <select {...p} className="input" value={form.planReleaseId} onChange={(e) => update({ planReleaseId: e.target.value })}>
+                  <option value="">The release before Phase 1</option>
+                  {form.planReleaseId && !releaseList.some((r) => String(r.releaseId) === form.planReleaseId) && (
+                    <option value={form.planReleaseId}>Release {form.planReleaseId} (not in this project)</option>
+                  )}
+                  {releaseList.map((r) => (
+                    <option key={r.releaseId} value={r.releaseId} disabled={String(r.releaseId) === form.releaseId}>
+                      {"\u00a0\u00a0".repeat(r.depth)}
+                      {r.label} (RL:{r.releaseId}){r.active ? "" : " · inactive"}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input {...p} className="input" inputMode="numeric" value={form.planReleaseId} onChange={(e) => update({ planReleaseId: e.target.value })} />
+              )
+            }
+          </Field>
+          <Field label="Release label" hint="Shown on boards and exports. Filled from Spira when you choose the Phase 1 release.">
             {(p) => <input {...p} className="input" value={form.releaseLabel} maxLength={200} onChange={(e) => update({ releaseLabel: e.target.value })} />}
           </Field>
         </div>

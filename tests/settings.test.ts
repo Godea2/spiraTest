@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { loadSettings, saveSettings } from "@/lib/client/settings-store";
 import { writeItem } from "@/lib/client/storage";
-import { guessMapping, type SettingsUpdate } from "@/lib/domain/settings";
+import { guessMapping, TEAM_DEFAULTS, type SettingsUpdate } from "@/lib/domain/settings";
 import { createSessionToken, verifySessionToken } from "@/lib/server/session";
 
 const mapping = (testSetId: number, module: string) => ({
@@ -17,6 +17,7 @@ function update(overrides: Partial<SettingsUpdate> = {}) {
     projectId: 1,
     releaseId: 2,
     releaseLabel: "",
+    planReleaseId: null,
     mappings: [mapping(10, "Onboarding")],
     moduleAliases: {},
     ...overrides,
@@ -24,18 +25,25 @@ function update(overrides: Partial<SettingsUpdate> = {}) {
 }
 
 describe("settings saved in the browser", () => {
-  it("starts empty: no project, release or test sets until chosen", () => {
-    expect(loadSettings()).toMatchObject({ projectId: null, releaseId: null, releaseLabel: "", mappings: [], moduleAliases: {} });
+  it("starts with the team's project and releases, so a new browser needs no setup", () => {
+    expect(loadSettings()).toMatchObject({ ...TEAM_DEFAULTS, mappings: [], moduleAliases: {} });
   });
 
   it("persists a saved update", () => {
-    update({ projectId: 30 });
-    expect(loadSettings()).toMatchObject({ projectId: 30, releaseId: 2 });
+    update({ projectId: 30, planReleaseId: 4 });
+    expect(loadSettings()).toMatchObject({ projectId: 30, releaseId: 2, planReleaseId: 4 });
   });
 
-  it("allows saving without a project or release", () => {
+  it("falls back to the team's project and releases when they were never chosen", () => {
     update({ projectId: null, releaseId: null });
-    expect(loadSettings()).toMatchObject({ projectId: null, releaseId: null });
+    expect(loadSettings()).toMatchObject({ projectId: 24, releaseId: 157, releaseLabel: TEAM_DEFAULTS.releaseLabel, planReleaseId: null });
+    writeItem("settings", { projectId: 24, releaseId: 157, releaseLabel: "1.0.0.0002 - Sprint3", mappings: [], moduleAliases: {} });
+    expect(loadSettings().planReleaseId).toBe(156);
+  });
+
+  it("keeps another project's releases as saved, without the team's", () => {
+    writeItem("settings", { projectId: 30, releaseId: null, releaseLabel: "", mappings: [], moduleAliases: {} });
+    expect(loadSettings()).toMatchObject({ projectId: 30, releaseId: null, planReleaseId: null });
   });
 
   it("ignores the Mock mode flag from older saved settings", () => {

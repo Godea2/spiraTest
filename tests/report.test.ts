@@ -162,6 +162,13 @@ describe("report scope", () => {
     expect(initialReportOptions(catalog.releases, null).scoped.releaseId).toBeNull();
   });
 
+  it("uses the total test plan release from Settings when it exists", () => {
+    const releases = [...catalog.releases, { ...catalog.releases[0], releaseId: 9, versionNumber: "1.0.0.0000", label: "1.0.0.0000" }];
+    expect(initialReportOptions(releases, 2, 9).baseline.releaseId).toBe(9);
+    expect(initialReportOptions(releases, 2, 404).baseline.releaseId).toBe(1);
+    expect(initialReportOptions(releases, 2, 2).baseline.releaseId).toBe(1);
+  });
+
   it("reads the module and platform from the test set name and folder", () => {
     expect(classifySet(set(1, "Cards - Android", 1), catalog.folders, [])).toEqual({ module: "Cards", stream: "Android" });
     expect(classifySet(set(1, "Home Screen- iOS", 1), catalog.folders, [])).toEqual({ module: "Home Screen", stream: "iOS" });
