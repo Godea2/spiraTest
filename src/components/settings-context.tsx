@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { api, errorMessage } from "@/lib/client/api";
 import { purgeMockData } from "@/lib/client/drafts";
 import { loadSettings } from "@/lib/client/settings-store";
+import { SYNCED_EVENT } from "@/lib/client/store-sync";
 import type { AiStatus, AppSettings, SpiraStatus } from "@/lib/domain/types";
 
 interface SettingsState {
@@ -50,8 +51,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       (loaded) => active && setAi(loaded),
       () => active && setAi({ configured: false, model: "" }),
     );
+    const onSynced = (event: Event) => {
+      if ((event as CustomEvent<string[]>).detail.includes("settings")) setSettings(loadSettings());
+    };
+    window.addEventListener(SYNCED_EVENT, onSynced);
     return () => {
       active = false;
+      window.removeEventListener(SYNCED_EVENT, onSynced);
     };
   }, []);
 

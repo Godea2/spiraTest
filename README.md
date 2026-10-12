@@ -170,13 +170,23 @@ Workbook rows that no test case matched are listed as missing from Spira.
 
 ## Storage
 
-There is no database. Settings, drafts and the activity log are kept in the browser's `localStorage`, so each browser (and each domain, including Vercel preview URLs) has its own drafts.
+Settings, drafts (with their boards and executions), defects, the activity log and report setups are saved in **Supabase** when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set, so every browser, device and teammate sees the same data. Without them, everything stays in each browser's `localStorage` as before.
 
-The server is stateless. It signs every comparison and passing membership check with `SESSION_SECRET` and re-verifies those signatures before a membership check, apply or verify, so suggestions edited in the browser are rejected. The membership check also covers the reviewed decisions, so changing a decision requires a new check.
+How it works:
+
+- One table, `public.app_store` (created by [`supabase/schema.sql`](supabase/schema.sql)), holds one row per saved item, keyed as the browser keeps it (`settings`, `draft:<id>`, `activity`, `report-options:<project>`, …).
+- Only the server talks to Supabase, through its REST API with the secret key; the browser goes through `/api/store`, which needs the team password like every other page. Row level security is on with no policies, so Supabase's public keys can read nothing.
+- The browser keeps a copy in `localStorage`, so pages stay instant. Opening the app (or coming back to the tab after 30 seconds) loads what changed elsewhere; each change is saved to Supabase within a second. Changes that could not be saved (offline, Supabase down) stay queued in the browser and are saved when it answers; the sidebar's **Shared storage** row and **Settings → Shared storage** show the state.
+- The newest save of an item wins. The activity log is merged, so entries from different browsers are all kept. A deleted item keeps a marker row, so an older copy in another browser cannot bring it back.
+- The first time a browser opens the app with Supabase set up, what it saved before is uploaded, so existing drafts are kept. The tester name and the "create new cases automatically" choice stay per device.
+
+Setting it up: in Supabase, open **SQL Editor → New query**, paste [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. Then add `SUPABASE_URL` (Project Settings → Data API) and `SUPABASE_SERVICE_ROLE_KEY` (Project Settings → API Keys, the secret key) to Vercel and redeploy. Open the app once in the browser that holds your current drafts, so they are uploaded.
+
+The server holds no other state. It signs every comparison and passing membership check with `SESSION_SECRET` and re-verifies those signatures before a membership check, apply or verify, so suggestions edited in the browser are rejected. The membership check also covers the reviewed decisions, so changing a decision requires a new check.
 
 ## Deploying to Vercel
 
-Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SPIRA_API_KEY` (and optionally `GEMINI_API_KEY`, `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL`) under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. If your Spira instance restricts access by IP address, it must allow Vercel's outbound traffic.
+Set `APP_PASSWORD`, `SESSION_SECRET`, `SPIRA_BASE_URL`, `SPIRA_USERNAME` and `SPIRA_API_KEY` (and optionally `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`) under **Settings → Environment Variables** (`.env.local` is not deployed), then redeploy. If your Spira instance restricts access by IP address, it must allow Vercel's outbound traffic.
 
 ## Scripts
 

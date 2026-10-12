@@ -5,6 +5,7 @@ import {
   Activity,
   Bug,
   CircleCheckBig,
+  Database,
   FileChartColumn,
   GitCompareArrows,
   KanbanSquare,
@@ -27,6 +28,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { api } from "@/lib/client/api";
+import { INITIAL_SYNC, storeSync } from "@/lib/client/store-sync";
 import { Logo } from "./brand";
 import { useSettings } from "./settings-context";
 
@@ -171,8 +173,22 @@ function ConnectionStatus({ rail }: { rail?: Rail }) {
       ) : (
         <div className="skeleton mx-3 my-2 h-8" />
       )}
+      <StorageStatus rail={rail} />
     </div>
   );
+}
+
+function StorageStatus({ rail }: { rail?: Rail }) {
+  const sync = useSyncExternalStore(storeSync.subscribe, storeSync.state, () => INITIAL_SYNC);
+  const [detail, tone]: [string, "ok" | "warn" | "off"] =
+    sync.mode === "local"
+      ? ["This browser only · add Supabase", "off"]
+      : sync.error
+        ? ["Not saved yet · retrying", "warn"]
+        : sync.mode === "cloud"
+          ? [sync.busy ? "Saving…" : "Supabase · saved", "ok"]
+          : ["Connecting…", "off"];
+  return <StatusRow href="/settings" icon={Database} label="Shared storage" detail={detail} tone={tone} rail={rail} />;
 }
 
 function NavLinks({ pathname, onNavigate, layoutId, rail }: { pathname: string; onNavigate?: () => void; layoutId: string; rail?: Rail }) {

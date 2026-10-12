@@ -1,13 +1,14 @@
 "use client";
 
-import { Boxes, CloudDownload, FolderKanban, PlugZap, Plus, RefreshCw, ScanText } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Boxes, CloudDownload, Database, FolderKanban, PlugZap, Plus, RefreshCw, ScanText } from "lucide-react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, Dialog, Field, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { logActivity } from "@/lib/client/activity";
 import { api, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
 import { saveSettings } from "@/lib/client/settings-store";
+import { INITIAL_SYNC, storeSync } from "@/lib/client/store-sync";
 import { guessMapping, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
 import {
   PLATFORMS,
@@ -251,7 +252,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     <div className="flex flex-col gap-6 pb-24">
       <PageHeader
         title="Settings"
-        description="Which Spira project and release to compare against, and how modules map to Spira test sets. Saved in this browser."
+        description="Which Spira project and releases to use, and how modules map to Spira test sets."
         actions={settings.updatedAt && <span className="text-xs text-zinc-500">Last saved {formatDateTime(settings.updatedAt)}</span>}
       />
 
@@ -259,6 +260,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
         <SpiraConnection connection={connection} onRetest={retest} />
         <AiReviewStatus />
       </div>
+      <SharedStorage />
 
       <Section
         icon={FolderKanban}
@@ -766,6 +768,38 @@ function SpiraConnection({ connection, onRetest }: { connection: Connection; onR
           )}
           {connection.status === "error" && <Notice tone="danger" title="Spira sign-in failed">{connection.error}</Notice>}
         </div>
+      )}
+    </Section>
+  );
+}
+
+function SharedStorage() {
+  const sync = useSyncExternalStore(storeSync.subscribe, storeSync.state, () => INITIAL_SYNC);
+  return (
+    <Section
+      icon={Database}
+      title="Shared storage"
+      description="Drafts, executions, defects, activity, settings and report setups are saved in Supabase through the server, so every browser and teammate sees the same data. The browser never contacts Supabase and never sees its key."
+      actions={
+        sync.mode === "cloud" && (
+          <Button size="sm" icon={RefreshCw} onClick={() => void storeSync.sync()} busy={sync.busy}>Sync now</Button>
+        )
+      }
+    >
+      {sync.mode === "local" ? (
+        <Notice tone="info" title="Saved in this browser only">
+          Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the server environment and run supabase/schema.sql in Supabase, then redeploy. What is saved here is uploaded the first time the app opens after that.
+        </Notice>
+      ) : sync.error ? (
+        <Notice tone="warning" title="Changes are not saved to Supabase yet">
+          {sync.error} They are kept in this browser and saved automatically when Supabase answers.
+        </Notice>
+      ) : sync.mode === "cloud" ? (
+        <Notice tone="success">
+          Connected to Supabase.{sync.savedAt ? ` Last saved ${formatDateTime(sync.savedAt)}.` : " Everything is saved."}
+        </Notice>
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Connecting…</div>
       )}
     </Section>
   );

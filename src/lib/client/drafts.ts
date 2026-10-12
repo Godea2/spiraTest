@@ -4,13 +4,18 @@ import { executionCards, executionCounts } from "@/lib/domain/execution";
 import type { Draft, DraftSummary } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { keysWithPrefix, readItem, removeItem, writeItem } from "./storage";
+import { storeSync } from "./store-sync";
 
 const PREFIX = "draft:";
 const ID_PATTERN = /^[a-zA-Z0-9-]{8,64}$/;
 
 export class DraftNotFoundError extends Error {
   constructor() {
-    super("Draft not found in this browser. Drafts are saved per browser; open it where it was created.");
+    super(
+      storeSync.state().mode === "cloud"
+        ? "Draft not found. It may have been deleted."
+        : "Draft not found in this browser. Drafts are saved per browser; open it where it was created.",
+    );
   }
 }
 

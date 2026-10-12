@@ -5,6 +5,7 @@ import { hasSession } from "./auth";
 import { AiError } from "./gemini";
 import { SealError } from "./seal";
 import { SpiraError } from "./spira";
+import { StoreError } from "./store";
 
 export class HttpError extends Error {
   constructor(
@@ -53,6 +54,7 @@ export function errorResponse(error: unknown): Response {
   if (error instanceof SealError) return jsonError(error.status, error.message);
   if (error instanceof SpiraError) return jsonError(error.status, error.message);
   if (error instanceof AiError) return jsonError(error.status, error.message);
+  if (error instanceof StoreError) return jsonError(error.status, error.message);
   console.error("Unhandled API error", error);
   return jsonError(500, "Something went wrong on the server. Check the server logs.");
 }
