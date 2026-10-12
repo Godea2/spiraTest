@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheck, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Sparkles, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
@@ -17,7 +17,6 @@ import {
   reportFileName,
   resolveReportOptions,
   sameScope,
-  scopeName,
   setsInScope,
   snapshotOf,
   splitText,
@@ -62,25 +61,18 @@ function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: R
             className={clsx(
               "relative flex min-h-28 cursor-pointer flex-col justify-between gap-4 rounded-xl p-4 text-left transition focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:outline-none dark:focus-visible:ring-offset-zinc-900",
               featured
-                ? "bg-gradient-to-br from-brand-600 via-indigo-600 to-violet-600 text-white shadow-lg shadow-brand-600/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand-600/40"
+                ? "bg-gradient-to-br from-amber-500 via-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-orange-500/40"
                 : "well hover:border-slate-300 dark:hover:border-white/20",
-              selected && (featured ? "ring-4 ring-brand-300/70 dark:ring-brand-400/50" : "ring-2 ring-brand-500 dark:ring-brand-400"),
+              selected && (featured ? "ring-4 ring-orange-300/70 dark:ring-orange-400/50" : "ring-2 ring-brand-500 dark:ring-brand-400"),
             )}
           >
-            <span className="flex items-center justify-between gap-2">
-              <span
-                className={clsx(
-                  "grid size-9 place-items-center rounded-lg",
-                  featured ? "bg-white/20 ring-1 ring-white/30" : "bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10",
-                )}
-              >
-                <Icon className="size-[18px]" aria-hidden />
-              </span>
-              {featured && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide uppercase ring-1 ring-white/30">
-                  <Sparkles className="size-3" aria-hidden /> Recommended
-                </span>
+            <span
+              className={clsx(
+                "grid size-9 place-items-center rounded-lg",
+                featured ? "bg-white/20 ring-1 ring-white/30" : "bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10",
               )}
+            >
+              <Icon className="size-[18px]" aria-hidden />
             </span>
             <span className="flex items-end justify-between gap-2">
               <span className="text-[15px] leading-snug font-semibold">{title}</span>
@@ -190,8 +182,8 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     if (stored.fromLink && saved) return saved;
     const auto = { ...initialReportOptions(catalog.releases, settingsRelease), phase: PHASE };
     if (!saved) return auto;
-    const { kind, title, environment, baselineName, preparedBy, goLive, defectNotes } = saved;
-    return { ...auto, kind, title, environment, baselineName, preparedBy, goLive, defectNotes };
+    const { kind, title, preparedBy, goLive, defectNotes } = saved;
+    return { ...auto, kind, title, preparedBy, goLive, defectNotes };
   }, [catalog, stored, projectId, settingsRelease]);
 
   const update = (patch: Partial<ReportOptions>) => {
@@ -331,30 +323,9 @@ export function ReportWorkspace({ share }: { share: string | null }) {
           >
             <KindPicker value={options.kind} onChange={(kind) => update({ kind })} />
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="mt-5 grid gap-4 sm:grid-cols-3">
               <Field label="Report title" hint="Empty uses the project name.">
                 {(props) => <input {...props} className="input" value={options.title} placeholder={`${catalog.projectName} — Test Report`} onChange={(e) => update({ title: e.target.value })} />}
-              </Field>
-              <Field label="Cycle" hint="Shown in the header. Empty uses the test sets' folder.">
-                {(props) =>
-                  options.kind === "plan" ? (
-                    <input
-                      {...props}
-                      className="input"
-                      value={options.baselineName}
-                      placeholder={resolved ? scopeName(catalog, resolved.scoped) : ""}
-                      onChange={(e) => update({ baselineName: e.target.value })}
-                    />
-                  ) : (
-                    <input
-                      {...props}
-                      className="input"
-                      value={options.environment}
-                      placeholder={resolved ? scopeName(catalog, resolved.scoped) : ""}
-                      onChange={(e) => update({ environment: e.target.value })}
-                    />
-                  )
-                }
               </Field>
               <Field label="Prepared by">
                 {(props) => <input {...props} className="input" value={options.preparedBy} onChange={(e) => update({ preparedBy: e.target.value })} />}

@@ -71,11 +71,7 @@ export function ShareDialog({ request, onClose }: { request: ShareRequest; onClo
         </>
       }
     >
-      <p>
-        Anyone with the link can view this report without signing in. It opens only this report, never the app, and cannot change anything in Spira. The figures are
-        read live from Spira each time it is opened, so it always shows the latest results.
-      </p>
-      <div className="mt-4 flex flex-col gap-4">
+      <div className="flex flex-col gap-4">
         <Field label="Link expires after">
           {(props) => (
             <select
