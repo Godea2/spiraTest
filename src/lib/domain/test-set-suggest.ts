@@ -1,7 +1,11 @@
 import { guessMapping } from "./settings";
 import type { SpiraTestSetSummary } from "./types";
 
-export const moduleKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+/** Compares module names ignoring case, spacing, punctuation and a plural "s" ("Notification" is "Notifications"). */
+export const moduleKey = (name: string) => {
+  const key = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key.length > 3 ? key.replace(/s$/, "") : key;
+};
 
 export interface TestSetSuggestion {
   /** Test sets whose name starts with the module, ticked ones first. */

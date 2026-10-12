@@ -91,6 +91,23 @@ describe("whole workbook plan", () => {
     ]);
   });
 
+  it("matches a singular module name in the workbook with plural test set names", () => {
+    const { modules, outside } = planWorkbook({
+      modules: [{ name: "Notification", rows: 18 }],
+      testSets: [set(22, "Notifications- Android"), set(23, "Notifications-iOS")],
+      drafts: [],
+      projectId: 24,
+      releaseId: 2,
+      mappings: [],
+      aliases: {},
+    });
+    expect(modules[0].toCompare.map((r) => [r.testSetId, r.platform])).toEqual([
+      [22, "Android"],
+      [23, "iOS"],
+    ]);
+    expect(outside).toEqual([]);
+  });
+
   it("flags a module with no test set", () => {
     expect(plan([], ["Wallet"]).modules[0].state).toBe("noTestSets");
   });

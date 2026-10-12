@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { moduleKey } from "./test-set-suggest";
 import type { CellValue, WorkbookRow, WorkbookScope } from "./types";
 
 export const DEFAULT_IN_SCOPE_SHEET = "Phase 1 In-Scope";
@@ -107,18 +108,19 @@ export function moduleNames(rows: WorkbookRow[]): string[] {
   return [...names.values()].sort((a, b) => a.localeCompare(b));
 }
 
-/** Matches the module's canonical name or its configured Excel alias, ignoring case and spacing. */
+/** Matches the module's canonical name or its configured Excel alias, ignoring case, spacing and a plural "s". */
 export function filterRowsByModule(
   rows: WorkbookRow[],
   moduleName: string,
   alias?: string | null,
 ): WorkbookRow[] {
-  const accepted = new Set([normalizeText(moduleName)]);
-  if (alias && alias.trim()) accepted.add(normalizeText(alias));
+  const accepted = new Set([moduleKey(moduleName)]);
+  if (alias && alias.trim()) accepted.add(moduleKey(alias));
   return rows.filter((row) => {
     const header = findModuleHeader(Object.keys(row.values));
     if (!header) return false;
-    return accepted.has(normalizeText(row.values[header]));
+    const value = row.values[header];
+    return value !== null && value !== undefined && accepted.has(moduleKey(String(value)));
   });
 }
 

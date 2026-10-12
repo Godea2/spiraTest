@@ -321,8 +321,7 @@ const API_WORD = /\bapi\b/i;
 
 /** Module identity across releases: "Notifications" and "Notification" are one module. */
 export function moduleId(name: string): string {
-  const key = moduleKey(name);
-  return key.length > 3 ? key.replace(/s$/, "") : key;
+  return moduleKey(name);
 }
 
 /**
