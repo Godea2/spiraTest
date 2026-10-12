@@ -44,10 +44,29 @@ describe("report reads", () => {
       ]),
     );
     vi.stubGlobal("fetch", fetch);
-    const [set] = await listReportTestSets(24);
+    const [set] = await listReportTestSets(24, []);
     expect(set).toMatchObject({ testSetId: 5, name: "Cards - Android", folderId: 9, status: "In Progress", plannedDate: "2026-09-22T00:00:00.000Z", executionDate: null });
     expect(set.counts).toEqual({ passed: 3, failed: 1, caution: 0, blocked: 0, notRun: 2, notApplicable: 0 });
     expect(fetch.mock.calls.every(([, init]) => (init as RequestInit).method === "GET")).toBe(true);
+  });
+
+  it("adds the test sets the project list leaves out by reading each folder", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
+      const path = String(url);
+      if (path.includes("/test-set-folders/1/test-sets?")) return json([{ TestSetId: 5, Name: "Cards - iOS", ReleaseId: 2 }]);
+      if (path.includes("/test-set-folders/2/test-sets?")) return json({ Message: "Not found" }, 404);
+      return json([{ TestSetId: 4, Name: "Accounts - iOS", ReleaseId: 1 }]);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const sets = await listReportTestSets(24, [
+      { folderId: 1, parentId: null, name: "SIT Cycle 2" },
+      { folderId: 2, parentId: 1, name: "API" },
+    ]);
+    expect(sets.map((s) => [s.testSetId, s.folderId, s.releaseId])).toEqual([
+      [4, null, 1],
+      [5, 1, 2],
+    ]);
+    expect(fetch.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
   });
 
   it("reads folders and a test set's results", async () => {

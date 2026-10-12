@@ -8,11 +8,10 @@ export const maxDuration = 60;
 /** Read-only: the project's releases, test set folders and test sets with Spira's counts, for the report. */
 export const POST = handler(async (request: Request) => {
   const { projectId } = await parseBody(request, projectLookupSchema);
-  const [projectName, releases, folders, testSets] = await Promise.all([
+  const [projectName, releases, [folders, testSets]] = await Promise.all([
     getProjectName(projectId),
     listReleases(projectId),
-    listTestSetFolders(projectId),
-    listReportTestSets(projectId),
+    listTestSetFolders(projectId).then(async (folders) => [folders, await listReportTestSets(projectId, folders)] as const),
   ]);
   const catalog: ReportCatalog = { projectId, projectName, releases, folders, testSets, readAt: new Date().toISOString() };
   return ok(catalog);

@@ -172,6 +172,53 @@ export function setsInScope(catalog: Pick<ReportCatalog, "releases" | "folders" 
   );
 }
 
+export interface ScopeHint {
+  scope: ReportScope;
+  label: string;
+  sets: number;
+}
+
+/**
+ * When a scope finds no test sets: the releases the chosen folder's test sets are planned for, and the
+ * top-level folders holding the chosen release's test sets, most first.
+ */
+export function scopeHints(catalog: Pick<ReportCatalog, "releases" | "folders" | "testSets">, scope: ReportScope): { byRelease: ScopeHint[]; byFolder: ScopeHint[] } {
+  const releaseOf = new Map<number, number>();
+  for (const r of catalog.releases) if (r.depth === 0) for (const id of releaseFamily(catalog.releases, r.releaseId)) releaseOf.set(id, r.releaseId);
+  const inFolder = scope.folderId === null ? null : folderFamily(catalog.folders, scope.folderId);
+  const releases = new Map<number | null, number>();
+  for (const t of catalog.testSets) {
+    if (inFolder && (t.folderId === null || !inFolder.has(t.folderId))) continue;
+    const top = t.releaseId === null ? null : (releaseOf.get(t.releaseId) ?? t.releaseId);
+    releases.set(top, (releases.get(top) ?? 0) + 1);
+  }
+  const byRelease = [...releases]
+    .map(([releaseId, sets]) => ({
+      scope: { releaseId, folderId: scope.folderId },
+      label: releaseId === null ? "No release" : (catalog.releases.find((r) => r.releaseId === releaseId)?.label ?? `Release ${releaseId}`),
+      sets,
+    }))
+    .sort((a, b) => b.sets - a.sets);
+
+  const byFolder: ScopeHint[] = [];
+  if (scope.releaseId !== null) {
+    const family = releaseFamily(catalog.releases, scope.releaseId);
+    const parentOf = new Map(catalog.folders.map((f) => [f.folderId, f.parentId]));
+    const roots = new Map<number | null, number>();
+    for (const t of catalog.testSets) {
+      if (t.releaseId === null || !family.has(t.releaseId)) continue;
+      let root = t.folderId;
+      for (let depth = 0; root !== null && (parentOf.get(root) ?? null) !== null && depth < 50; depth += 1) root = parentOf.get(root) ?? null;
+      roots.set(root, (roots.get(root) ?? 0) + 1);
+    }
+    for (const [folderId, sets] of roots) {
+      byFolder.push({ scope: { releaseId: scope.releaseId, folderId }, label: folderId === null ? "No folder" : folderPath(catalog.folders, folderId).join(" / "), sets });
+    }
+    byFolder.sort((a, b) => b.sets - a.sets);
+  }
+  return { byRelease, byFolder };
+}
+
 export function scopeLabel(catalog: Pick<ReportCatalog, "releases" | "folders">, scope: ReportScope): string {
   if (scope.releaseId === null) return "No release chosen";
   const release = catalog.releases.find((r) => r.releaseId === scope.releaseId);

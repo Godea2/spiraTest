@@ -14,6 +14,7 @@ import {
   previousVersion,
   releaseFamily,
   retestState,
+  scopeHints,
   setsInScope,
   snapshotOf,
   type ReportInput,
@@ -133,6 +134,15 @@ describe("report scope", () => {
     expect(setsInScope(catalog, { releaseId: 2, folderId: null }).map((s) => s.testSetId)).toEqual([20, 21, 22, 23]);
     expect(setsInScope(catalog, { releaseId: 2, folderId: 2 }).map((s) => s.testSetId)).toEqual([23]);
     expect(setsInScope(catalog, { releaseId: null, folderId: null })).toEqual([]);
+  });
+
+  it("points an empty scope at the releases and folders that hold test sets", () => {
+    const scope = { releaseId: 2, folderId: 3 };
+    expect(setsInScope(catalog, scope)).toEqual([]);
+    const hints = scopeHints(catalog, scope);
+    expect(hints.byRelease.map((h) => [h.scope, h.sets])).toEqual([[{ releaseId: 1, folderId: 3 }, 4]]);
+    expect(hints.byFolder.map((h) => [h.scope, h.label, h.sets])).toEqual([[{ releaseId: 2, folderId: 1 }, "SIT Cycle 2", 4]]);
+    expect(setsInScope(catalog, hints.byFolder[0].scope)).toHaveLength(4);
   });
 
   it("compares a release with the one before it by default", () => {

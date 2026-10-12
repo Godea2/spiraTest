@@ -9,21 +9,44 @@ import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, r
 import {
   buildReport,
   compareSnapshots,
+  folderFamily,
   folderPath,
   initialReportOptions,
   previousSnapshot,
   sameScope,
+  scopeHints,
   setsInScope,
   snapshotOf,
   type RagStatus,
   type ReportInput,
   type ReportOptions,
   type ReportScope,
+  type ScopeHint,
 } from "@/lib/domain/report";
 import type { ReportCatalog } from "@/lib/domain/types";
 import { ReportDocument, type ReportChanges } from "./report-document";
 
 type CatalogState = { projectId: number; catalog: ReportCatalog | null; error: string | null };
+
+function HintRow({ text, hints, empty, onPick }: { text: string; hints: ScopeHint[]; empty: string; onPick: (scope: ReportScope) => void }) {
+  if (hints.length === 0) return <p>{empty}</p>;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span>{text}</span>
+      {hints.map((h) =>
+        h.scope.releaseId === null ? (
+          <span key="none" className="text-xs">
+            {h.label} ({h.sets})
+          </span>
+        ) : (
+          <Button key={`${h.scope.releaseId}:${h.scope.folderId}`} size="sm" variant="ghost" onClick={() => onPick(h.scope)}>
+            {h.label} ({h.sets})
+          </Button>
+        ),
+      )}
+    </div>
+  );
+}
 
 function ScopePicker({
   title,
@@ -46,6 +69,21 @@ function ScopePicker({
     () => catalog.folders.map((f) => ({ id: f.folderId, path: folderPath(catalog.folders, f.folderId) })).sort((a, b) => a.path.join("/").localeCompare(b.path.join("/"))),
     [catalog.folders],
   );
+  // How many test sets each option would give with the other choice kept, so empty combinations show before generating.
+  const counts = useMemo(() => {
+    const count = (s: ReportScope) => {
+      if (s.releaseId !== null) return setsInScope(catalog, s).length;
+      if (s.folderId === null) return catalog.testSets.length;
+      const family = folderFamily(catalog.folders, s.folderId);
+      return catalog.testSets.filter((t) => t.folderId !== null && family.has(t.folderId)).length;
+    };
+    return {
+      release: new Map(catalog.releases.map((r) => [r.releaseId, count({ releaseId: r.releaseId, folderId: scope.folderId })])),
+      folder: new Map([null, ...catalog.folders.map((f) => f.folderId)].map((id) => [id, count({ releaseId: scope.releaseId, folderId: id })])),
+    };
+  }, [catalog, scope.releaseId, scope.folderId]);
+  const hints = scope.releaseId !== null && sets.length === 0 ? scopeHints(catalog, scope) : null;
+  const sized = (n: number | undefined) => ` · ${(n ?? 0).toLocaleString()} set${n === 1 ? "" : "s"}`;
   return (
     <div className="well flex flex-col gap-3 p-4">
       <div>
@@ -66,6 +104,7 @@ function ScopePicker({
                 {"\u00a0\u00a0".repeat(r.depth)}
                 {r.label}
                 {r.active ? "" : " (inactive)"}
+                {sized(counts.release.get(r.releaseId))}
               </option>
             ))}
           </select>
@@ -79,20 +118,36 @@ function ScopePicker({
             value={scope.folderId ?? ""}
             onChange={(e) => onChange({ ...scope, folderId: e.target.value ? Number(e.target.value) : null })}
           >
-            <option value="">All folders</option>
+            <option value="">All folders{sized(counts.folder.get(null))}</option>
             {folders.map((f) => (
               <option key={f.id} value={f.id}>
                 {"\u00a0\u00a0".repeat(f.path.length - 1)}
                 {f.path[f.path.length - 1]}
+                {sized(counts.folder.get(f.id))}
               </option>
             ))}
           </select>
         )}
       </Field>
-      {scope.releaseId !== null && (
+      {scope.releaseId !== null && sets.length > 0 && (
         <p className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
           {sets.length.toLocaleString()} test set{sets.length === 1 ? "" : "s"} · {cases.toLocaleString()} test case slots in Spira
         </p>
+      )}
+      {hints && (
+        <Notice tone="warning" title="No test sets match this release and folder">
+          <div className="flex flex-col gap-2">
+            {scope.folderId !== null && (
+              <HintRow
+                text="The test sets in this folder are planned for:"
+                hints={hints.byRelease}
+                empty="This folder has no test sets."
+                onPick={onChange}
+              />
+            )}
+            <HintRow text="This release's test sets are in:" hints={hints.byFolder} empty="No test set in Spira is planned for this release or its sprints." onPick={onChange} />
+          </div>
+        </Notice>
       )}
     </div>
   );
@@ -156,7 +211,7 @@ export function ReportWorkspace() {
   const scopeChanged = !!(data && options && (!sameScope(data.input.options.scoped, options.scoped) || !sameScope(data.input.options.baseline, options.baseline)));
 
   const generate = async () => {
-    if (!options || projectId === null || options.scoped.releaseId === null) return;
+    if (!options || projectId === null || !catalog || setsInScope(catalog, options.scoped).length === 0) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
@@ -178,6 +233,7 @@ export function ReportWorkspace() {
   };
 
   const busy = progress !== null;
+  const scopedSets = catalog && options ? setsInScope(catalog, options.scoped).length : 0;
   const actions = report && (
     <>
       <Button icon={Printer} onClick={() => window.print()}>
@@ -326,10 +382,14 @@ export function ReportWorkspace() {
           </Field>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
-            <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={options.scoped.releaseId === null}>
+            <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={scopedSets === 0}>
               {data ? "Read Spira again" : "Generate report"}
             </Button>
-            {options.scoped.releaseId === null && <span className="text-sm text-slate-500">Choose the release in scope first.</span>}
+            {options.scoped.releaseId === null ? (
+              <span className="text-sm text-slate-500">Choose the release in scope first.</span>
+            ) : (
+              scopedSets === 0 && <span className="text-sm text-slate-500">No test sets are in scope; pick a release and folder that hold test sets.</span>
+            )}
             {busy && progress && (
               <div className="flex min-w-60 flex-1 flex-col gap-1.5">
                 <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">

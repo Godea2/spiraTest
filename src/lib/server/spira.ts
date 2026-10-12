@@ -831,9 +831,10 @@ export async function listReleases(projectId: number): Promise<SpiraRelease[]> {
     .map(toRelease);
 }
 
-/** Every test set in the project, or only those planned for one release, as Spira lists them. */
-async function readTestSetPages(projectId: number, releaseId: number | null): Promise<z.infer<typeof testSetListSchema>> {
-  const what = `listing test sets in project ${projectId}`;
+/** Every test set in the project (or in one folder), or only those planned for one release, as Spira lists them. */
+async function readTestSetPages(projectId: number, releaseId: number | null, folderId: number | null = null): Promise<z.infer<typeof testSetListSchema>> {
+  const what = folderId === null ? `listing test sets in project ${projectId}` : `listing test sets in folder ${folderId}`;
+  const base = folderId === null ? `projects/${projectId}/test-sets` : `projects/${projectId}/test-set-folders/${folderId}/test-sets`;
   const found = new Map<number, z.infer<typeof testSetListSchema>[number]>();
   for (let start = 1; start <= TEST_SET_LIMIT; start += TEST_SET_PAGE) {
     const query = new URLSearchParams({
@@ -843,7 +844,7 @@ async function readTestSetPages(projectId: number, releaseId: number | null): Pr
       sort_direction: "ASC",
     });
     if (releaseId !== null) query.set("release_id", String(releaseId));
-    const page = parse(testSetListSchema, await call("GET", `projects/${projectId}/test-sets?${query}`, what), what);
+    const page = parse(testSetListSchema, await call("GET", `${base}?${query}`, what), what);
     for (const t of page) found.set(t.TestSetId, t);
     if (page.length < TEST_SET_PAGE) break;
   }
@@ -876,12 +877,27 @@ export function spiraDate(value: unknown): string | null {
 }
 
 /** Every test set in the project with its folder, status, dates and Spira's counts. Read-only. */
-export async function listReportTestSets(projectId: number): Promise<ReportTestSet[]> {
-  return (await readTestSetPages(projectId, null))
-    .map((t) => ({
+export async function listReportTestSets(projectId: number, folders: ReportFolder[]): Promise<ReportTestSet[]> {
+  const found = new Map((await readTestSetPages(projectId, null)).map((t) => [t.TestSetId, { raw: t, folderId: null as number | null }]));
+  // The project list may leave out test sets inside folders, so each folder is read as well.
+  const queue = folders.map((f) => f.folderId);
+  const readFolder = async (folderId: number) => {
+    try {
+      for (const t of await readTestSetPages(projectId, null, folderId)) found.set(t.TestSetId, { raw: t, folderId });
+    } catch (error) {
+      if (!(error instanceof SpiraError) || error.upstream === null || error.upstream >= 500) throw error;
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let folderId = queue.shift(); folderId !== undefined; folderId = queue.shift()) await readFolder(folderId);
+    }),
+  );
+  return [...found.values()]
+    .map(({ raw: t, folderId }) => ({
       testSetId: t.TestSetId,
       name: t.Name?.trim() || `Test set ${t.TestSetId}`,
-      folderId: t.TestSetFolderId && t.TestSetFolderId > 0 ? t.TestSetFolderId : null,
+      folderId: t.TestSetFolderId && t.TestSetFolderId > 0 ? t.TestSetFolderId : folderId,
       releaseId: t.ReleaseId ?? null,
       releaseVersion: t.ReleaseVersionNumber?.trim() || null,
       status: t.TestSetStatusName?.trim() || null,
