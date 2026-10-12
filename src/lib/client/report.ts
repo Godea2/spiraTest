@@ -1,6 +1,7 @@
 import {
   addSnapshot,
   defaultReportOptions,
+  draftBuildScope,
   formatPct,
   LEVELS,
   MAX_LINKED_CASES,
@@ -10,6 +11,7 @@ import {
   OUTCOME_LABEL,
   OUTCOMES,
   RETEST_LABEL,
+  SCOPE_SOURCE_LABEL,
   setsInScope,
   snapshotOf,
   type Report,
@@ -20,6 +22,7 @@ import {
 import { EXECUTION_STATUS } from "@/lib/domain/execution";
 import type { ReportCase, ReportCatalog, ReportIncident, TestSetMapping } from "@/lib/domain/types";
 import { api } from "./api";
+import { allDrafts } from "./drafts";
 import { readItem, writeItem } from "./storage";
 
 export async function loadCatalog(projectId: number, signal?: AbortSignal): Promise<ReportCatalog> {
@@ -145,6 +148,7 @@ export async function readReportData(input: {
     incidentsComplete: complete,
     links,
     generatedAt: new Date().toISOString(),
+    buildScope: draftBuildScope(allDrafts(), projectId),
   };
 }
 
@@ -217,6 +221,19 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
       Status: m.inBuild ? MODULE_STATUS_LABEL[m.status] : "Later build",
       ...Object.fromEntries(report.streams.map((s) => [`${s} run`, m.byStream[s] ? `${m.byStream[s]!.executed} / ${m.byStream[s]!.total}` : ""])),
       "Last run": day(m.lastRun),
+    })),
+  );
+  add(
+    "Build scope",
+    report.buildSource.modules.map((m) => ({
+      Module: m.name,
+      Source: SCOPE_SOURCE_LABEL[m.source],
+      Drafts: m.drafts.join(", "),
+      "Applied in Spira": m.drafts.length ? (m.applied ? "Yes" : "No") : "",
+      "Test sets": m.sets,
+      "From drafts": m.setsFromDrafts,
+      "Out of scope still in Spira": m.outOfScope,
+      "Needs review": m.review,
     })),
   );
   add("Exit criteria", report.criteria.map((c, i) => ({ "#": i + 1, Criterion: c.label, Target: c.target, Actual: c.actual, Status: c.met ? "Met" : "Not met" })));

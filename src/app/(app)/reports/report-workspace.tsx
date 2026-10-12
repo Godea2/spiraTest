@@ -1,23 +1,30 @@
 "use client";
 
-import { FileChartColumn, FileSpreadsheet, NotebookPen, Printer, RefreshCw, Settings2 } from "lucide-react";
+import clsx from "clsx";
+import { FileChartColumn, FileSpreadsheet, ListChecks, NotebookPen, Printer, RefreshCw, Settings2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSettings } from "@/components/settings-context";
-import { Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
+import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
 import {
   buildReport,
+  classifySet,
   compareSnapshots,
   folderFamily,
   folderPath,
   initialReportOptions,
+  isRunStream,
+  moduleId,
   previousSnapshot,
   sameScope,
+  SCOPE_SOURCE_LABEL,
   scopeHints,
   setsInScope,
   snapshotOf,
   type DefectNote,
+  type Report,
+  type ScopeSourceKind,
   type RagStatus,
   type ReportInput,
   type ReportOptions,
@@ -28,6 +35,61 @@ import type { ReportCatalog } from "@/lib/domain/types";
 import { ReportDocument, type ReportChanges } from "./report-document";
 
 type CatalogState = { projectId: number; catalog: ReportCatalog | null; error: string | null };
+
+const SOURCE_TONE: Record<ScopeSourceKind, "success" | "warning" | "neutral"> = { drafts: "success", partial: "warning", spira: "warning", excluded: "neutral" };
+
+function BuildSourcePanel({ report, open, onToggle }: { report: Report; open: boolean; onToggle: () => void }) {
+  const { modules } = report.buildSource;
+  const unlisted = modules.filter((m) => m.source === "spira" || m.source === "partial");
+  return (
+    <Collapsible title={`Where ${report.labels.name === "this build" ? "this build" : report.labels.name} comes from`} count={modules.length} icon={ListChecks} open={open} onToggle={onToggle}>
+      <div className="flex flex-col gap-3 px-5 pt-2 pb-5 text-sm">
+        <p className="text-slate-600 dark:text-zinc-400">
+          {report.buildSource.fromDrafts
+            ? "Each module's cases in this build, from the boards of your drafts in this browser where a test set was compared, otherwise from Spira's test set. Results always come from Spira."
+            : "Every case in Spira's test sets counts in this build."}
+        </p>
+        {report.buildSource.fromDrafts && unlisted.length > 0 && (
+          <Notice tone="warning" title={`${unlisted.length} module${unlisted.length === 1 ? " has" : "s have"} no in-scope list in this app`}>
+            {unlisted.map((m) => m.name).join(", ")} count{unlisted.length === 1 ? "s" : ""} every case in Spira&apos;s test sets. Compare {unlisted.length === 1 ? "it" : "each"} with its in-scope workbook
+            (no live apply is needed for the report), or mark it as not in this build above.
+          </Notice>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-xs text-slate-500 dark:text-zinc-400">
+                <th className="py-1.5 pr-3 font-medium">Module</th>
+                <th className="py-1.5 pr-3 font-medium">Source</th>
+                <th className="py-1.5 pr-3 font-medium">Drafts</th>
+                <th className="py-1.5 pr-3 text-right font-medium">In this build</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Out of scope, still in Spira</th>
+                <th className="py-1.5 text-right font-medium">Needs review</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modules.map((m) => {
+                const row = report.modules.find((r) => r.id === m.id);
+                return (
+                  <tr key={m.id} className="border-t border-slate-100 dark:border-white/[0.06]">
+                    <td className="py-2 pr-3 font-medium">{m.name}</td>
+                    <td className="py-2 pr-3">
+                      <Badge tone={SOURCE_TONE[m.source]}>{SOURCE_TONE[m.source] === "success" && m.applied ? `${SCOPE_SOURCE_LABEL[m.source]} · applied` : SCOPE_SOURCE_LABEL[m.source]}</Badge>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-600 dark:text-zinc-400">{m.drafts.join(", ") || "—"}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{row ? `${row.inScope.toLocaleString()} runs` : "—"}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{m.outOfScope ? m.outOfScope.toLocaleString() : "—"}</td>
+                    <td className="py-2 text-right tabular-nums">{m.review ? m.review.toLocaleString() : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Collapsible>
+  );
+}
 
 function HintRow({ text, hints, empty, onPick }: { text: string; hints: ScopeHint[]; empty: string; onPick: (scope: ReportScope) => void }) {
   if (hints.length === 0) return <p>{empty}</p>;
@@ -166,6 +228,7 @@ export function ReportWorkspace() {
   const [progress, setProgress] = useState<ReportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState<boolean | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -235,7 +298,18 @@ export function ReportWorkspace() {
   };
 
   const busy = progress !== null;
+  const sourcePanelOpen = sourceOpen ?? !!report?.buildSource.modules.some((m) => m.source === "spira" || m.source === "partial");
   const scopedSets = catalog && options ? setsInScope(catalog, options.scoped).length : 0;
+  const mappings = settings?.mappings;
+  const scopedModules = useMemo(() => {
+    if (!catalog || !options) return [];
+    const modules = new Map<string, string>();
+    for (const set of setsInScope(catalog, options.scoped)) {
+      const { module, stream } = classifySet(set, catalog.folders, mappings ?? []);
+      if (isRunStream(stream) && !modules.has(moduleId(module))) modules.set(moduleId(module), module);
+    }
+    return [...modules].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [catalog, options, mappings]);
   const actions = report && (
     <>
       <Button icon={Printer} onClick={() => window.print()}>
@@ -394,6 +468,45 @@ export function ReportWorkspace() {
             </div>
           </div>
 
+          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+            <Field
+              label="This build comes from"
+              hint="A test set compared in this app counts only the cases its board keeps (In Scope, Defects, Blocked, Needs Review); its Out of Scope cases count as later builds. Results always come from Spira."
+            >
+              {(props) => (
+                <select {...props} className="input" value={options.scopeSource} onChange={(e) => update({ scopeSource: e.target.value as ReportOptions["scopeSource"] })}>
+                  <option value="drafts">In-scope lists in this app, else Spira</option>
+                  <option value="spira">Spira test sets only</option>
+                </select>
+              )}
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">Modules not in this build</span>
+              <div className="flex flex-wrap gap-1.5">
+                {scopedModules.map((m) => {
+                  const out = options.excludedModules.includes(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      aria-pressed={out}
+                      onClick={() => update({ excludedModules: out ? options.excludedModules.filter((id) => id !== m.id) : [...options.excludedModules, m.id] })}
+                      className={clsx(
+                        "cursor-pointer rounded-full px-2.5 py-1 text-xs font-medium ring-1 transition ring-inset",
+                        out ? "bg-slate-700 text-white ring-slate-700 dark:bg-zinc-200 dark:text-zinc-900" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 dark:bg-white/[0.04] dark:text-zinc-300 dark:ring-white/10",
+                      )}
+                    >
+                      {out ? "✕ " : ""}
+                      {m.name}
+                    </button>
+                  );
+                })}
+                {scopedModules.length === 0 && <span className="text-xs text-slate-500">No modules in scope yet.</span>}
+              </div>
+              <span className="text-xs text-slate-500 dark:text-zinc-400">Pick modules that have test sets in scope but are planned for a later build; they show as later builds, like Accounts in Phase 1.</span>
+            </div>
+          </div>
+
           <Field label="QA notes" hint="Optional. Shown on the first page, for example scope decisions or build notes." className="mt-4">
             {(props) => <textarea {...props} rows={3} className="input" value={options.notes} onChange={(e) => update({ notes: e.target.value })} />}
           </Field>
@@ -429,6 +542,12 @@ export function ReportWorkspace() {
         <Notice tone="danger" title="The report could not be read from Spira" className="print:hidden">
           {error}
         </Notice>
+      )}
+
+      {report && report.buildSource.modules.length > 0 && (
+        <div className="print:hidden">
+          <BuildSourcePanel report={report} open={sourcePanelOpen} onToggle={() => setSourceOpen(!sourcePanelOpen)} />
+        </div>
       )}
 
       {report && report.defects.rows.length > 0 && options && (

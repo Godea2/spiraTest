@@ -9,6 +9,7 @@ import {
   combineOutcomes,
   compareSnapshots,
   defaultReportOptions,
+  draftBuildScope,
   folderFamily,
   initialReportOptions,
   levelOf,
@@ -24,7 +25,7 @@ import {
   type ReportInput,
   type ReportOptions,
 } from "@/lib/domain/report";
-import type { ReportCase, ReportCatalog, ReportIncident, ReportTestSet, SpiraRelease } from "@/lib/domain/types";
+import type { Column, Draft, ReportCase, ReportCatalog, ReportIncident, ReportTestSet, SpiraRelease } from "@/lib/domain/types";
 
 const release = (releaseId: number, versionNumber: string, depth = 0): SpiraRelease => ({
   releaseId,
@@ -313,6 +314,51 @@ describe("buildReport", () => {
     expect(both.narrative.why[0]).toBe("Payments: 4 of 6 runs passed (66.7%); the same 1 case failed on both platforms (2 failed runs), traced to 1 open defect.");
     expect(both.defects.rows[0].failedRuns).toBe(2);
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
+  });
+
+  it("takes this build from the drafts' boards, else from Spira", () => {
+    const board = (testSetId: number, columns: Record<number, Column>, extra: Partial<Draft> = {}) =>
+      ({
+        id: `d-${testSetId}-${extra.status ?? "draft"}`,
+        name: `Profile ${extra.status ?? "draft"}`,
+        projectId: 24,
+        status: "draft",
+        decisions: {},
+        testSets: [
+          {
+            testSetId,
+            comparedAt: extra.updatedAt ?? "2026-10-11T00:00:00Z",
+            cards: Object.entries(columns).map(([id, suggestion], i) => ({ key: `${testSetId}:${i}`, testCaseId: Number(id), suggestion })),
+          },
+        ],
+        ...extra,
+      }) as unknown as Draft;
+    const applied = board(22, { 200: "inScope", 201: "outOfScope" }, { status: "applied", updatedAt: "2026-10-10T00:00:00Z" });
+    const newer = board(22, { 200: "outOfScope", 201: "outOfScope" }, { updatedAt: "2026-10-12T00:00:00Z" });
+    const scope = draftBuildScope([newer, applied, { ...applied, projectId: 99 }], 24);
+    expect(scope[22]).toMatchObject({ draftName: "Profile applied", applied: true, kept: [200], excluded: [201] });
+
+    const fromDrafts = buildReport(input({ buildScope: scope }));
+    expect(fromDrafts.kpis).toMatchObject({ plan: 10, inScope: 7, laterBuilds: 3, stillToRun: 1 });
+    expect(fromDrafts.buildSource.modules.map((m) => [m.name, m.source, m.outOfScope])).toEqual([
+      ["Payments", "spira", 0],
+      ["Profile", "drafts", 1],
+    ]);
+    expect(fromDrafts.findings.find((f) => f.check === "Modules without an in-scope list in this app")?.appliesTo).toBe("Payments");
+    expect(fromDrafts.narrative.scopeNote).toContain("This build follows the in-scope lists reviewed in this app for Profile. Payments has no in-scope list in this app yet");
+    expect(buildReport(input({ buildScope: scope, options: options({ scopeSource: "spira" }) })).kpis.inScope).toBe(8);
+  });
+
+  it("shows modules marked not in this build as later builds", () => {
+    const later = buildReport(input({ options: options({ excludedModules: [moduleId("Profile")], phase: "Phase 1" }) }));
+    expect(later.modules.map((m) => m.name)).toEqual(["Payments"]);
+    expect(later.laterModules.map((m) => [m.name, m.plan])).toEqual([
+      ["Profile", 2],
+      ["Cards", 1],
+    ]);
+    expect(later.kpis).toMatchObject({ inScope: 6, laterBuilds: 4, stillToRun: 0 });
+    expect(later.buildSource.modules.find((m) => m.name === "Profile")?.source).toBe("excluded");
+    expect(later.findings.some((f) => f.check === "Test sets past their planned date")).toBe(true);
   });
 
   it("works without a baseline", () => {
