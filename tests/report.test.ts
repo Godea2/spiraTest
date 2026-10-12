@@ -1,4 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ReportDocument } from "@/app/(app)/reports/report-document";
 import {
   addSnapshot,
   buildReport,
@@ -17,6 +20,7 @@ import {
   scopeHints,
   setsInScope,
   snapshotOf,
+  windowText,
   type ReportInput,
   type ReportOptions,
 } from "@/lib/domain/report";
@@ -190,24 +194,52 @@ describe("report scope", () => {
 describe("buildReport", () => {
   const report = buildReport(input());
 
-  it("counts each case once per module, across platforms", () => {
-    expect(report.kpis).toMatchObject({ baseline: 7, inScope: 6, executed: 4, added: 2, deferred: 3 });
-    expect(report.kpis.outcomes).toMatchObject({ passed: 3, failed: 1, notRun: 2 });
-    expect(report.kpis.passPct).toBeCloseTo(75);
+  it("counts test runs: each case once per platform, without the API stream", () => {
+    expect(report.kpis).toMatchObject({ plan: 10, inScope: 8, laterBuilds: 2, executed: 6, stillToRun: 2, added: 2, deferred: 4, modulesInPlan: 3 });
+    expect(report.kpis.outcomes).toMatchObject({ passed: 5, failed: 1, notRun: 2 });
+    expect(report.kpis.passPct).toBeCloseTo(83.33);
+    expect(report.kpis.split).toMatchObject({ plan: { iOS: 6, Android: 4 }, inScope: { iOS: 5, Android: 3 }, executed: { iOS: 3, Android: 3 }, failed: { iOS: 1 } });
+    expect(report.kpis.api).toMatchObject({ inScope: 1, executed: 1, passed: 1 });
+    expect(report.kpis.spiraRollup).toMatchObject({ passed: 5, failed: 1 });
     const payments = report.modules.find((m) => m.name === "Payments")!;
-    expect(payments).toMatchObject({ baseline: 4, inScope: 3, added: 1, executed: 3, streams: ["iOS", "Android"], openDefects: 1, status: "atRisk" });
+    expect(payments).toMatchObject({ plan: 7, inScope: 6, laterBuilds: 1, added: 2, executed: 6, failedCases: 1, samePerPlatform: false, streams: ["iOS", "Android"], openDefects: 1, status: "atRisk" });
     expect(payments.byStream.iOS).toMatchObject({ total: 3, executed: 3 });
+    expect(payments.baselineByStream.iOS).toMatchObject({ total: 4, executed: 0 });
     expect(report.modules.find((m) => m.name === "Profile")!.status).toBe("notStarted");
-    expect(report.modules.find((m) => m.name === "Accounts")).toMatchObject({ status: "ready", streams: ["API"] });
-    expect(report.streams).toEqual(["iOS", "Android", "API"]);
+    expect(report.modules.some((m) => m.name === "Accounts")).toBe(false);
+    expect(report.laterModules.map((m) => [m.name, m.plan, m.inBuild])).toEqual([["Cards", 1, false]]);
+    expect(report.streams).toEqual(["iOS", "Android"]);
   });
 
   it("compares the scope with the baseline module by module", () => {
     const payments = report.scope.rows.find((r) => r.name === "Payments")!;
-    expect(payments).toMatchObject({ baseline: 4, inScope: 3, both: 2, deferred: 2, added: 1 });
+    expect(payments).toMatchObject({ baseline: 7, inScope: 6, both: 4, deferred: 3, added: 2 });
     expect(payments.baselineStreams).toEqual({ iOS: 4, Android: 3 });
     expect(report.scope.rows.find((r) => r.name === "Cards")).toMatchObject({ baseline: 1, inScope: 0 });
-    expect(report.scope.added.map((c) => c.testCaseId).sort()).toEqual([103, 400]);
+    expect(report.scope.added.map((c) => c.testCaseId)).toEqual([103]);
+  });
+
+  it("compares the cycles on iOS, module by module", () => {
+    expect(report.cycle).toMatchObject({ stream: "iOS", baselineName: "1.0.0.0001", scopedName: "1.0.0.0002" });
+    const named = buildReport(input({ options: options({ baselineName: "Cycle 1", environment: "SIT Cycle 2", phase: "Phase 1" }) }));
+    expect(named.cycle).toMatchObject({ baselineName: "Cycle 1", scopedName: "SIT Cycle 2" });
+    expect(named.cycle!.rows).toEqual([
+      { name: "Payments", before: "Not run (4 planned)", now: "3 run · 1 failed", movement: "New defects found", tone: "bad" },
+      { name: "Profile", before: "Not run (2 planned)", now: "Not started", movement: "Not started", tone: "neutral" },
+      { name: "Cards", before: "Not planned", now: "Not in Phase 1", movement: "Later build", tone: "neutral" },
+    ]);
+    expect(named.labels).toEqual({ build: "This build (Phase 1)", name: "Phase 1", inBuild: "In Phase 1", outside: "Outside Phase 1" });
+    expect(named.title).toBe("Project-Simba — Daily SIT Test Report");
+    expect(report.title).toBe("Project-Simba — Daily Test Report");
+    expect(named.narrative.scopeNote).toBe(
+      "SIT Cycle 2 ran Sat 10 – Sun 11 Oct 2026. Test cases were scoped from the full plan (iOS 6 · Android 4, 10 runs) to Phase 1 (iOS 5 · Android 3, 8 runs, including 1 per platform added in testing). Cards is not part of Phase 1. The API stream (1 case, 1 executed) is reported separately.",
+    );
+  });
+
+  it("reads the execution window from the runs, unless it is set", () => {
+    expect(report.window).toMatchObject({ first: "2026-10-10T10:00:00Z", last: "2026-10-11T12:30:00Z", text: "Sat 10 – Sun 11 Oct 2026" });
+    expect(windowText("2026-09-30T10:00:00Z", "2026-10-02T10:00:00Z")).toBe("Wed 30 Sept – Fri 2 Oct 2026");
+    expect(buildReport(input({ options: options({ windowText: "Fri 9 – Sun 11 Oct 2026" }) })).window.text).toBe("Fri 9 – Sun 11 Oct 2026");
   });
 
   it("takes defects raised in the scoped release or linked to its cases", () => {
@@ -215,7 +247,22 @@ describe("buildReport", () => {
     expect(report.defects).toMatchObject({ open: 1, closed: 1, openCriticalHigh: 0, withinSla: 1 });
     expect(report.defects.rows[0]).toMatchObject({ modules: ["Payments"], testCaseIds: [101], ageDays: 1 });
     expect(report.defects.byPriority.High).toBe(1);
+    expect(report.defects.byPriorityInBuild.High).toBe(1);
     expect(report.defects.severityAge.Medium).toEqual([1, 0, 0, 0]);
+    expect(report.defects.rows[0]).toMatchObject({ failedRuns: 1, feature: "Payments", phase: "in", rationale: "" });
+    expect(report.defects.rows[1].phase).toBeNull();
+    expect(report.defects.summary).toBe(
+      "2 defects logged in Spira (IN:258 – IN:259), all in Payments and raised on 11 Oct, covering 1 failed case (1 failed run across iOS and Android). 1 open, 1 closed. None open is Critical or High severity; 1 is Critical or High priority.",
+    );
+  });
+
+  it("applies QA's notes to the defect register", () => {
+    const noted = buildReport(
+      input({ options: options({ phase: "Phase 1", defectNotes: { "258": { feature: "Bill payments", phase: "out", rationale: "Feature not in Phase 1" } } }) }),
+    );
+    expect(noted.defects.rows[0]).toMatchObject({ feature: "Bill payments", phase: "out", rationale: "Feature not in Phase 1" });
+    expect(noted.defects.byPriorityInBuild.High).toBe(0);
+    expect(noted.narrative.actions.find((a) => a.title === "Scope drift in Payments")?.detail).toContain("Bill payments (1)");
   });
 
   it("judges the exit criteria and the overall status", () => {
@@ -234,6 +281,7 @@ describe("buildReport", () => {
     expect(withoutLinks.findings.find((f) => f.check === "Failed results with no linked defect")).toMatchObject({ severity: "High", appliesTo: "Payments" });
     expect(report.findings.find((f) => f.check === "Test sets past their planned date")?.appliesTo).toBe("Profile-iOS");
     expect(report.findings.find((f) => f.check === "Modules not started")?.appliesTo).toBe("Profile");
+    expect(report.findings.find((f) => f.check === "Results differ between platforms")?.appliesTo).toBe("Payments");
     const unchecked = buildReport(input({ links: {} }));
     expect(unchecked.failedCases[0].checked).toBe(false);
     expect(unchecked.sources.linksPartial).toBe(true);
@@ -245,19 +293,60 @@ describe("buildReport", () => {
   });
 
   it("writes a headline from the figures", () => {
-    expect(report.narrative.headline).toContain("4 of 6 in-scope test cases have been executed (66.7%)");
+    expect(report.narrative.headline).toContain("6 of 8 planned test runs have been executed (75.0%) and 83.3% passed");
     expect(report.narrative.headline).toContain("The only failure is in Payments.");
-    expect(report.narrative.actions.map((a) => a.title)).toContain("Payments quality");
+    expect(report.narrative.actions.map((a) => a.title)).toEqual(["Payments quality", "Remaining scope", "Overdue test sets"]);
+    expect(report.narrative.why).toEqual([
+      "Payments: 5 of 6 runs passed (83.3%); 1 case failed (1 failed run), traced to 1 open defect.",
+      "Profile: 2 cases on iOS not yet started.",
+    ]);
+    expect(report.statusReason).toBe(
+      "Three of seven criteria are met (blocked tests, no Critical or High severity defects and defect ageing); execution, pass rate, defect closure and module coverage are not yet met.",
+    );
     expect(report.trend.days).toHaveLength(21);
-    expect(report.trend.days.at(-2)).toMatchObject({ day: "2026-10-11", executed: 2, failed: 1 });
-    expect(report.trend.days.at(-1)!.cumulative).toBe(4);
+    expect(report.trend.days.at(-2)).toMatchObject({ day: "2026-10-11", executed: 4, failed: 1 });
+    expect(report.trend.days.at(-1)!.cumulative).toBe(6);
+  });
+
+  it("says when the same cases failed on both platforms", () => {
+    const both = buildReport(input({ results: { ...input().results, 21: [tc(100, PASSED, "2026-10-10T12:00:00Z"), tc(101, FAILED, "2026-10-11T12:00:00Z"), tc(103, PASSED)] } }));
+    expect(both.narrative.why[0]).toBe("Payments: 4 of 6 runs passed (66.7%); the same 1 case failed on both platforms (2 failed runs), traced to 1 open defect.");
+    expect(both.defects.rows[0].failedRuns).toBe(2);
+    expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
   });
 
   it("works without a baseline", () => {
     const alone = buildReport(input({ options: options({ baseline: { releaseId: null, folderId: null } }) }));
     expect(alone.hasBaseline).toBe(false);
-    expect(alone.kpis.baseline).toBe(0);
+    expect(alone.kpis).toMatchObject({ plan: 8, inScope: 8, laterBuilds: 0, added: 0 });
+    expect(alone.cycle).toBeNull();
     expect(alone.findings.some((f) => f.check === "Cases in scope but not in the baseline")).toBe(false);
+  });
+});
+
+describe("report document", () => {
+  it("renders the four template pages, and the appendix when asked", () => {
+    const render = (patch: Partial<ReportOptions>) =>
+      renderToStaticMarkup(createElement(ReportDocument, { report: buildReport(input({ options: options(patch) })), changes: null, siteUrl: null }));
+    const html = render({ environment: "SIT Cycle 2", phase: "Phase 1", baselineName: "Cycle 1" });
+    expect(html.match(/report-page/g)).toHaveLength(4);
+    for (const text of [
+      "OVERALL STATUS: RED",
+      "Total test plan",
+      "This build (Phase 1)",
+      "1. Total test plan vs Phase 1: by module",
+      "Cards (not in Phase 1)",
+      "2. Readiness against SIT exit criteria",
+      "3a. Test outcome by module",
+      "3b. Module readiness for UAT",
+      "3c. Change since Cycle 1 (iOS test sets)",
+      "4. Defects and retesting",
+      "4d. Defect register: severity and priority",
+      "Key risks and actions",
+      "Page 4 / 4",
+    ])
+      expect(html).toContain(text.replace("&", "&amp;"));
+    expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
   });
 });
 

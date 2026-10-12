@@ -60,6 +60,25 @@ export interface ReportOptions {
   targets: ReportTargets;
   status: "auto" | RagStatus;
   notes: string;
+  /** Name of the build being tested, e.g. "Phase 1"; empty reads "this build". */
+  phase: string;
+  /** Name of the baseline in comparisons, e.g. "Cycle 1"; empty uses its folder or release. */
+  baselineName: string;
+  /** Replaces the execution window read from the run dates, e.g. "Fri 9 – Sun 11 Oct 2026". */
+  windowText: string;
+  /** Adds the data checks, trend, test sets and failed cases after the four report pages. */
+  appendix: boolean;
+  /** QA's reading of each defect, keyed by incident ID. */
+  defectNotes: Record<string, DefectNote>;
+}
+
+export type DefectPhase = "in" | "out" | "tbc";
+
+export interface DefectNote {
+  feature: string;
+  /** Empty: in the build when the defect is linked to a case in scope. */
+  phase: DefectPhase | "";
+  rationale: string;
 }
 
 export function defaultReportOptions(): ReportOptions {
@@ -73,6 +92,11 @@ export function defaultReportOptions(): ReportOptions {
     targets: { executedPct: 100, passRatePct: 95, agingDays: 10 },
     status: "auto",
     notes: "",
+    phase: "",
+    baselineName: "",
+    windowText: "",
+    appendix: false,
+    defectNotes: {},
   };
 }
 
@@ -291,8 +315,8 @@ export type RetestState = "awaiting" | "retest" | "reopened" | "closed";
 
 export const RETEST_LABEL: Record<RetestState, string> = {
   retest: "Fixed, ready for retest",
-  closed: "Retested and closed",
-  reopened: "Reopened after retest",
+  closed: "Retested: passed (closed)",
+  reopened: "Retested: failed (reopened)",
   awaiting: "Awaiting fix",
 };
 
@@ -318,6 +342,12 @@ export interface DefectRow {
   ageDays: number | null;
   modules: string[];
   testCaseIds: number[];
+  /** Failed runs in scope of the linked cases. */
+  failedRuns: number;
+  feature: string;
+  /** In the build being tested, outside it, or awaiting confirmation; null when unknown. */
+  phase: DefectPhase | null;
+  rationale: string;
 }
 
 export interface DefectSummary {
@@ -326,8 +356,9 @@ export interface DefectSummary {
   closed: number;
   /** Open defects by severity (rows) and age bucket (columns). */
   severityAge: Record<Level, number[]>;
-  /** Open defects by priority. */
+  /** Open defects by priority, all and those in the build. */
   byPriority: Record<Level, number>;
+  byPriorityInBuild: Record<Level, number>;
   retest: Record<RetestState, number>;
   openCriticalHigh: number;
   withinSla: number;
@@ -335,22 +366,59 @@ export interface DefectSummary {
   failedWithoutDefect: FailedCase[];
   /** Failed cases whose links were looked up. */
   failedChecked: number;
+  /** One paragraph introducing the defects, from the figures. */
+  summary: string;
 }
 
 // ---------------------------------------------------------------------------------------------
 // The report
+//
+// Figures are test runs: a case counts once per platform it is planned on (iOS and Android are two
+// runs), as in the daily SIT report. The API stream is not a platform run and is reported on its own.
+
+export type PlatformSplit = Partial<Record<Stream, number>>;
+
+export const isRunStream = (stream: Stream) => stream !== "API";
 
 export interface Kpis {
-  baseline: number;
+  /** Runs in the baseline (the full plan); the runs in scope when there is no baseline. */
+  plan: number;
   inScope: number;
+  laterBuilds: number;
   executable: number;
   executed: number;
+  stillToRun: number;
   outcomes: OutcomeCounts;
+  planPct: number | null;
   execPct: number | null;
   passPct: number | null;
+  /** Runs in scope that are not in the baseline (for example cases written during testing), and the reverse. */
   added: number;
   deferred: number;
   coveragePct: number | null;
+  split: {
+    plan: PlatformSplit;
+    inScope: PlatformSplit;
+    executed: PlatformSplit;
+    passed: PlatformSplit;
+    failed: PlatformSplit;
+    stillToRun: PlatformSplit;
+  };
+  modulesInPlan: number;
+  baseline: {
+    outcomes: OutcomeCounts;
+    executed: number;
+    passPct: number | null;
+  };
+  api: {
+    baseline: number;
+    inScope: number;
+    executed: number;
+    passed: number;
+    failed: number;
+  };
+  /** Spira's own counts summed over the platform test sets in scope. */
+  spiraRollup: OutcomeCounts;
 }
 
 export interface StreamProgress {
@@ -362,16 +430,24 @@ export interface StreamProgress {
 export interface ModuleRow {
   id: string;
   name: string;
+  /** Platforms in scope (or in the baseline, for a module not in this build). */
   streams: Stream[];
-  baseline: number;
+  inBuild: boolean;
+  plan: number;
   inScope: number;
+  laterBuilds: number;
   added: number;
   outcomes: OutcomeCounts;
   executable: number;
   executed: number;
+  stillToRun: number;
   execPct: number | null;
   passPct: number | null;
   byStream: Partial<Record<Stream, StreamProgress>>;
+  baselineByStream: Partial<Record<Stream, StreamProgress>>;
+  /** Distinct cases failed on at least one platform, and whether every case has the same result on each platform it ran on. */
+  failedCases: number;
+  samePerPlatform: boolean;
   openDefects: number;
   defects: number;
   status: ModuleStatus;
@@ -387,12 +463,19 @@ export interface StreamRow extends StreamProgress {
 
 export interface Criterion {
   label: string;
+  /** How the criterion reads in a sentence, e.g. "pass rate". */
+  short: string;
   target: string;
   actual: string;
   met: boolean;
-  /** 0–1 for criteria shown as a bar, with the target marker. */
-  progress: number | null;
-  mark: number | null;
+}
+
+export interface ReadinessBar {
+  label: string;
+  text: string;
+  progress: number;
+  mark: number;
+  met: boolean;
 }
 
 export interface ScopeRow {
@@ -454,9 +537,28 @@ export interface ActionItem {
 
 export interface Narrative {
   headline: string;
-  working: string[];
-  risks: string[];
+  /** Why each module has its UAT status, a sentence per group. */
+  why: string[];
   actions: ActionItem[];
+  scopeNote: string;
+  dataNote: string;
+}
+
+export interface CycleComparison {
+  /** The platform compared: iOS when it is in scope. */
+  stream: Stream;
+  baselineName: string;
+  scopedName: string;
+  rows: ChangeRow[];
+}
+
+export interface PhaseLabels {
+  /** "This build (Phase 1)" */
+  build: string;
+  /** "Phase 1" or "this build" */
+  name: string;
+  inBuild: string;
+  outside: string;
 }
 
 export interface Report {
@@ -469,29 +571,53 @@ export interface Report {
   hasBaseline: boolean;
   baselineLabel: string;
   scopedLabel: string;
+  baselineName: string;
+  scopedName: string;
+  labels: PhaseLabels;
+  /** Platforms counted as runs, in scope. */
   streams: Stream[];
   goLive: string | null;
   daysToGoLive: number | null;
-  window: { first: string | null; last: string | null };
+  window: { first: string | null; last: string | null; text: string | null };
   kpis: Kpis;
   modules: ModuleRow[];
+  /** Modules in the baseline only: planned for a later build. */
+  laterModules: ModuleRow[];
   streamRows: StreamRow[];
   readiness: Record<ModuleStatus, number>;
   criteria: Criterion[];
+  bars: ReadinessBar[];
   status: RagStatus;
   autoStatus: RagStatus;
   statusReason: string;
   defects: DefectSummary;
-  scope: { rows: ScopeRow[]; streams: Stream[]; added: CaseRef[]; deferred: CaseRef[] };
+  cycle: CycleComparison | null;
+  scope: {
+    rows: ScopeRow[];
+    streams: Stream[];
+    added: CaseRef[];
+    deferred: CaseRef[];
+  };
   findings: Finding[];
   narrative: Narrative;
-  trend: { days: TrendDay[]; earlier: number; pacePerDay: number | null; daysToFinish: number | null };
+  trend: {
+    days: TrendDay[];
+    earlier: number;
+    pacePerDay: number | null;
+    daysToFinish: number | null;
+  };
   testSets: SetRow[];
   baselineSets: SetRow[];
   failedCases: FailedCase[];
   targets: ReportTargets;
   notes: string;
-  sources: { incidentsComplete: boolean; linksPartial: boolean; setsRead: number; setsMissing: number };
+  appendix: boolean;
+  sources: {
+    incidentsComplete: boolean;
+    linksPartial: boolean;
+    setsRead: number;
+    setsMissing: number;
+  };
 }
 
 export interface ReportInput {
@@ -523,10 +649,27 @@ interface PlannedCase {
 }
 
 interface Side {
-  sets: Array<{ set: ReportTestSet; module: string; moduleId: string; stream: Stream }>;
+  sets: Array<{
+    set: ReportTestSet;
+    module: string;
+    moduleId: string;
+    stream: Stream;
+  }>;
   /** Keyed by module and test case: a case planned in two modules counts in both. */
   cases: Map<string, PlannedCase>;
   moduleNames: Map<string, string>;
+}
+
+/** One planned run: a case on one platform of a module. */
+interface Run {
+  key: string;
+  testCaseId: number;
+  name: string;
+  moduleId: string;
+  module: string;
+  stream: Stream;
+  outcome: Outcome;
+  lastRun: string | null;
 }
 
 function readSide(input: ReportInput, scope: ReportScope): Side {
@@ -540,65 +683,177 @@ function readSide(input: ReportInput, scope: ReportScope): Side {
     if (!moduleNames.has(s.moduleId)) moduleNames.set(s.moduleId, s.module);
     for (const c of input.results[s.set.testSetId] ?? []) {
       const key = `${s.moduleId}:${c.testCaseId}`;
-      const planned = cases.get(key) ?? { testCaseId: c.testCaseId, name: c.name, moduleId: s.moduleId, module: s.module, placements: [] };
-      planned.placements.push({ set: s.set, stream: s.stream, outcome: outcomeOf(c.statusId), executionDate: c.executionDate });
+      const planned = cases.get(key) ?? {
+        testCaseId: c.testCaseId,
+        name: c.name,
+        moduleId: s.moduleId,
+        module: s.module,
+        placements: [],
+      };
+      planned.placements.push({
+        set: s.set,
+        stream: s.stream,
+        outcome: outcomeOf(c.statusId),
+        executionDate: c.executionDate,
+      });
       cases.set(key, planned);
     }
   }
   return { sets, cases, moduleNames };
 }
 
-const caseOutcome = (c: PlannedCase) => combineOutcomes(c.placements.map((p) => p.outcome));
-
-function lastRunOf(c: PlannedCase): string | null {
-  let last: string | null = null;
-  for (const p of c.placements) if (isExecuted(p.outcome) && p.executionDate && (!last || p.executionDate > last)) last = p.executionDate;
-  return last;
-}
-
 function streamsOf(c: PlannedCase): Stream[] {
   return STREAMS.filter((s) => c.placements.some((p) => p.stream === s));
 }
 
-function byStream(cases: PlannedCase[]): Partial<Record<Stream, StreamProgress>> {
+/** Every planned run of a side; a case listed twice on one platform is one run, with its worst result. */
+function runsOf(side: Side, streams: (stream: Stream) => boolean): Run[] {
+  const runs: Run[] = [];
+  for (const c of side.cases.values()) {
+    for (const stream of streamsOf(c).filter(streams)) {
+      const here = c.placements.filter((p) => p.stream === stream);
+      let lastRun: string | null = null;
+      for (const p of here) if (isExecuted(p.outcome) && p.executionDate && (!lastRun || p.executionDate > lastRun)) lastRun = p.executionDate;
+      runs.push({
+        key: `${c.moduleId}:${stream}:${c.testCaseId}`,
+        testCaseId: c.testCaseId,
+        name: c.name,
+        moduleId: c.moduleId,
+        module: c.module,
+        stream,
+        outcome: combineOutcomes(here.map((p) => p.outcome)),
+        lastRun,
+      });
+    }
+  }
+  return runs;
+}
+
+function tally(runs: Run[]): StreamProgress & { executable: number } {
+  const outcomes = emptyCounts();
+  for (const r of runs) outcomes[r.outcome] += 1;
+  const executed = outcomes.passed + outcomes.failed + outcomes.blocked + outcomes.caution;
+  return {
+    total: runs.length,
+    outcomes,
+    executed,
+    executable: runs.length - outcomes.notApplicable,
+  };
+}
+
+function byStream(runs: Run[]): Partial<Record<Stream, StreamProgress>> {
   const out: Partial<Record<Stream, StreamProgress>> = {};
-  for (const c of cases) {
-    for (const stream of streamsOf(c)) {
-      const outcome = combineOutcomes(c.placements.filter((p) => p.stream === stream).map((p) => p.outcome));
-      const row = (out[stream] ??= { total: 0, executed: 0, outcomes: emptyCounts() });
-      row.total += 1;
-      row.outcomes[outcome] += 1;
-      if (isExecuted(outcome)) row.executed += 1;
+  for (const stream of STREAMS) {
+    const mine = runs.filter((r) => r.stream === stream);
+    if (mine.length) {
+      const { total, executed, outcomes } = tally(mine);
+      out[stream] = { total, executed, outcomes };
     }
   }
   return out;
 }
 
-function tally(cases: PlannedCase[]): { outcomes: OutcomeCounts; executed: number; executable: number } {
-  const outcomes = emptyCounts();
-  for (const c of cases) outcomes[caseOutcome(c)] += 1;
-  const executed = outcomes.passed + outcomes.failed + outcomes.blocked + outcomes.caution;
-  return { outcomes, executed, executable: cases.length - outcomes.notApplicable };
+function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const item of items) out.set(key(item), [...(out.get(key(item)) ?? []), item]);
+  return out;
+}
+
+function splitOf(runs: Run[], keep: (r: Run) => boolean = () => true): PlatformSplit {
+  const out: PlatformSplit = {};
+  for (const r of runs) if (keep(r)) out[r.stream] = (out[r.stream] ?? 0) + 1;
+  return out;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 const list = (names: string[]) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+const shortDay = (iso: string) =>
+  new Date(iso).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+
+export function phaseLabels(phase: string): PhaseLabels {
+  const name = phase.trim();
+  return name
+    ? {
+        build: `This build (${name})`,
+        name,
+        inBuild: `In ${name}`,
+        outside: `Outside ${name}`,
+      }
+    : {
+        build: "This build",
+        name: "this build",
+        inBuild: "In this build",
+        outside: "Outside this build",
+      };
+}
+
+/** "Fri 9 – Sun 11 Oct 2026" */
+export function windowText(first: string, last: string): string {
+  const a = new Date(first);
+  const b = new Date(last);
+  const opts = { timeZone: "UTC" } as const;
+  const weekday = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "short", ...opts });
+  const end = `${weekday(b)} ${b.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", ...opts })}`;
+  if (dayOf(first) === dayOf(last)) return end;
+  const sameMonth = a.getUTCMonth() === b.getUTCMonth() && a.getUTCFullYear() === b.getUTCFullYear();
+  const start = `${weekday(a)} ${a.toLocaleDateString("en-GB", { day: "numeric", ...(sameMonth ? {} : { month: "short" }), ...opts })}`;
+  return `${start} – ${end}`;
+}
+
+/** "iOS 592 · Android 592" */
+export function splitText(split: PlatformSplit, streams: Stream[]): string {
+  return streams.map((s) => `${s} ${(split[s] ?? 0).toLocaleString()}`).join(" · ");
+}
+
+/** "592 per platform" when every platform has the same count, otherwise each platform's count. */
+function perPlatform(split: PlatformSplit, streams: Stream[], unit = "per platform"): string {
+  const values = streams.map((s) => split[s] ?? 0);
+  if (streams.length > 1 && values.every((v) => v === values[0])) return `${values[0].toLocaleString()} ${unit}`;
+  return splitText(split, streams);
+}
+
+/** "109 cases per platform (218 runs)", or "2 cases on iOS" when only one platform has any. */
+function runsText(split: PlatformSplit, unit = "cases per platform"): string {
+  const present = STREAMS.filter((s) => (split[s] ?? 0) > 0);
+  const total = present.reduce((n, s) => n + (split[s] ?? 0), 0);
+  if (present.length > 1) return `${perPlatform(split, present, unit)} (${plural(total, "run")})`;
+  return present.length ? `${plural(total, "case")} on ${present[0]}` : "no cases";
+}
+
+function scopeName(catalog: ReportCatalog, scope: ReportScope): string {
+  if (scope.folderId !== null) {
+    const path = folderPath(catalog.folders, scope.folderId);
+    if (path.length) return path[path.length - 1];
+  }
+  return scopeLabel(catalog, scope);
+}
 
 export function buildReport(input: ReportInput): Report {
   const { catalog, options, generatedAt } = input;
   const targets = options.targets;
   const today = generatedAt;
+  const labels = phaseLabels(options.phase ?? "");
+  const notesById = options.defectNotes ?? {};
   const baseline = readSide(input, options.baseline);
   const scoped = readSide(input, options.scoped);
-
-  // Modules: scoped names win, then baseline names.
+  const hasBaseline = options.baseline.releaseId !== null;
   const names = new Map([...baseline.moduleNames, ...scoped.moduleNames]);
-  const scopedByModule = new Map<string, PlannedCase[]>();
-  for (const c of scoped.cases.values()) scopedByModule.set(c.moduleId, [...(scopedByModule.get(c.moduleId) ?? []), c]);
-  const baselineIds = new Map<string, Set<number>>();
-  for (const c of baseline.cases.values()) baselineIds.set(c.moduleId, (baselineIds.get(c.moduleId) ?? new Set()).add(c.testCaseId));
-  const scopedIds = new Map<string, Set<number>>();
-  for (const c of scoped.cases.values()) scopedIds.set(c.moduleId, (scopedIds.get(c.moduleId) ?? new Set()).add(c.testCaseId));
+  const nameOf = (id: string) => names.get(id) ?? id;
+  const baselineName = options.baselineName?.trim() || (hasBaseline ? scopeName(catalog, options.baseline) : "the baseline");
+  const scopedName = options.environment.trim() || scopeName(catalog, options.scoped);
+
+  const runs = runsOf(scoped, isRunStream);
+  const baseRuns = hasBaseline ? runsOf(baseline, isRunStream) : [];
+  const baseKeys = new Set(baseRuns.map((r) => r.key));
+  const runKeys = new Set(runs.map((r) => r.key));
+  const runsByModule = groupBy(runs, (r) => r.moduleId);
+  const baseByModule = groupBy(baseRuns, (r) => r.moduleId);
+  const streams = STREAMS.filter((s) => runs.some((r) => r.stream === s));
+  const baseStreams = STREAMS.filter((s) => baseRuns.some((r) => r.stream === s));
 
   // Defects: raised against the scoped release, or linked to a scoped case.
   const scopedReleases = options.scoped.releaseId === null ? new Set<number>() : releaseFamily(catalog.releases, options.scoped.releaseId);
@@ -610,20 +865,27 @@ export function buildReport(input: ReportInput): Report {
   }
   const modulesOfCase = new Map<number, Set<string>>();
   for (const c of scoped.cases.values()) modulesOfCase.set(c.testCaseId, (modulesOfCase.get(c.testCaseId) ?? new Set()).add(c.moduleId));
+  const failedRunsOfCase = new Map<number, number>();
+  for (const r of runs) if (r.outcome === "failed") failedRunsOfCase.set(r.testCaseId, (failedRunsOfCase.get(r.testCaseId) ?? 0) + 1);
 
   const defectRows: DefectRow[] = input.incidents
     .filter((i) => (i.detectedReleaseId !== null && scopedReleases.has(i.detectedReleaseId)) || casesByIncident.has(i.incidentId))
     .map((incident) => {
       const caseIds = [...(casesByIncident.get(incident.incidentId) ?? [])].sort((a, b) => a - b);
-      const moduleIds = new Set(caseIds.flatMap((id) => [...(modulesOfCase.get(id) ?? [])]));
+      const moduleNames = [...new Set(caseIds.flatMap((id) => [...(modulesOfCase.get(id) ?? [])]))].map(nameOf).sort();
+      const note = notesById[String(incident.incidentId)];
       return {
         incident,
         severity: levelOf(incident.severity),
         priority: levelOf(incident.priority),
         retest: retestState(incident),
         ageDays: incident.open && incident.createdAt ? Math.max(0, daysBetween(incident.createdAt, today)) : null,
-        modules: [...moduleIds].map((id) => names.get(id) ?? id).sort(),
+        modules: moduleNames,
         testCaseIds: caseIds,
+        failedRuns: caseIds.reduce((n, id) => n + (failedRunsOfCase.get(id) ?? 0), 0),
+        feature: note?.feature.trim() || moduleNames.join(", "),
+        phase: note?.phase || (caseIds.length ? "in" : null),
+        rationale: note?.rationale.trim() ?? "",
       };
     })
     .sort(
@@ -637,18 +899,15 @@ export function buildReport(input: ReportInput): Report {
   const openDefectsByModule = new Map<string, number>();
   const defectsByModule = new Map<string, number>();
   for (const row of defectRows) {
-    const moduleIdsOfRow = new Set(row.testCaseIds.flatMap((id) => [...(modulesOfCase.get(id) ?? [])]));
-    for (const id of moduleIdsOfRow) {
+    for (const id of new Set(row.testCaseIds.flatMap((caseId) => [...(modulesOfCase.get(caseId) ?? [])]))) {
       defectsByModule.set(id, (defectsByModule.get(id) ?? 0) + 1);
       if (row.incident.open) openDefectsByModule.set(id, (openDefectsByModule.get(id) ?? 0) + 1);
     }
   }
 
-  // Module rows (in scope only).
-  const modules: ModuleRow[] = [...scopedByModule.entries()].map(([id, cases]) => {
-    const t = tally(cases);
-    const inBaseline = baselineIds.get(id) ?? new Set<number>();
-    const ids = scopedIds.get(id) ?? new Set<number>();
+  const moduleRow = (id: string, mine: Run[], base: Run[], inBuild: boolean): ModuleRow => {
+    const t = tally(mine);
+    const plan = hasBaseline ? base.length : mine.length;
     const execPct = pct(t.executed, t.executable);
     const passPct = pct(t.outcomes.passed, t.executed);
     const openDefects = openDefectsByModule.get(id) ?? 0;
@@ -663,97 +922,132 @@ export function buildReport(input: ReportInput): Report {
           : t.outcomes.failed > 0 || !noBlocked || openDefects > 0 || passOk === false
             ? "atRisk"
             : "inProgress";
+    const byCase = groupBy(mine, (r) => String(r.testCaseId));
+    const samePerPlatform = [...byCase.values()].every((list) => new Set(list.filter((r) => isExecuted(r.outcome)).map((r) => r.outcome)).size <= 1);
     let lastRun: string | null = null;
-    for (const c of cases) {
-      const run = lastRunOf(c);
-      if (run && (!lastRun || run > lastRun)) lastRun = run;
-    }
+    for (const r of mine) if (r.lastRun && (!lastRun || r.lastRun > lastRun)) lastRun = r.lastRun;
     return {
       id,
-      name: names.get(id) ?? id,
-      streams: STREAMS.filter((s) => cases.some((c) => c.placements.some((p) => p.stream === s))),
-      baseline: inBaseline.size,
-      inScope: cases.length,
-      added: [...ids].filter((caseId) => !inBaseline.has(caseId)).length,
-      ...t,
+      name: nameOf(id),
+      streams: STREAMS.filter((s) => (inBuild ? mine : base).some((r) => r.stream === s)),
+      inBuild,
+      plan,
+      inScope: mine.length,
+      laterBuilds: Math.max(0, plan - mine.length),
+      added: hasBaseline ? mine.filter((r) => !baseKeys.has(r.key)).length : 0,
+      outcomes: t.outcomes,
+      executable: t.executable,
+      executed: t.executed,
+      stillToRun: t.executable - t.executed,
       execPct,
       passPct,
-      byStream: byStream(cases),
+      byStream: byStream(mine),
+      baselineByStream: byStream(base),
+      failedCases: new Set(mine.filter((r) => r.outcome === "failed").map((r) => r.testCaseId)).size,
+      samePerPlatform,
       openDefects,
       defects: defectsByModule.get(id) ?? 0,
       status,
       checks: { fullyRun, passOk, noBlocked },
       lastRun,
     };
-  });
-  modules.sort((a, b) => (b.execPct ?? -1) - (a.execPct ?? -1) || b.inScope - a.inScope || a.name.localeCompare(b.name));
-
-  const scopedCases = [...scoped.cases.values()];
-  const total = tally(scopedCases);
-  const allScopeIds = new Set([...scopedIds.keys(), ...baselineIds.keys()]);
-  let both = 0;
-  let deferred = 0;
-  let added = 0;
-  const scopeRows: ScopeRow[] = [...allScopeIds].map((id) => {
-    const b = baselineIds.get(id) ?? new Set<number>();
-    const s = scopedIds.get(id) ?? new Set<number>();
-    const inBoth = [...s].filter((caseId) => b.has(caseId)).length;
-    both += inBoth;
-    deferred += b.size - inBoth;
-    added += s.size - inBoth;
-    const streamCounts = (side: Side) => {
-      const out: Partial<Record<Stream, number>> = {};
-      for (const c of side.cases.values()) if (c.moduleId === id) for (const stream of streamsOf(c)) out[stream] = (out[stream] ?? 0) + 1;
-      return out;
-    };
-    return {
-      id,
-      name: names.get(id) ?? id,
-      baseline: b.size,
-      inScope: s.size,
-      both: inBoth,
-      deferred: b.size - inBoth,
-      added: s.size - inBoth,
-      coveragePct: pct(inBoth, b.size),
-      baselineStreams: streamCounts(baseline),
-      scopedStreams: streamCounts(scoped),
-    };
-  });
-  scopeRows.sort((a, b) => b.inScope - a.inScope || b.baseline - a.baseline || a.name.localeCompare(b.name));
-  const baselineTotal = [...baselineIds.values()].reduce((n, s) => n + s.size, 0);
-
-  const kpis: Kpis = {
-    baseline: baselineTotal,
-    inScope: scopedCases.length,
-    executable: total.executable,
-    executed: total.executed,
-    outcomes: total.outcomes,
-    execPct: pct(total.executed, total.executable),
-    passPct: pct(total.outcomes.passed, total.executed),
-    added,
-    deferred,
-    coveragePct: pct(both, baselineTotal),
   };
 
-  const streamTotals = byStream(scopedCases);
-  const streamRows: StreamRow[] = STREAMS.filter((s) => streamTotals[s]).map((stream) => {
-    const row = streamTotals[stream]!;
-    return { stream, ...row, execPct: pct(row.executed, row.total - row.outcomes.notApplicable), passPct: pct(row.outcomes.passed, row.executed) };
+  const modules = [...runsByModule.keys()].map((id) => moduleRow(id, runsByModule.get(id)!, baseByModule.get(id) ?? [], true));
+  modules.sort((a, b) => (b.execPct ?? -1) - (a.execPct ?? -1) || b.inScope - a.inScope || a.name.localeCompare(b.name));
+  const laterModules = [...baseByModule.keys()]
+    .filter((id) => !runsByModule.has(id))
+    .map((id) => moduleRow(id, [], baseByModule.get(id)!, false))
+    .sort((a, b) => b.plan - a.plan || a.name.localeCompare(b.name));
+
+  const total = tally(runs);
+  const baseTotal = tally(baseRuns);
+  const plan = hasBaseline ? baseRuns.length : runs.length;
+  const both = runs.filter((r) => baseKeys.has(r.key)).length;
+  const apiRuns = runsOf(scoped, (s) => s === "API");
+  const apiTotal = tally(apiRuns);
+  const spiraRollup = emptyCounts();
+  for (const s of scoped.sets) {
+    if (!isRunStream(s.stream)) continue;
+    spiraRollup.passed += s.set.counts.passed;
+    spiraRollup.failed += s.set.counts.failed;
+    spiraRollup.blocked += s.set.counts.blocked;
+    spiraRollup.caution += s.set.counts.caution;
+    spiraRollup.notRun += s.set.counts.notRun;
+    spiraRollup.notApplicable += s.set.counts.notApplicable;
+  }
+
+  const kpis: Kpis = {
+    plan,
+    inScope: runs.length,
+    laterBuilds: Math.max(0, plan - runs.length),
+    executable: total.executable,
+    executed: total.executed,
+    stillToRun: total.executable - total.executed,
+    outcomes: total.outcomes,
+    planPct: pct(runs.length, plan),
+    execPct: pct(total.executed, total.executable),
+    passPct: pct(total.outcomes.passed, total.executed),
+    added: hasBaseline ? runs.length - both : 0,
+    deferred: hasBaseline ? baseRuns.length - both : 0,
+    coveragePct: hasBaseline ? pct(both, baseRuns.length) : null,
+    split: {
+      plan: splitOf(hasBaseline ? baseRuns : runs),
+      inScope: splitOf(runs),
+      executed: splitOf(runs, (r) => isExecuted(r.outcome)),
+      passed: splitOf(runs, (r) => r.outcome === "passed"),
+      failed: splitOf(runs, (r) => r.outcome === "failed"),
+      stillToRun: splitOf(runs, (r) => r.outcome === "notRun"),
+    },
+    modulesInPlan: modules.length + laterModules.length,
+    baseline: {
+      outcomes: baseTotal.outcomes,
+      executed: baseTotal.executed,
+      passPct: pct(baseTotal.outcomes.passed, baseTotal.executed),
+    },
+    api: {
+      baseline: hasBaseline ? runsOf(baseline, (s) => s === "API").length : 0,
+      inScope: apiRuns.length,
+      executed: apiTotal.executed,
+      passed: apiTotal.outcomes.passed,
+      failed: apiTotal.outcomes.failed,
+    },
+    spiraRollup,
+  };
+
+  const byStreamTotals = byStream(runs);
+  const streamRows: StreamRow[] = streams.map((stream) => {
+    const row = byStreamTotals[stream]!;
+    return {
+      stream,
+      ...row,
+      execPct: pct(row.executed, row.total - row.outcomes.notApplicable),
+      passPct: pct(row.outcomes.passed, row.executed),
+    };
   });
 
-  const readiness: Record<ModuleStatus, number> = { ready: 0, atRisk: 0, inProgress: 0, notStarted: 0 };
+  const readiness: Record<ModuleStatus, number> = {
+    ready: 0,
+    atRisk: 0,
+    inProgress: 0,
+    notStarted: 0,
+  };
   for (const m of modules) readiness[m.status] += 1;
 
-  // Failed cases and their defects.
-  const failedCases: FailedCase[] = scopedCases
-    .filter((c) => caseOutcome(c) === "failed")
-    .map((c) => ({
-      testCaseId: c.testCaseId,
-      name: c.name,
-      module: c.module,
-      streams: STREAMS.filter((s) => c.placements.some((p) => p.stream === s && p.outcome === "failed")),
-      incidentIds: input.links[c.testCaseId] ?? [],
-      checked: c.testCaseId in input.links,
+  // Failed cases (once per module) and their defects.
+  const failedCases: FailedCase[] = [
+    ...groupBy(
+      runs.filter((r) => r.outcome === "failed"),
+      (r) => `${r.moduleId}:${r.testCaseId}`,
+    ).values(),
+  ]
+    .map((list) => ({
+      testCaseId: list[0].testCaseId,
+      name: list[0].name,
+      module: list[0].module,
+      streams: STREAMS.filter((s) => list.some((r) => r.stream === s)),
+      incidentIds: input.links[list[0].testCaseId] ?? [],
+      checked: list[0].testCaseId in input.links,
     }))
     .sort((a, b) => a.module.localeCompare(b.module) || a.testCaseId - b.testCaseId);
   const failedChecked = failedCases.filter((c) => c.checked);
@@ -761,85 +1055,160 @@ export function buildReport(input: ReportInput): Report {
   const open = defectRows.filter((d) => d.incident.open);
   const severityAge = Object.fromEntries(LEVELS.map((l) => [l, [0, 0, 0, 0]])) as Record<Level, number[]>;
   const byPriority = Object.fromEntries(LEVELS.map((l) => [l, 0])) as Record<Level, number>;
-  const retest: Record<RetestState, number> = { awaiting: 0, retest: 0, reopened: 0, closed: 0 };
+  const byPriorityInBuild = Object.fromEntries(LEVELS.map((l) => [l, 0])) as Record<Level, number>;
+  const retest: Record<RetestState, number> = {
+    awaiting: 0,
+    retest: 0,
+    reopened: 0,
+    closed: 0,
+  };
   for (const d of defectRows) retest[d.retest] += 1;
   for (const d of open) {
     severityAge[d.severity][ageBucket(d.ageDays ?? 0)] += 1;
     byPriority[d.priority] += 1;
+    if (d.phase === "in") byPriorityInBuild[d.priority] += 1;
   }
+  const levelCounts = (level: Level) => open.filter((d) => d.severity === level).length;
+  const openCriticalHigh = open.filter((d) => d.severity === "Critical" || d.severity === "High").length;
+  const withinSla = open.filter((d) => (d.ageDays ?? 0) <= targets.agingDays).length;
+  const failedWithoutDefect = failedChecked.filter((c) => c.incidentIds.length === 0);
+
+  const defectSummary = (() => {
+    if (defectRows.length === 0) return `No defects are raised against ${scopedName} or linked to its cases.`;
+    const ids = defectRows.map((d) => d.incident.incidentId).sort((a, b) => a - b);
+    const defectModules = [...new Set(defectRows.flatMap((d) => d.modules))].sort();
+    const raised = [...new Set(defectRows.flatMap((d) => (d.incident.createdAt ? [dayOf(d.incident.createdAt)] : [])))].sort();
+    const failedLinked = new Set(defectRows.flatMap((d) => d.testCaseIds.filter((id) => failedRunsOfCase.has(id))));
+    const failedRunsLinked = [...failedLinked].reduce((n, id) => n + (failedRunsOfCase.get(id) ?? 0), 0);
+    const parts = [
+      `${plural(defectRows.length, "defect")} logged in Spira (IN:${ids[0]}${ids.length > 1 ? ` – IN:${ids[ids.length - 1]}` : ""})`,
+      defectModules.length === 1
+        ? `${defectRows.length === 1 ? "in" : "all in"} ${defectModules[0]}`
+        : defectModules.length
+          ? `across ${list(defectModules)}`
+          : "",
+      raised.length === 1
+        ? `raised on ${shortDay(raised[0])}`
+        : raised.length > 1
+          ? `raised ${shortDay(raised[0])} – ${shortDay(raised[raised.length - 1])}`
+          : "",
+    ].filter(Boolean);
+    const covering = failedLinked.size
+      ? `, covering ${plural(failedLinked.size, "failed case")} (${plural(failedRunsLinked, "failed run")}${streams.length > 1 ? ` across ${list(streams)}` : ""})`
+      : "";
+    const highPriority = byPriority.Critical + byPriority.High;
+    const severity = openCriticalHigh
+      ? `${plural(openCriticalHigh, "open defect")} ${openCriticalHigh === 1 ? "is" : "are"} Critical or High severity`
+      : `None ${open.length === 1 ? "open " : ""}is Critical or High severity`;
+    const priority = highPriority
+      ? `; ${highPriority} ${highPriority === 1 ? "is" : "are"} Critical or High priority${byPriorityInBuild.Critical + byPriorityInBuild.High === highPriority && labels.name !== "this build" ? ` and in ${labels.name} journeys` : ""}`
+      : "";
+    return `${parts[0]}${parts.length > 1 ? `, ${parts.slice(1).join(" and ")}` : ""}${covering}. ${open.length} open, ${defectRows.length - open.length} closed. ${severity}${priority}.`;
+  })();
+
   const defects: DefectSummary = {
     rows: defectRows,
     open: open.length,
     closed: defectRows.length - open.length,
     severityAge,
     byPriority,
+    byPriorityInBuild,
     retest,
-    openCriticalHigh: open.filter((d) => d.severity === "Critical" || d.severity === "High").length,
-    withinSla: open.filter((d) => (d.ageDays ?? 0) <= targets.agingDays).length,
-    failedWithoutDefect: failedChecked.filter((c) => c.incidentIds.length === 0),
+    openCriticalHigh,
+    withinSla,
+    failedWithoutDefect,
     failedChecked: failedChecked.length,
+    summary: defectSummary,
   };
 
   // Exit criteria.
-  const levelCounts = (level: Level) => open.filter((d) => d.severity === level).length;
   const otherOpen = (["Medium", "Low", "Not set"] as Level[]).map((l) => [l, levelCounts(l)] as const).filter(([, n]) => n > 0);
   const modulesComplete = modules.filter((m) => m.checks.fullyRun).length;
+  const notStarted = modules.filter((m) => m.status === "notStarted");
+  const raisedDays = [...new Set(open.flatMap((d) => (d.incident.createdAt ? [dayOf(d.incident.createdAt)] : [])))];
   const criteria: Criterion[] = [
     {
       label: "Planned test cases executed",
+      short: "execution",
       target: `${targets.executedPct}%`,
       actual: `${formatPct(kpis.execPct)} (${kpis.executed.toLocaleString()} of ${kpis.executable.toLocaleString()})`,
       met: (kpis.execPct ?? 0) >= targets.executedPct,
-      progress: kpis.execPct === null ? 0 : kpis.execPct / 100,
-      mark: targets.executedPct / 100,
     },
     {
       label: "Pass rate of executed tests",
+      short: "pass rate",
       target: `≥ ${targets.passRatePct}%`,
       actual: formatPct(kpis.passPct),
       met: kpis.executed > 0 && (kpis.passPct ?? 0) >= targets.passRatePct,
-      progress: kpis.passPct === null ? 0 : kpis.passPct / 100,
-      mark: targets.passRatePct / 100,
     },
     {
       label: "Blocked test cases",
+      short: "blocked tests",
       target: "0",
       actual: kpis.outcomes.blocked.toLocaleString(),
       met: kpis.outcomes.blocked === 0,
-      progress: null,
-      mark: null,
     },
     {
       label: "Open Critical / High severity defects",
+      short: "no Critical or High severity defects",
       target: "0",
-      actual: `${defects.openCriticalHigh}${otherOpen.length ? ` (${otherOpen.map(([l, n]) => `${n} ${l === "Not set" ? "without severity" : l}`).join(", ")})` : ""}`,
-      met: defects.openCriticalHigh === 0,
-      progress: null,
-      mark: null,
+      actual: `${openCriticalHigh}${otherOpen.length ? ` (${otherOpen.map(([l, n]) => `${n} ${l === "Not set" ? "without severity" : l}`).join(", ")})` : ""}`,
+      met: openCriticalHigh === 0,
     },
     {
-      label: "Defects retested and closed",
+      label: "Fixed defects retested and closed",
+      short: "defect closure",
       target: "100%",
-      actual: defectRows.length ? `${defects.closed} of ${defectRows.length} closed` : "No defects",
-      met: defects.open === 0,
-      progress: defectRows.length ? defects.closed / defectRows.length : 1,
-      mark: 1,
+      actual: defectRows.length
+        ? `${defects.closed} of ${defectRows.length} closed${open.length ? ` · ${retest.retest ? `${retest.retest} ready for retest` : "fixes pending"}` : ""}`
+        : "No defects",
+      met: open.length === 0,
     },
     {
-      label: `Open defects within ageing SLA (≤ ${targets.agingDays} days)`,
+      label: "Open defects within ageing SLA",
+      short: "defect ageing",
       target: "100%",
-      actual: defects.open ? `${defects.withinSla} of ${defects.open}` : "No open defects",
-      met: defects.withinSla === defects.open,
-      progress: defects.open ? defects.withinSla / defects.open : 1,
-      mark: 1,
+      actual: open.length
+        ? `${withinSla} of ${open.length}${raisedDays.length === 1 ? ` (${open.length === 1 ? "raised" : "all raised"} ${shortDay(raisedDays[0])})` : ` (≤ ${targets.agingDays} days)`}`
+        : "No open defects",
+      met: withinSla === open.length,
     },
     {
       label: "All modules executed on all platforms",
+      short: "module coverage",
       target: `${modules.length} of ${modules.length}`,
-      actual: `${modulesComplete} of ${modules.length} complete`,
+      actual: `${modulesComplete} of ${modules.length} executed${notStarted.length ? ` · ${notStarted.length} not started` : ""}`,
       met: modules.length > 0 && modulesComplete === modules.length,
+    },
+  ];
+  const bars: ReadinessBar[] = [
+    {
+      label: "Planned tests executed",
+      text: `${formatPct(kpis.execPct)} vs ${targets.executedPct}%`,
+      progress: (kpis.execPct ?? 0) / 100,
+      mark: targets.executedPct / 100,
+      met: criteria[0].met,
+    },
+    {
+      label: "Pass rate of executed",
+      text: `${formatPct(kpis.passPct)} vs ≥${targets.passRatePct}%`,
+      progress: (kpis.passPct ?? 0) / 100,
+      mark: targets.passRatePct / 100,
+      met: criteria[1].met,
+    },
+    {
+      label: "Modules fully executed",
+      text: `${modulesComplete} of ${modules.length}`,
       progress: modules.length ? modulesComplete / modules.length : 0,
       mark: 1,
+      met: criteria[6].met,
+    },
+    {
+      label: "Blocked tests cleared",
+      text: `${kpis.outcomes.blocked.toLocaleString()} blocked`,
+      progress: kpis.outcomes.blocked === 0 ? 1 : Math.max(0, 1 - kpis.outcomes.blocked / Math.max(1, kpis.executed)),
+      mark: 1,
+      met: criteria[2].met,
     },
   ];
   const metCount = criteria.filter((c) => c.met).length;
@@ -852,24 +1221,25 @@ export function buildReport(input: ReportInput): Report {
     : openCritical > 0 || (kpis.executed > 0 && (kpis.passPct ?? 0) < targets.passRatePct - 10) || (daysToGoLive !== null && daysToGoLive <= 3)
       ? "red"
       : "amber";
-  const unmet = criteria.filter((c) => !c.met).map((c) => c.label.toLowerCase());
+  const metNames = criteria.filter((c) => c.met).map((c) => c.short);
+  const unmetNames = criteria.filter((c) => !c.met).map((c) => c.short);
+  const countWord = (n: number) => ["None", "One", "Two", "Three", "Four", "Five", "Six", "Seven"][n] ?? String(n);
   const statusReason = allMet
     ? "Every exit criterion is met."
-    : `${metCount} of ${criteria.length} exit criteria met; not yet met: ${list(unmet)}.`;
+    : `${countWord(metCount)} of ${countWord(criteria.length).toLowerCase()} criteria ${metCount === 1 ? "is" : "are"} met${metNames.length ? ` (${list(metNames)})` : ""}; ${list(unmetNames)} ${unmetNames.length === 1 ? "is" : "are"} not yet met.`;
 
-  // Trend: each scoped case on the day of its latest run.
+  // Execution window and trend, from each run's latest result.
   const runDays = new Map<string, { executed: number; failed: number }>();
   let first: string | null = null;
   let last: string | null = null;
-  for (const c of scopedCases) {
-    const run = lastRunOf(c);
-    if (!run) continue;
-    if (!first || run < first) first = run;
-    if (!last || run > last) last = run;
-    const day = runDays.get(dayOf(run)) ?? { executed: 0, failed: 0 };
+  for (const r of runs) {
+    if (!r.lastRun) continue;
+    if (!first || r.lastRun < first) first = r.lastRun;
+    if (!last || r.lastRun > last) last = r.lastRun;
+    const day = runDays.get(dayOf(r.lastRun)) ?? { executed: 0, failed: 0 };
     day.executed += 1;
-    if (caseOutcome(c) === "failed") day.failed += 1;
-    runDays.set(dayOf(run), day);
+    if (r.outcome === "failed") day.failed += 1;
+    runDays.set(dayOf(r.lastRun), day);
   }
   const TREND_DAYS = 21;
   const end = dayOf(today);
@@ -886,8 +1256,13 @@ export function buildReport(input: ReportInput): Report {
   }
   const recent = trendDays.slice(-7).filter((d) => d.executed > 0);
   const pacePerDay = recent.length ? recent.reduce((n, d) => n + d.executed, 0) / recent.length : null;
-  const remaining = kpis.executable - kpis.executed;
+  const remaining = kpis.stillToRun;
   const daysToFinish = pacePerDay && remaining > 0 ? Math.ceil(remaining / pacePerDay) : remaining > 0 ? null : 0;
+  const window = {
+    first,
+    last,
+    text: options.windowText?.trim() || (first && last ? windowText(first, last) : null),
+  };
 
   // Test sets.
   const folderName = (set: ReportTestSet) => folderPath(catalog.folders, set.folderId).join(" / ") || "Root";
@@ -908,15 +1283,50 @@ export function buildReport(input: ReportInput): Report {
   const baselineSets = baseline.sets.map(toRow).sort((a, b) => a.module.localeCompare(b.module) || a.set.name.localeCompare(b.set.name));
   const setsMissing = [...scoped.sets, ...baseline.sets].filter((s) => !input.results[s.set.testSetId]).length;
 
+  // Scope: runs per module, baseline vs in scope.
+  const scopeRows: ScopeRow[] = [...new Set([...runsByModule.keys(), ...baseByModule.keys()])].map((id) => {
+    const mine = runsByModule.get(id) ?? [];
+    const base = baseByModule.get(id) ?? [];
+    const inBoth = mine.filter((r) => baseKeys.has(r.key)).length;
+    return {
+      id,
+      name: nameOf(id),
+      baseline: base.length,
+      inScope: mine.length,
+      both: inBoth,
+      deferred: base.length - inBoth,
+      added: mine.length - inBoth,
+      coveragePct: pct(inBoth, base.length),
+      baselineStreams: splitOf(base),
+      scopedStreams: splitOf(mine),
+    };
+  });
+  scopeRows.sort((a, b) => b.inScope - a.inScope || b.baseline - a.baseline || a.name.localeCompare(b.name));
+  const caseRefs = (list: Run[]) =>
+    [
+      ...new Map(
+        list.map((r) => [
+          `${r.moduleId}:${r.testCaseId}`,
+          {
+            testCaseId: r.testCaseId,
+            name: r.name,
+            module: nameOf(r.moduleId),
+          },
+        ]),
+      ).values(),
+    ].sort((a, b) => a.module.localeCompare(b.module) || a.testCaseId - b.testCaseId);
+  const addedCases = hasBaseline ? caseRefs(runs.filter((r) => !baseKeys.has(r.key))) : [];
+  const deferredCases = caseRefs(baseRuns.filter((r) => !runKeys.has(r.key)));
+
   // Data checks.
   const findings: Finding[] = [];
   const modulesOf = (cases: CaseRef[]) => list([...new Set(cases.map((c) => c.module))].sort());
-  if (defects.failedWithoutDefect.length) {
+  if (failedWithoutDefect.length) {
     findings.push({
       severity: "High",
       check: "Failed results with no linked defect",
-      appliesTo: modulesOf(defects.failedWithoutDefect),
-      detail: `${defects.failedWithoutDefect.length} of ${defects.failedChecked} failed cases have no defect in Spira`,
+      appliesTo: modulesOf(failedWithoutDefect),
+      detail: `${failedWithoutDefect.length} of ${failedChecked.length} failed cases have no defect in Spira`,
     });
   }
   const mismatched = testSets.filter((r) => r.read !== null && r.read !== r.spiraTotal);
@@ -928,20 +1338,37 @@ export function buildReport(input: ReportInput): Report {
       detail: "Spira's counts and the cases read do not agree; results may have changed while reading. Refresh the report",
     });
   }
-  if (defects.open && openCritical) {
-    findings.push({ severity: "High", check: "Open Critical defects", appliesTo: list(defectRows.filter((d) => d.incident.open && d.severity === "Critical").slice(0, 4).map((d) => `IN:${d.incident.incidentId}`)), detail: `${openCritical} open` });
+  if (open.length && openCritical) {
+    findings.push({
+      severity: "High",
+      check: "Open Critical defects",
+      appliesTo: list(
+        open
+          .filter((d) => d.severity === "Critical")
+          .slice(0, 4)
+          .map((d) => `IN:${d.incident.incidentId}`),
+      ),
+      detail: `${openCritical} open`,
+    });
   }
-  const unrated = defectRows.filter((d) => d.incident.open && (d.severity === "Not set" || d.priority === "Not set"));
+  const unrated = open.filter((d) => d.severity === "Not set" || d.priority === "Not set");
   if (unrated.length) {
-    findings.push({ severity: "Medium", check: "Severity or priority not set", appliesTo: "Open defects", detail: `${unrated.length} of ${defects.open} open defects` });
+    findings.push({
+      severity: "Medium",
+      check: "Severity or priority not set",
+      appliesTo: "Open defects",
+      detail: `${unrated.length} of ${open.length} open defects`,
+    });
   }
-  const notStarted = modules.filter((m) => m.status === "notStarted");
   if (notStarted.length) {
     findings.push({
       severity: "Medium",
       check: "Modules not started",
       appliesTo: list(notStarted.map((m) => m.name)),
-      detail: `${plural(notStarted.reduce((n, m) => n + m.inScope, 0), "planned case")}`,
+      detail: plural(
+        notStarted.reduce((n, m) => n + m.inScope, 0),
+        "planned run",
+      ),
     });
   }
   const overdue = testSets.filter((r) => r.overdue);
@@ -953,102 +1380,235 @@ export function buildReport(input: ReportInput): Report {
       detail: `${plural(overdue.length, "test set")} with cases still to run`,
     });
   }
-  const differing = scopedCases.filter((c) => {
-    const results = new Set(c.placements.filter((p) => isExecuted(p.outcome)).map((p) => (p.outcome === "caution" ? "passed" : p.outcome)));
-    return results.size > 1;
-  });
+  const differing = caseRefs(
+    [...groupBy(runs, (r) => `${r.moduleId}:${r.testCaseId}`).values()]
+      .filter((list) => new Set(list.filter((r) => isExecuted(r.outcome)).map((r) => (r.outcome === "caution" ? "passed" : r.outcome))).size > 1)
+      .map((list) => list[0]),
+  );
   if (differing.length) {
-    findings.push({ severity: "Medium", check: "Results differ between platforms", appliesTo: modulesOf(differing), detail: `${plural(differing.length, "case")} passed on one platform and not on another` });
+    findings.push({
+      severity: "Medium",
+      check: "Results differ between platforms",
+      appliesTo: modulesOf(differing),
+      detail: `${plural(differing.length, "case")} passed on one platform and not on another`,
+    });
   }
-  const bothMobile = new Set(modules.filter((m) => m.streams.includes("iOS") && m.streams.includes("Android")).map((m) => m.id));
-  const gaps = scopedCases.filter((c) => {
-    if (!bothMobile.has(c.moduleId)) return false;
-    const own = new Set(c.placements.map((p) => p.stream));
-    return own.has("iOS") !== own.has("Android");
-  });
+  const multiPlatform = new Set(modules.filter((m) => m.streams.length > 1).map((m) => m.id));
+  const gaps = caseRefs(
+    [
+      ...groupBy(
+        runs.filter((r) => multiPlatform.has(r.moduleId)),
+        (r) => `${r.moduleId}:${r.testCaseId}`,
+      ).values(),
+    ]
+      .filter((list) => list.length < (modules.find((m) => m.id === list[0].moduleId)?.streams.length ?? 0))
+      .map((list) => list[0]),
+  );
   if (gaps.length) {
-    findings.push({ severity: "Medium", check: "Cases on one mobile platform only", appliesTo: modulesOf(gaps), detail: `${plural(gaps.length, "case")} in the iOS or the Android sets but not both` });
+    findings.push({
+      severity: "Medium",
+      check: "Cases on one platform only",
+      appliesTo: modulesOf(gaps),
+      detail: `${plural(gaps.length, "case")} missing from another platform's test set of the module`,
+    });
   }
-  const addedCases: CaseRef[] = [];
-  const deferredCases: CaseRef[] = [];
-  for (const c of scoped.cases.values()) if (!baselineIds.get(c.moduleId)?.has(c.testCaseId)) addedCases.push({ testCaseId: c.testCaseId, name: c.name, module: c.module });
-  for (const c of baseline.cases.values()) if (!scopedIds.get(c.moduleId)?.has(c.testCaseId)) deferredCases.push({ testCaseId: c.testCaseId, name: c.name, module: names.get(c.moduleId) ?? c.module });
-  addedCases.sort((a, b) => a.module.localeCompare(b.module) || a.testCaseId - b.testCaseId);
-  deferredCases.sort((a, b) => a.module.localeCompare(b.module) || a.testCaseId - b.testCaseId);
-  if (options.baseline.releaseId !== null && addedCases.length) {
-    findings.push({ severity: "Low", check: "Cases in scope but not in the baseline", appliesTo: modulesOf(addedCases), detail: `${plural(addedCases.length, "case")}, for example written during testing` });
+  const oneSided = modules.filter((m) => m.streams.length > 1 && m.streams.some((s) => (m.byStream[s]?.executed ?? 0) === 0) && m.executed > 0);
+  if (oneSided.length) {
+    findings.push({
+      severity: "Medium",
+      check: "Results recorded on one platform only",
+      appliesTo: list(oneSided.map((m) => m.name)),
+      detail: oneSided.map((m) => `${m.name}: no results on ${list(m.streams.filter((s) => (m.byStream[s]?.executed ?? 0) === 0))}`).join("; "),
+    });
+  }
+  if (hasBaseline && addedCases.length) {
+    findings.push({
+      severity: "Low",
+      check: "Cases in scope but not in the baseline",
+      appliesTo: modulesOf(addedCases),
+      detail: `${plural(addedCases.length, "case")}, for example written during testing`,
+    });
   }
   if (!input.incidentsComplete) {
-    findings.push({ severity: "Low", check: "Incident list may be incomplete", appliesTo: "Defects", detail: "Spira returned only its most recent incidents; linked defects are still included" });
+    findings.push({
+      severity: "Low",
+      check: "Incident list may be incomplete",
+      appliesTo: "Defects",
+      detail: "Spira returned only its most recent incidents; linked defects are still included",
+    });
   }
   const linksPartial = failedCases.some((c) => !c.checked);
   if (linksPartial) {
-    findings.push({ severity: "Low", check: "Defect links checked for some failures only", appliesTo: "Failed cases", detail: `${failedChecked.length} of ${failedCases.length} failed cases were checked` });
-  }
-
-  // Narrative.
-  const scopeName = options.environment.trim() || scopeLabel(catalog, options.scoped);
-  const failingModules = modules.filter((m) => m.outcomes.failed > 0).sort((a, b) => b.outcomes.failed - a.outcomes.failed);
-  const ready = modules.filter((m) => m.status === "ready");
-  const notStartedCases = notStarted.reduce((n, m) => n + m.inScope, 0);
-  const headlineParts = [
-    `In ${scopeName}, ${kpis.executed.toLocaleString()} of ${plural(kpis.executable, "in-scope test case")} ${kpis.executed === 1 ? "has" : "have"} been executed (${formatPct(kpis.execPct)})${kpis.executed ? ` and ${formatPct(kpis.passPct)} passed` : ""}.`,
-    `${ready.length} of ${plural(modules.length, "module")} ${ready.length === 1 ? "is" : "are"} ready for UAT.`,
-  ];
-  if (failingModules.length) {
-    const top = failingModules[0];
-    headlineParts.push(
-      failingModules.length === 1
-        ? kpis.outcomes.failed === 1
-          ? `The only failure is in ${top.name}.`
-          : `All ${plural(kpis.outcomes.failed, "failure")} sit in ${top.name}.`
-        : `${plural(kpis.outcomes.failed, "failure")} across ${list(failingModules.map((m) => m.name))}; ${top.name} has the most (${top.outcomes.failed}).`,
-    );
-  }
-  if (notStarted.length) headlineParts.push(`${list(notStarted.map((m) => m.name))} (${plural(notStartedCases, "case")}) ${notStarted.length === 1 ? "has" : "have"} not started.`);
-
-  const working: string[] = [];
-  if (ready.length) working.push(`${list(ready.map((m) => m.name))} passed all ${ready.reduce((n, m) => n + m.executed, 0).toLocaleString()} cases they ran, with no open defects.`);
-  if (kpis.executed) working.push(`Overall pass rate is ${formatPct(kpis.passPct)} across ${plural(kpis.executed, "executed case")}.`);
-  const multi = streamRows.filter((s) => s.total > 0);
-  if (multi.length > 1) working.push(`Progress by platform: ${multi.map((s) => `${s.stream} ${formatPct(s.execPct, 0)} run`).join(", ")}.`);
-  if (options.baseline.releaseId !== null && kpis.coveragePct !== null) working.push(`${formatPct(kpis.coveragePct)} of the baseline (${scopeLabel(catalog, options.baseline)}) is in scope.`);
-
-  const risks: string[] = [];
-  const actions: ActionItem[] = [];
-  for (const m of failingModules.slice(0, 3)) {
-    risks.push(`${m.name} passed ${m.outcomes.passed} of ${m.executed} cases (${formatPct(m.passPct)}), with ${plural(m.outcomes.failed, "failure")} and ${plural(m.openDefects, "open defect")}.`);
-    actions.push({
-      title: `${m.name} quality`,
-      detail: `${m.outcomes.passed} of ${m.executed} ${m.name} cases passed (${formatPct(m.passPct)}); ${plural(m.outcomes.failed, "case")} failed and ${plural(m.openDefects, "defect")} ${m.openDefects === 1 ? "is" : "are"} open.`,
-      action: `Fix and retest the open defects, then regress ${m.name}.`,
+    findings.push({
+      severity: "Low",
+      check: "Defect links checked for some failures only",
+      appliesTo: "Failed cases",
+      detail: `${failedChecked.length} of ${failedCases.length} failed cases were checked`,
     });
   }
-  if (defects.openCriticalHigh) {
-    risks.push(`${plural(defects.openCriticalHigh, "Critical or High severity defect")} ${defects.openCriticalHigh === 1 ? "is" : "are"} open.`);
-    actions.unshift({
+
+  // Comparison with the baseline cycle, on one platform.
+  const compareStream: Stream | null = streams.includes("iOS") ? "iOS" : (streams[0] ?? null);
+  const progressText = (p: StreamProgress | undefined, planned: boolean) =>
+    !p
+      ? planned
+        ? "Not planned"
+        : "—"
+      : p.executed === 0
+        ? planned
+          ? `Not run (${p.total.toLocaleString()} planned)`
+          : "Not started"
+        : `${p.executed.toLocaleString()} run · ${p.outcomes.failed.toLocaleString()} failed${p.outcomes.blocked ? ` · ${p.outcomes.blocked.toLocaleString()} blocked` : ""}`;
+  const movementOf = (m: ModuleRow, stream: Stream): [string, Movement] => {
+    const before = m.baselineByStream[stream];
+    const now = m.byStream[stream];
+    if (!m.inBuild) return ["Later build", "neutral"];
+    if (!now || now.executed === 0) return before && before.executed > 0 ? ["Rerun pending", "neutral"] : ["Not started", "neutral"];
+    const failedBefore = before?.outcomes.failed ?? 0;
+    const blockedBefore = before?.outcomes.blocked ?? 0;
+    if (now.outcomes.failed > 0) {
+      if (failedBefore === 0) return ["New defects found", "bad"];
+      if (now.outcomes.failed < failedBefore) return [`${failedBefore - now.outcomes.failed} fewer failed`, "good"];
+      return [now.outcomes.failed > failedBefore ? `${now.outcomes.failed - failedBefore} more failed` : "Still failing", "bad"];
+    }
+    if (now.outcomes.blocked > 0) return [`${now.outcomes.blocked} blocked`, "bad"];
+    if (failedBefore && blockedBefore) return ["Failures and blocks cleared", "good"];
+    if (failedBefore) return ["Failures cleared", "good"];
+    if (blockedBefore) return ["Blocks cleared", "good"];
+    if (now.executed === now.total - now.outcomes.notApplicable) return ["Fully executed", "good"];
+    return [`${now.executed} of ${now.total} run`, "neutral"];
+  };
+  const cycle: CycleComparison | null =
+    hasBaseline && compareStream
+      ? {
+          stream: compareStream,
+          baselineName,
+          scopedName,
+          rows: [...modules, ...laterModules].map((m) => {
+            const [movement, tone] = movementOf(m, compareStream);
+            return {
+              name: m.name,
+              before: progressText(m.baselineByStream[compareStream], true),
+              now: m.inBuild ? progressText(m.byStream[compareStream], false) : `Not in ${labels.name}`,
+              movement,
+              tone,
+            };
+          }),
+        }
+      : null;
+
+  // Narrative.
+  const by = (s: ModuleStatus) => modules.filter((m) => m.status === s);
+  const ready = by("ready");
+  const why: string[] = [];
+  if (ready.length) {
+    const executed = ready.reduce((n, m) => n + m.executed, 0);
+    const split = splitOf(runs.filter((r) => ready.some((m) => m.id === r.moduleId)));
+    const platforms = STREAMS.filter((s) => (split[s] ?? 0) > 0);
+    why.push(
+      `${list(ready.map((m) => m.name))}: ${executed.toLocaleString()} of ${executed.toLocaleString()} test runs passed${platforms.length > 1 ? ` (${perPlatform(split, platforms, "cases on each platform")})` : ""}, with no defects.`,
+    );
+  }
+  for (const m of by("atRisk")) {
+    const failedRuns = m.outcomes.failed;
+    const same = m.streams.length > 1 && m.samePerPlatform && failedRuns === m.failedCases * m.streams.length;
+    const failures = failedRuns
+      ? same
+        ? `; the same ${plural(m.failedCases, "case")} failed on ${m.streams.length === 2 ? "both platforms" : "every platform"} (${plural(failedRuns, "failed run")})`
+        : `; ${plural(m.failedCases, "case")} failed (${plural(failedRuns, "failed run")})`
+      : "";
+    const blocked = m.outcomes.blocked ? `, ${plural(m.outcomes.blocked, "blocked run")}` : "";
+    const traced = m.openDefects ? `, traced to ${plural(m.openDefects, "open defect")}` : failedRuns ? ", with no defect linked" : "";
+    const left = m.stillToRun ? `; ${plural(m.stillToRun, "run")} still to go` : "";
+    why.push(
+      `${m.name}: ${m.outcomes.passed.toLocaleString()} of ${plural(m.executed, "run")} passed (${formatPct(m.passPct)})${failures}${blocked}${traced}${left}.`,
+    );
+  }
+  for (const m of by("inProgress")) why.push(`${m.name}: ${m.executed.toLocaleString()} of ${plural(m.executable, "run")} so far, with no failures.`);
+  if (notStarted.length) {
+    why.push(`${list(notStarted.map((m) => m.name))}: ${runsText(splitOf(runs.filter((r) => notStarted.some((m) => m.id === r.moduleId))))} not yet started.`);
+  }
+
+  const failingModules = modules.filter((m) => m.outcomes.failed > 0).sort((a, b) => b.outcomes.failed - a.outcomes.failed);
+  const headline = [
+    `In ${scopedName}, ${kpis.executed.toLocaleString()} of ${plural(kpis.executable, "planned test run")} ${kpis.executed === 1 ? "has" : "have"} been executed (${formatPct(kpis.execPct)})${kpis.executed ? ` and ${formatPct(kpis.passPct)} passed` : ""}.`,
+    `${ready.length} of ${plural(modules.length, "module")} ${ready.length === 1 ? "is" : "are"} ready for UAT.`,
+    failingModules.length === 1
+      ? kpis.outcomes.failed === 1
+        ? `The only failure is in ${failingModules[0].name}.`
+        : `All ${plural(kpis.outcomes.failed, "failure")} sit in ${failingModules[0].name}.`
+      : failingModules.length
+        ? `${plural(kpis.outcomes.failed, "failure")} across ${list(failingModules.map((m) => m.name))}; ${failingModules[0].name} has the most (${failingModules[0].outcomes.failed}).`
+        : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const actions: ActionItem[] = [];
+  if (openCriticalHigh) {
+    actions.push({
       title: "Critical and High defects",
-      detail: `${plural(defects.openCriticalHigh, "open defect")} of Critical or High severity block sign-off.`,
+      detail: `${plural(openCriticalHigh, "open defect")} of Critical or High severity block sign-off.`,
       action: "Fix and retest these first; they decide the exit.",
     });
   }
+  for (const m of failingModules.slice(0, 2)) {
+    const mine = open.filter((d) => d.modules.includes(m.name));
+    const highPriority = mine.filter((d) => d.priority === "Critical" || d.priority === "High");
+    actions.push({
+      title: `${m.name} quality`,
+      detail: `${m.outcomes.passed.toLocaleString()} of ${m.executed.toLocaleString()} ${m.name} runs passed (${formatPct(m.passPct)}); ${plural(m.failedCases, "case")} failed${mine.length ? `, traced to ${plural(mine.length, "open defect")}` : ""}${highPriority.length ? `, ${highPriority.length} of them High priority` : ""}.`,
+      action: highPriority.length
+        ? `Fix the High-priority defects first (${list(highPriority.slice(0, 4).map((d) => `IN:${d.incident.incidentId}`))}${highPriority.length > 4 ? " and others" : ""}), then retest and regress ${m.name}.`
+        : `Fix and retest the open defects, then regress ${m.name}.`,
+    });
+  }
   if (remaining > 0) {
-    const pace = pacePerDay ? ` At the recent pace (about ${Math.round(pacePerDay)} cases a day) that is about ${plural(daysToFinish ?? 0, "day")} of execution.` : "";
-    const goLive = daysToGoLive !== null ? ` Go-live is ${daysToGoLive >= 0 ? `in ${plural(daysToGoLive, "day")}` : `${plural(-daysToGoLive, "day")} past`}.` : "";
-    if (notStarted.length) risks.push(`${list(notStarted.map((m) => m.name))} (${plural(notStartedCases, "case")}) ${notStarted.length === 1 ? "has" : "have"} not started.`);
+    const pace = pacePerDay
+      ? ` At the recent pace (about ${Math.round(pacePerDay).toLocaleString()} runs a day) that is about ${plural(daysToFinish ?? 0, "day")} of execution.`
+      : "";
+    const goLive =
+      daysToGoLive !== null ? ` Go-live is ${daysToGoLive >= 0 ? `in ${plural(daysToGoLive, "day")}` : `${plural(-daysToGoLive, "day")} past`}.` : "";
+    const notStartedRuns = notStarted.reduce((n, m) => n + m.inScope, 0);
     actions.push({
       title: "Remaining scope",
-      detail: `${plural(remaining, "in-scope case")} still to run${notStarted.length ? `, including ${list(notStarted.map((m) => m.name))} (${notStartedCases.toLocaleString()} not started)` : ""}.${pace}`,
+      detail: notStarted.length
+        ? `${list(notStarted.map((m) => m.name))} (${runsText(splitOf(runs.filter((r) => notStarted.some((m) => m.id === r.moduleId))))}) ${notStarted.length === 1 ? "has" : "have"} not started${remaining > notStartedRuns ? `; ${plural(remaining - notStartedRuns, "other run")} still to go` : ""}.${pace}`
+        : `${plural(remaining, "run")} still to go.${pace}`,
       action: `Schedule the next execution window.${goLive}`,
     });
   }
-  if (defects.failedWithoutDefect.length || unrated.length) {
-    const parts = [
-      defects.failedWithoutDefect.length ? `${plural(defects.failedWithoutDefect.length, "failed result")} ${defects.failedWithoutDefect.length === 1 ? "has" : "have"} no linked defect` : "",
-      unrated.length ? `${plural(unrated.length, "open defect")} ${unrated.length === 1 ? "has" : "have"} no severity or priority` : "",
-    ].filter(Boolean);
-    risks.push(`${parts.join("; ")}.`);
-    actions.push({ title: "Reporting data", detail: `${parts.join("; ")}.`, action: "Link the failed results to defects and set severity and priority in Spira." });
+  const outside = open.filter((d) => d.phase === "out" || d.phase === "tbc");
+  if (outside.length && labels.name !== "this build") {
+    const byFeature = groupBy(outside, (d) => d.feature || "Unassigned");
+    const modulesOut = [...new Set(outside.flatMap((d) => d.modules))];
+    actions.push({
+      title: `Scope drift${modulesOut.length === 1 ? ` in ${modulesOut[0]}` : ""}`,
+      detail: `${outside.length} of ${plural(open.length, "open defect")} ${outside.length === 1 ? "is" : "are"} in features outside the approved ${labels.name} list or awaiting confirmation: ${[...byFeature].map(([f, list]) => `${f} (${list.length})`).join(", ")}.`,
+      action: `Confirm whether these features ship with ${labels.name}; raise the priority of those that do.`,
+    });
+  }
+  const reporting: string[] = [];
+  if (failedWithoutDefect.length)
+    reporting.push(
+      `${failedWithoutDefect.length} of ${plural(failedChecked.length, "failed case")} ${failedWithoutDefect.length === 1 ? "has" : "have"} no linked defect`,
+    );
+  if (unrated.length) reporting.push(`${plural(unrated.length, "open defect")} ${unrated.length === 1 ? "has" : "have"} no severity or priority`);
+  for (const m of oneSided) reporting.push(`${m.name} has no results recorded on ${list(m.streams.filter((s) => (m.byStream[s]?.executed ?? 0) === 0))}`);
+  if (reporting.length) {
+    actions.push({
+      title: "Reporting data",
+      detail: `${reporting.join("; ")}.`,
+      action: [
+        failedWithoutDefect.length ? "Link the failed cases to their defects" : "",
+        unrated.length ? "set severity and priority in Spira" : "",
+        oneSided.length ? "record the missing platform results" : "",
+      ]
+        .filter(Boolean)
+        .join(", ")
+        .replace(/^./, (c) => c.toUpperCase())
+        .concat("."),
+    });
   }
   if (overdue.length) {
     actions.push({
@@ -1057,43 +1617,97 @@ export function buildReport(input: ReportInput): Report {
       action: "Re-plan these sets or run them in the next window.",
     });
   }
-  if (defects.retest.retest) {
-    actions.push({ title: "Fixes awaiting retest", detail: `${plural(defects.retest.retest, "defect")} ${defects.retest.retest === 1 ? "is" : "are"} fixed and ready to retest.`, action: "Retest on the next build and close or reopen them." });
+  if (retest.retest) {
+    actions.push({
+      title: "Fixes awaiting retest",
+      detail: `${plural(retest.retest, "defect")} ${retest.retest === 1 ? "is" : "are"} fixed and ready to retest.`,
+      action: "Retest on the next build and close or reopen them.",
+    });
   }
+
+  const planText = hasBaseline ? `${perPlatform(kpis.split.plan, baseStreams)}${baseStreams.length > 1 ? `, ${plural(plan, "run")}` : ""}` : "";
+  const buildText = `${perPlatform(kpis.split.inScope, streams)}${streams.length > 1 ? `, ${plural(runs.length, "run")}` : ""}`;
+  const addedSplit = splitOf(runs, (r) => !baseKeys.has(r.key));
+  const addedPlatforms = STREAMS.filter((s) => (addedSplit[s] ?? 0) > 0);
+  const addedText = addedPlatforms.length > 1 ? perPlatform(addedSplit, addedPlatforms) : `${kpis.added.toLocaleString()}${streams.length > 1 ? ` on ${addedPlatforms[0]}` : ""}`;
+  const scopeNote = [
+    window.text ? `${scopedName} ran ${window.text}.` : "",
+    hasBaseline
+      ? `Test cases were scoped from the full plan (${planText}) to ${labels.name} (${buildText}${kpis.added ? `, including ${addedText} added in testing` : ""}).`
+      : `${labels.build}: ${buildText}.`,
+    laterModules.length ? `${list(laterModules.map((m) => m.name))} ${laterModules.length === 1 ? "is" : "are"} not part of ${labels.name}.` : "",
+    kpis.api.inScope ? `The API stream (${plural(kpis.api.inScope, "case")}, ${kpis.api.executed.toLocaleString()} executed) is reported separately.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const rollupExecuted = spiraRollup.passed + spiraRollup.failed + spiraRollup.blocked + spiraRollup.caution;
+  const dataNote = [
+    streams.length > 1
+      ? differing.length
+        ? `${plural(differing.length, "case")} ${differing.length === 1 ? "has" : "have"} different results on ${list(streams)}.`
+        : `Every case run on more than one platform has the same result on each.`
+      : "",
+    oneSided.length ? `${list(oneSided.map((m) => m.name))} ${oneSided.length === 1 ? "has" : "have"} results on one platform only so far.` : "",
+    `Spira's own test set roll-up shows ${spiraRollup.passed.toLocaleString()} passed and ${spiraRollup.failed.toLocaleString()} failed of ${rollupExecuted.toLocaleString()} executed${
+      spiraRollup.passed === kpis.outcomes.passed && spiraRollup.failed === kpis.outcomes.failed
+        ? ", matching this report"
+        : "; this report counts each case once per platform from the cases read"
+    }.`,
+    hasBaseline ? `${baselineName} is used for the total plan and the comparison only.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return {
     generatedAt,
     projectId: catalog.projectId,
     projectName: catalog.projectName,
-    title: options.title.trim() || `${catalog.projectName} — Test Report`,
+    title: options.title.trim() || `${catalog.projectName} — Daily ${/^[A-Z]{2,5}\b/.exec(scopedName)?.[0] ?? ""} Test Report`.replace(/\s+/g, " "),
     environment: options.environment.trim(),
     preparedBy: options.preparedBy.trim(),
-    hasBaseline: options.baseline.releaseId !== null,
+    hasBaseline,
     baselineLabel: scopeLabel(catalog, options.baseline),
     scopedLabel: scopeLabel(catalog, options.scoped),
-    streams: STREAMS.filter((s) => streamTotals[s]),
+    baselineName,
+    scopedName,
+    labels,
+    streams,
     goLive: options.goLive,
     daysToGoLive,
-    window: { first, last },
+    window,
     kpis,
     modules,
+    laterModules,
     streamRows,
     readiness,
     criteria,
+    bars,
     status: options.status === "auto" ? autoStatus : options.status,
     autoStatus,
     statusReason,
     defects,
-    scope: { rows: scopeRows, streams: STREAMS.filter((s) => scopeRows.some((r) => r.baselineStreams[s] || r.scopedStreams[s])), added: addedCases, deferred: deferredCases },
+    cycle,
+    scope: {
+      rows: scopeRows,
+      streams: STREAMS.filter((s) => scopeRows.some((r) => r.baselineStreams[s] || r.scopedStreams[s])),
+      added: addedCases,
+      deferred: deferredCases,
+    },
     findings,
-    narrative: { headline: headlineParts.join(" "), working, risks, actions },
+    narrative: { headline, why, actions, scopeNote, dataNote },
     trend: { days: trendDays, earlier, pacePerDay, daysToFinish },
     testSets,
     baselineSets,
     failedCases,
     targets,
     notes: options.notes.trim(),
-    sources: { incidentsComplete: input.incidentsComplete, linksPartial, setsRead: Object.keys(input.results).length, setsMissing },
+    appendix: options.appendix ?? false,
+    sources: {
+      incidentsComplete: input.incidentsComplete,
+      linksPartial,
+      setsRead: Object.keys(input.results).length,
+      setsMissing,
+    },
   };
 }
 
@@ -1176,7 +1790,7 @@ export function compareSnapshots(previous: ReportSnapshot, current: ReportSnapsh
     else if (m.executed === m.inScope && p.executed < p.inScope && m.failed === 0) [movement, tone] = ["Fully executed", "good"];
     else if (m.failed < p.failed) [movement, tone] = [`${p.failed - m.failed} fewer failed`, "good"];
     else if (m.executed > p.executed) [movement, tone] = [`+${m.executed - p.executed} run`, "good"];
-    else if (m.inScope !== p.inScope) [movement, tone] = [`Scope ${m.inScope > p.inScope ? "+" : ""}${m.inScope - p.inScope} cases`, "neutral"];
+    else if (m.inScope !== p.inScope) [movement, tone] = [`Scope ${m.inScope > p.inScope ? "+" : ""}${m.inScope - p.inScope} runs`, "neutral"];
     else [movement, tone] = ["No change", "neutral"];
     rows.push({ name: m.name, before: progressText(p), now: progressText(m), movement, tone });
   }

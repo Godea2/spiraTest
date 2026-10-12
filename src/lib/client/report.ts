@@ -33,7 +33,7 @@ export function loadReportOptions(projectId: number): ReportOptions | null {
   const stored = readItem<Partial<ReportOptions>>(optionsKey(projectId));
   if (!stored) return null;
   const defaults = defaultReportOptions();
-  return { ...defaults, ...stored, targets: { ...defaults.targets, ...stored.targets } };
+  return { ...defaults, ...stored, targets: { ...defaults.targets, ...stored.targets }, defectNotes: { ...stored.defectNotes } };
 }
 
 export function saveReportOptions(projectId: number, options: ReportOptions): void {
@@ -173,38 +173,61 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
     { Item: "Go-live", Value: report.goLive ?? "" },
     { Item: "Overall status", Value: report.status.toUpperCase() },
     { Item: "Status reason", Value: report.statusReason },
-    { Item: "Baseline cases", Value: k.baseline },
-    { Item: "In-scope cases", Value: k.inScope },
+    { Item: "Executions", Value: report.window.text ?? "" },
+    { Item: "Counted as", Value: "Test runs: each case once per platform it is planned on" },
+    { Item: "Total test plan (runs)", Value: k.plan },
+    { Item: `${report.labels.build} (runs)`, Value: k.inScope },
+    { Item: "Later builds (runs)", Value: k.laterBuilds },
     { Item: "Executed", Value: k.executed },
     { Item: "Executed %", Value: formatPct(k.execPct) },
     ...OUTCOMES.map((o) => ({ Item: OUTCOME_LABEL[o], Value: k.outcomes[o] })),
+    { Item: "Still to run", Value: k.stillToRun },
     { Item: "Pass rate", Value: formatPct(k.passPct) },
-    { Item: "Baseline covered", Value: formatPct(k.coveragePct) },
-    { Item: "Added (not in baseline)", Value: k.added },
-    { Item: "Baseline cases not in scope", Value: k.deferred },
+    ...report.streams.map((s) => ({
+      Item: s,
+      Value: `${k.split.inScope[s] ?? 0} in scope, ${k.split.executed[s] ?? 0} executed, ${k.split.passed[s] ?? 0} passed, ${k.split.failed[s] ?? 0} failed`,
+    })),
+    { Item: "Added in testing (runs)", Value: k.added },
+    { Item: `${report.baselineName} pass rate`, Value: formatPct(k.baseline.passPct) },
+    { Item: "API cases (not counted above)", Value: k.api.inScope },
     { Item: "Open defects", Value: report.defects.open },
     { Item: "Summary", Value: report.narrative.headline },
+    { Item: "Why each module has its status", Value: report.narrative.why.join(" ") },
+    { Item: "Scope note", Value: report.narrative.scopeNote },
+    { Item: "Data note", Value: report.narrative.dataNote },
     { Item: "QA notes", Value: report.notes },
   ]);
   add(
     "Modules",
-    report.modules.map((m) => ({
+    [...report.modules, ...report.laterModules].map((m) => ({
       Module: m.name,
+      [report.labels.inBuild]: m.inBuild ? "Yes" : "No",
       Platforms: m.streams.join(", "),
-      Baseline: m.baseline,
-      "In scope": m.inScope,
+      "Total plan": m.plan,
+      [report.labels.build]: m.inScope,
+      "Later builds": m.laterBuilds,
       "Added": m.added,
       Executed: m.executed,
       "Exec %": formatPct(m.execPct),
       ...Object.fromEntries(OUTCOMES.map((o) => [OUTCOME_LABEL[o], m.outcomes[o]])),
+      "Still to run": m.stillToRun,
       "Pass %": formatPct(m.passPct),
+      "Failed cases": m.failedCases,
       "Open defects": m.openDefects,
-      Status: MODULE_STATUS_LABEL[m.status],
+      Status: m.inBuild ? MODULE_STATUS_LABEL[m.status] : "Later build",
       ...Object.fromEntries(report.streams.map((s) => [`${s} run`, m.byStream[s] ? `${m.byStream[s]!.executed} / ${m.byStream[s]!.total}` : ""])),
       "Last run": day(m.lastRun),
     })),
   );
   add("Exit criteria", report.criteria.map((c, i) => ({ "#": i + 1, Criterion: c.label, Target: c.target, Actual: c.actual, Status: c.met ? "Met" : "Not met" })));
+  if (report.cycle) {
+    const cycle = report.cycle;
+    add(
+      "Cycle change",
+      cycle.rows.map((r) => ({ Module: r.name, [`${cycle.baselineName} (${cycle.stream})`]: r.before, [`${cycle.scopedName} (${cycle.stream})`]: r.now, Movement: r.movement })),
+    );
+  }
+  add("Risks and actions", report.narrative.actions.map((a) => ({ Risk: a.title, Detail: a.detail, Action: a.action })));
   add(
     "Scope",
     report.scope.rows.map((r) => ({
@@ -229,8 +252,12 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
       Priority: d.priority,
       Retest: RETEST_LABEL[d.retest],
       "Age (days)": d.ageDays ?? "",
+      Feature: d.feature,
+      Scope: d.phase === "in" ? report.labels.inBuild : d.phase === "out" ? report.labels.outside : d.phase === "tbc" ? "To confirm" : "",
+      Rationale: d.rationale,
       Modules: d.modules.join(", "),
       "Test cases": d.testCaseIds.map((id) => `TC:${id}`).join(", "),
+      "Failed runs": d.failedRuns,
       Release: d.incident.detectedRelease ?? "",
       Raised: day(d.incident.createdAt),
       Owner: d.incident.owner ?? "",
@@ -239,7 +266,15 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
   );
   add(
     "Defects by severity",
-    LEVELS.map((l) => ({ Severity: l, "0–2 days": report.defects.severityAge[l][0], "3–5": report.defects.severityAge[l][1], "6–10": report.defects.severityAge[l][2], "> 10": report.defects.severityAge[l][3], Priority: report.defects.byPriority[l] })),
+    LEVELS.map((l) => ({
+      Level: l,
+      "0–2 days": report.defects.severityAge[l][0],
+      "3–5": report.defects.severityAge[l][1],
+      "6–10": report.defects.severityAge[l][2],
+      "> 10": report.defects.severityAge[l][3],
+      "Open by priority": report.defects.byPriority[l],
+      [`Open by priority, ${report.labels.inBuild.toLowerCase()}`]: report.defects.byPriorityInBuild[l],
+    })),
   );
   add(
     "Failed cases",
@@ -279,7 +314,7 @@ export async function exportReportWorkbook(report: Report, siteUrl: string | nul
   add("Test sets", [...report.testSets.map(setRow("In scope")), ...report.baselineSets.map(setRow("Baseline"))]);
   add("Added cases", report.scope.added.map((c) => ({ "Test case": `TC:${c.testCaseId}`, Name: c.name, Module: c.module })));
   add("Baseline only", report.scope.deferred.map((c) => ({ "Test case": `TC:${c.testCaseId}`, Name: c.name, Module: c.module })));
-  add("Trend", report.trend.days.map((d) => ({ Day: d.day, "Cases last run": d.executed, "Of which failed": d.failed, "Executed so far": d.cumulative })));
+  add("Trend", report.trend.days.map((d) => ({ Day: d.day, "Runs last executed": d.executed, "Of which failed": d.failed, "Executed so far": d.cumulative })));
 
   XLSX.writeFile(wb, `${safeFileName(`${report.title} ${day(report.generatedAt)}`)}.xlsx`);
 }

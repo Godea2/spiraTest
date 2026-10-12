@@ -63,7 +63,7 @@ export function OutcomeLegend({ show = OUTCOMES, counts }: { show?: readonly Out
 export function TargetBar({ progress, mark, met }: { progress: number; mark: number | null; met: boolean }) {
   return (
     <div className="relative h-3 w-full rounded-sm bg-slate-100">
-      <div className="h-full rounded-sm" style={{ width: `${Math.min(1, Math.max(0, progress)) * 100}%`, background: met ? "#16a34a" : "#d97706" }} />
+      <div className="h-full rounded-sm" style={{ width: `${Math.min(1, Math.max(0, progress)) * 100}%`, background: met ? "#16a34a" : "#dc2626" }} />
       {mark !== null && <div className="absolute -top-1 -bottom-1 w-0.5 bg-slate-900" style={{ left: `calc(${Math.min(1, mark) * 100}% - 1px)` }} />}
     </div>
   );
