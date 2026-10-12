@@ -535,6 +535,73 @@ export interface SpiraTestSetSummary {
   releaseVersion: string | null;
 }
 
+/** Spira's own tally of a test set's cases by execution status. */
+export interface StatusCounts {
+  passed: number;
+  failed: number;
+  caution: number;
+  blocked: number;
+  notRun: number;
+  notApplicable: number;
+}
+
+export interface ReportFolder {
+  folderId: number;
+  parentId: number | null;
+  name: string;
+}
+
+/** A test set as listed for reporting, with Spira's counts. Dates are ISO strings. */
+export interface ReportTestSet {
+  testSetId: number;
+  name: string;
+  folderId: number | null;
+  releaseId: number | null;
+  releaseVersion: string | null;
+  status: string | null;
+  owner: string | null;
+  plannedDate: string | null;
+  executionDate: string | null;
+  counts: StatusCounts;
+}
+
+/** Everything the report pickers need, read once per project. */
+export interface ReportCatalog {
+  projectId: number;
+  projectName: string;
+  releases: SpiraRelease[];
+  folders: ReportFolder[];
+  testSets: ReportTestSet[];
+  readAt: string;
+}
+
+/** One membership of a test case in a test set, with its latest result there. */
+export interface ReportCase {
+  testSetTestCaseId: number | null;
+  testCaseId: number;
+  name: string;
+  /** Null when Spira reports no status, which Spira treats as Not Run. */
+  statusId: number | null;
+  executionDate: string | null;
+  priority: string | null;
+}
+
+export interface ReportIncident {
+  incidentId: number;
+  name: string;
+  status: string | null;
+  open: boolean;
+  severity: string | null;
+  priority: string | null;
+  type: string | null;
+  detectedReleaseId: number | null;
+  detectedRelease: string | null;
+  createdAt: string | null;
+  closedAt: string | null;
+  owner: string | null;
+  opener: string | null;
+}
+
 /** One step of a test case, as plain text. A step that calls another test case carries that case's steps. */
 export interface TestCaseStep {
   testStepId: number | null;

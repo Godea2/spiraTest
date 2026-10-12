@@ -5,6 +5,7 @@ import {
   Activity,
   Bug,
   CircleCheckBig,
+  FileChartColumn,
   GitCompareArrows,
   KanbanSquare,
   LogOut,
@@ -34,6 +35,7 @@ const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: str
   { href: "/drafts", label: "Drafts", icon: KanbanSquare, match: (p) => p.startsWith("/drafts") },
   { href: "/completed", label: "Completed", icon: CircleCheckBig, match: (p) => p.startsWith("/completed") },
   { href: "/defects", label: "Defects", icon: Bug, match: (p) => p.startsWith("/defects") },
+  { href: "/reports", label: "Reports", icon: FileChartColumn, match: (p) => p.startsWith("/reports") },
   { href: "/activity", label: "Activity", icon: Activity, match: (p) => p.startsWith("/activity") },
   { href: "/settings", label: "Settings", icon: Settings2, match: (p) => p.startsWith("/settings") },
 ];
@@ -313,11 +315,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="app-backdrop min-h-dvh">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-slate-200/70 bg-white/60 backdrop-blur-xl transition-[width] duration-200 ease-out lg:block rail:w-16 dark:border-white/[0.06] dark:bg-[#0b0c11]/70">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r print:hidden border-slate-200/70 bg-white/60 backdrop-blur-xl transition-[width] duration-200 ease-out lg:block rail:w-16 dark:border-white/[0.06] dark:bg-[#0b0c11]/70">
         <SidebarContent pathname={pathname} layoutId="nav-desktop" collapse={{ collapsed, toggle: toggleRail }} />
       </aside>
 
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200/70 bg-white/75 px-4 backdrop-blur-xl lg:hidden dark:border-white/[0.06] dark:bg-[#07080c]/75">
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-slate-200/70 bg-white/75 px-4 backdrop-blur-xl lg:hidden print:hidden dark:border-white/[0.06] dark:bg-[#07080c]/75">
         <button
           type="button"
           className="-ml-1 cursor-pointer rounded-lg p-2 text-slate-600 hover:bg-slate-900/[0.05] dark:text-zinc-300 dark:hover:bg-white/[0.06]"
@@ -367,8 +369,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
-      <main className="transition-[padding] duration-200 ease-out lg:pl-64 lg:rail:pl-16">
-        <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10 lg:py-10 rail:max-w-[1840px] lg:rail:px-8">
+      <main className="transition-[padding] duration-200 ease-out lg:pl-64 lg:rail:pl-16 print:pl-0">
+        <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10 lg:py-10 rail:max-w-[1840px] lg:rail:px-8 print:max-w-none print:p-0">
           {children}
         </div>
       </main>

@@ -3,7 +3,19 @@ import { z } from "zod";
 import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, RUNNER_NAME, runSignature, type RunStepSlot } from "@/lib/domain/execution";
 import { incidentSignature, testCaseSignature } from "@/lib/domain/defects";
 import { richText } from "@/lib/domain/text";
-import type { IncidentOptions, SpiraProject, SpiraRelease, SpiraStatus, SpiraTestSetSummary, TestCaseDetail, TestCaseStep } from "@/lib/domain/types";
+import type {
+  IncidentOptions,
+  ReportCase,
+  ReportFolder,
+  ReportIncident,
+  ReportTestSet,
+  SpiraProject,
+  SpiraRelease,
+  SpiraStatus,
+  SpiraTestSetSummary,
+  TestCaseDetail,
+  TestCaseStep,
+} from "@/lib/domain/types";
 
 // Server-only client for the Spira REST API (v7.0). Credentials come from the environment
 // and are sent as headers, never in the URL, so they do not end up in proxy or server logs.
@@ -251,12 +263,24 @@ const releaseSchema = z.object({
   ReleaseTypeName: z.string().nullish(),
 });
 const RELEASE_LIMIT = 1_000;
+const count = z.number().int().nullish();
 const testSetListSchema = z.array(
   z.object({
     TestSetId: id,
     Name: z.string().nullish(),
     ReleaseId: z.number().int().nullish(),
     ReleaseVersionNumber: z.string().nullish(),
+    TestSetFolderId: z.number().int().nullish(),
+    TestSetStatusName: z.string().nullish(),
+    OwnerName: z.string().nullish(),
+    PlannedDate: z.unknown().optional(),
+    ExecutionDate: z.unknown().optional(),
+    CountPassed: count,
+    CountFailed: count,
+    CountCaution: count,
+    CountBlocked: count,
+    CountNotRun: count,
+    CountNotApplicable: count,
   }),
 );
 
@@ -807,10 +831,10 @@ export async function listReleases(projectId: number): Promise<SpiraRelease[]> {
     .map(toRelease);
 }
 
-/** Every test set in the project, or only those planned for one release. Sorted by name. */
-export async function listTestSets(projectId: number, releaseId: number | null): Promise<SpiraTestSetSummary[]> {
+/** Every test set in the project, or only those planned for one release, as Spira lists them. */
+async function readTestSetPages(projectId: number, releaseId: number | null): Promise<z.infer<typeof testSetListSchema>> {
   const what = `listing test sets in project ${projectId}`;
-  const found: SpiraTestSetSummary[] = [];
+  const found = new Map<number, z.infer<typeof testSetListSchema>[number]>();
   for (let start = 1; start <= TEST_SET_LIMIT; start += TEST_SET_PAGE) {
     const query = new URLSearchParams({
       starting_row: String(start),
@@ -820,16 +844,173 @@ export async function listTestSets(projectId: number, releaseId: number | null):
     });
     if (releaseId !== null) query.set("release_id", String(releaseId));
     const page = parse(testSetListSchema, await call("GET", `projects/${projectId}/test-sets?${query}`, what), what);
-    for (const t of page) {
-      found.push({
-        testSetId: t.TestSetId,
-        name: t.Name?.trim() || `Test set ${t.TestSetId}`,
-        releaseId: t.ReleaseId ?? null,
-        releaseVersion: t.ReleaseVersionNumber?.trim() || null,
-      });
-    }
+    for (const t of page) found.set(t.TestSetId, t);
     if (page.length < TEST_SET_PAGE) break;
   }
-  const unique = new Map(found.map((t) => [t.testSetId, t]));
-  return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return [...found.values()];
+}
+
+const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name, undefined, { numeric: true });
+
+/** Every test set in the project, or only those planned for one release. Sorted by name. */
+export async function listTestSets(projectId: number, releaseId: number | null): Promise<SpiraTestSetSummary[]> {
+  return (await readTestSetPages(projectId, releaseId))
+    .map((t) => ({
+      testSetId: t.TestSetId,
+      name: t.Name?.trim() || `Test set ${t.TestSetId}`,
+      releaseId: t.ReleaseId ?? null,
+      releaseVersion: t.ReleaseVersionNumber?.trim() || null,
+    }))
+    .sort(byName);
+}
+
+/**
+ * Spira sends dates as ISO text in UTC without a zone, or as /Date(ms)/. Returns ISO, or null for
+ * empty and placeholder (year 1) dates.
+ */
+export function spiraDate(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const ms = /^\/Date\((-?\d+)/.exec(value);
+  const date = ms ? new Date(Number(ms[1])) : new Date(/(z|[+-]\d\d:?\d\d)$/i.test(value) ? value : `${value}Z`);
+  return Number.isFinite(date.getTime()) && date.getUTCFullYear() > 1900 ? date.toISOString() : null;
+}
+
+/** Every test set in the project with its folder, status, dates and Spira's counts. Read-only. */
+export async function listReportTestSets(projectId: number): Promise<ReportTestSet[]> {
+  return (await readTestSetPages(projectId, null))
+    .map((t) => ({
+      testSetId: t.TestSetId,
+      name: t.Name?.trim() || `Test set ${t.TestSetId}`,
+      folderId: t.TestSetFolderId && t.TestSetFolderId > 0 ? t.TestSetFolderId : null,
+      releaseId: t.ReleaseId ?? null,
+      releaseVersion: t.ReleaseVersionNumber?.trim() || null,
+      status: t.TestSetStatusName?.trim() || null,
+      owner: t.OwnerName?.trim() || null,
+      plannedDate: spiraDate(t.PlannedDate),
+      executionDate: spiraDate(t.ExecutionDate),
+      counts: {
+        passed: t.CountPassed ?? 0,
+        failed: t.CountFailed ?? 0,
+        caution: t.CountCaution ?? 0,
+        blocked: t.CountBlocked ?? 0,
+        notRun: t.CountNotRun ?? 0,
+        notApplicable: t.CountNotApplicable ?? 0,
+      },
+    }))
+    .sort(byName);
+}
+
+const folderListSchema = z.array(z.object({ TestSetFolderId: id, ParentTestSetFolderId: z.number().int().nullish(), Name: z.string().nullish() }));
+
+/** The project's test set folders (SIT Cycle 1, API, …) with their parents. Read-only. */
+export async function listTestSetFolders(projectId: number): Promise<ReportFolder[]> {
+  const what = `listing test set folders in project ${projectId}`;
+  return parse(folderListSchema, await call("GET", `projects/${projectId}/test-set-folders`, what), what).map((f) => ({
+    folderId: f.TestSetFolderId,
+    parentId: f.ParentTestSetFolderId && f.ParentTestSetFolderId > 0 ? f.ParentTestSetFolderId : null,
+    name: f.Name?.trim() || `Folder ${f.TestSetFolderId}`,
+  }));
+}
+
+/** The project's display name. Read-only. */
+export async function getProjectName(projectId: number): Promise<string> {
+  const what = "reading the project";
+  const raw = parse(z.object({ ProjectId: id, Name: z.string().nullish() }).passthrough(), await call("GET", `projects/${projectId}`, what), what);
+  return raw.Name?.trim() || `Project ${projectId}`;
+}
+
+const reportCaseSchema = z.array(
+  z.object({
+    TestCaseId: id,
+    TestSetTestCaseId: id.nullish(),
+    Name: z.string().nullish(),
+    ExecutionStatusId: z.number().int().nullish(),
+    ExecutionDate: z.unknown().optional(),
+    TestCasePriorityName: z.string().nullish(),
+  }),
+);
+
+/** The cases in one test set with their latest result there. Read-only. */
+export async function getTestSetResults(projectId: number, testSetId: number): Promise<ReportCase[]> {
+  const what = `reading the test cases in test set ${testSetId}`;
+  return parse(reportCaseSchema, await call("GET", `projects/${projectId}/test-sets/${testSetId}/test-cases`, what), what).map((c) => ({
+    testSetTestCaseId: c.TestSetTestCaseId ?? null,
+    testCaseId: c.TestCaseId,
+    name: c.Name?.trim() || `Test case TC:${c.TestCaseId}`,
+    statusId: c.ExecutionStatusId && c.ExecutionStatusId > 0 ? c.ExecutionStatusId : null,
+    executionDate: spiraDate(c.ExecutionDate),
+    priority: c.TestCasePriorityName?.trim() || null,
+  }));
+}
+
+const incidentSchema = z.object({
+  IncidentId: id,
+  Name: z.string().nullish(),
+  IncidentStatusName: z.string().nullish(),
+  IncidentStatusOpenStatus: z.boolean().nullish(),
+  SeverityName: z.string().nullish(),
+  PriorityName: z.string().nullish(),
+  IncidentTypeName: z.string().nullish(),
+  DetectedReleaseId: z.number().int().nullish(),
+  DetectedReleaseVersionNumber: z.string().nullish(),
+  CreationDate: z.unknown().optional(),
+  ClosedDate: z.unknown().optional(),
+  OwnerName: z.string().nullish(),
+  OpenerName: z.string().nullish(),
+});
+const incidentListSchema = z.array(incidentSchema);
+
+/** Status names that end an incident, used only when Spira does not say whether the status is open. */
+const CLOSED_STATUS = /closed|not reproducible|duplicate|rejected|won'?t fix|not a (bug|defect)/i;
+
+function toIncident(raw: z.infer<typeof incidentSchema>): ReportIncident {
+  const status = raw.IncidentStatusName?.trim() || null;
+  const closedAt = spiraDate(raw.ClosedDate);
+  return {
+    incidentId: raw.IncidentId,
+    name: raw.Name?.trim() || `Incident ${raw.IncidentId}`,
+    status,
+    open: raw.IncidentStatusOpenStatus ?? !(closedAt || (status && CLOSED_STATUS.test(status))),
+    severity: raw.SeverityName?.trim() || null,
+    priority: raw.PriorityName?.trim() || null,
+    type: raw.IncidentTypeName?.trim() || null,
+    detectedReleaseId: raw.DetectedReleaseId && raw.DetectedReleaseId > 0 ? raw.DetectedReleaseId : null,
+    detectedRelease: raw.DetectedReleaseVersionNumber?.trim() || null,
+    createdAt: spiraDate(raw.CreationDate),
+    closedAt,
+    owner: raw.OwnerName?.trim() || null,
+    opener: raw.OpenerName?.trim() || null,
+  };
+}
+
+const INCIDENT_PAGE = 500;
+const INCIDENT_LIMIT = 5_000;
+
+/**
+ * The project's incidents, paged. Older servers without the paged search give the 500 most recent;
+ * `complete` is false when the list may be cut short. Read-only.
+ */
+export async function listIncidents(projectId: number): Promise<{ incidents: ReportIncident[]; complete: boolean }> {
+  const what = `listing incidents in project ${projectId}`;
+  const found = new Map<number, ReportIncident>();
+  for (let start = 1; start <= INCIDENT_LIMIT; start += INCIDENT_PAGE) {
+    let raw: unknown;
+    try {
+      raw = await call("GET", `projects/${projectId}/incidents/search?start_row=${start}&number_rows=${INCIDENT_PAGE}&sort_by=IncidentId`, what);
+    } catch (error) {
+      if (!(error instanceof SpiraError) || start > 1) throw error;
+      const recent = parse(incidentListSchema, await call("GET", `projects/${projectId}/incidents`, what), what).map(toIncident);
+      return { incidents: recent, complete: recent.length < INCIDENT_PAGE };
+    }
+    const page = parse(incidentListSchema, raw, what);
+    for (const i of page) found.set(i.IncidentId, toIncident(i));
+    if (page.length < INCIDENT_PAGE) return { incidents: [...found.values()], complete: true };
+  }
+  return { incidents: [...found.values()], complete: false };
+}
+
+/** Incidents linked to a test case through its runs or steps, open or closed. Read-only. */
+export async function incidentsForTestCase(projectId: number, testCaseId: number): Promise<ReportIncident[]> {
+  const what = `reading the incidents of test case ${testCaseId}`;
+  return parse(incidentListSchema, await call("GET", `projects/${projectId}/incidents/search-by-test-case/${testCaseId}?open_only=false`, what), what).map(toIncident);
 }

@@ -170,7 +170,7 @@ export async function runPreflight(input: {
   return { preflight };
 }
 
-async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
+export async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(size, items.length) }, async () => {

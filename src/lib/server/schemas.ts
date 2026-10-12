@@ -15,6 +15,7 @@ import {
 } from "@/lib/domain/defects";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
+import { MAX_REPORT_LINKS, MAX_REPORT_SETS } from "@/lib/domain/report";
 import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
 
 const id = z.number().int().positive();
@@ -345,3 +346,7 @@ export const testCaseLookupSchema = z.object({ projectId: id, testCaseId: id });
 export const releaseListSchema = z.object({ projectId: id });
 
 export const testSetListSchema = z.object({ projectId: id, releaseId: id.nullable() });
+
+export const reportResultsRequestSchema = z.object({ projectId: id, testSetIds: z.array(id).min(1).max(MAX_REPORT_SETS) });
+
+export const reportLinksRequestSchema = z.object({ projectId: id, testCaseIds: z.array(id).min(1).max(MAX_REPORT_LINKS) });

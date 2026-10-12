@@ -120,6 +120,47 @@ dialog[open] {
   animation: fade-up 0.25s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* The report prints as a landscape document, one report page per sheet, in its on-screen colours. */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+  html,
+  body,
+  .app-backdrop {
+    background: #fff !important;
+  }
+  .report-doc {
+    gap: 0 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .report-doc * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .report-page {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+  .report-break {
+    break-before: page;
+  }
+  .report-keep,
+  .report-table tr {
+    break-inside: avoid;
+  }
+  .report-table thead {
+    display: table-header-group;
+  }
+  .report-doc .overflow-x-auto {
+    overflow: visible !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
