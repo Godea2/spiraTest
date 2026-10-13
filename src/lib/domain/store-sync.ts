@@ -3,7 +3,7 @@ import type { ActivityEntry } from "./types";
 export const STORE_KEY_PATTERN = /^[A-Za-z0-9:_.-]{1,200}$/;
 
 /** Kept in each browser only: who is testing on this device, and this device's preferences. */
-export const LOCAL_ONLY_KEYS: ReadonlySet<string> = new Set(["tester", "defect-auto-new-case", "mock-state"]);
+export const LOCAL_ONLY_KEYS: ReadonlySet<string> = new Set(["tester", "defect-auto-new-case", "defect-environment", "mock-state"]);
 
 export const ACTIVITY_KEY = "activity";
 export const MAX_ACTIVITY = 1_000;

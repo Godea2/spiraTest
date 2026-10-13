@@ -160,13 +160,16 @@ describe("incident description", () => {
       tester: "Ada",
       description: "Continue is enabled with an empty phone number.",
       expected: "Continue stays disabled.",
+      environment: "iPhone 14, iOS 17.5",
       reproduce: stepsToReproduce(steps, "2"),
       failAt: "2",
       cases: [{ testCaseId: 3519, name: "Cannot proceed without phone", stepLabel: "2", stepText: "Tap Continue", testRunId: 901 }],
     });
-    expect(text).toContain("Continue is enabled with an empty phone number.");
-    expect(text).toContain("Expected: Continue stays disabled.");
-    expect(text).toContain("1. Launch app (data: Phone: (empty))");
+    expect(text).toContain("## What happened\nContinue is enabled with an empty phone number.");
+    expect(text).toContain("## Expected result\nContinue stays disabled.");
+    expect(text).toContain("## Steps to reproduce\n1. Launch app (data: Phone: (empty))");
+    expect(text).toContain("## Environment\niPhone 14, iOS 17.5");
+    expect(text.indexOf("## Environment")).toBeLessThan(text.indexOf("## Failed test cases"));
     expect(text).toContain("2. Tap Continue\n   Expected: Button disabled");
     expect(text).not.toContain("Check OTP");
     expect(text).toContain("- TC3519 Cannot proceed without phone, step 2: Tap Continue (test run 901)");
@@ -314,6 +317,8 @@ describe("searching across modules", () => {
         { testCaseId: 2, name: "Balance card", module: "Home Screen", stepLabel: "3", stepText: "View balance", testRunId: 902 },
       ],
     });
-    expect(text).toContain("Failed test cases (2 in 2 modules):\nOnboarding:\n- TC1 Login (test run 901)\nHome Screen:\n- TC2 Balance card, step 3: View balance (test run 902)");
+    expect(text).not.toContain("## Expected result");
+    expect(text).not.toContain("## Environment");
+    expect(text).toContain("## Failed test cases (2 in 2 modules)\nOnboarding:\n- TC1 Login (test run 901)\nHome Screen:\n- TC2 Balance card, step 3: View balance (test run 902)");
   });
 });

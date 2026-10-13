@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { MAX_APPLY_BATCH } from "@/lib/domain/board";
+import { MAX_ATTACHMENT_BASE64, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_CAPTION } from "@/lib/domain/defect-report";
 import {
   MAX_DEFECT_CANDIDATES,
   MAX_DEFECT_SEARCH_CASES,
@@ -347,9 +348,32 @@ export const defectLogRequestSchema = z.object({
     .array(z.object({ board: z.number().int().min(0).max(MAX_DEFECT_BOARDS - 1), testRunId: id, testCaseId: id, testSetId: id, testSetTestCaseId: id }))
     .min(1)
     .max(MAX_DEFECT_CANDIDATES, `Link at most ${MAX_DEFECT_CANDIDATES} runs to one defect.`),
+  files: z
+    .array(z.object({ documentId: id, caption: z.string().max(MAX_CAPTION), kind: z.enum(["image", "video", "file"]) }))
+    .max(MAX_ATTACHMENTS, `Attach at most ${MAX_ATTACHMENTS} files to one defect.`)
+    .optional(),
 });
 
 export const defectUndoRequestSchema = z.object({ projectId: id, incidentId: id });
+
+export const defectFileRequestSchema = z
+  .object({
+    projectId: id,
+    incidentId: id.nullable(),
+    testRunIds: z.array(id).max(MAX_DEFECT_CANDIDATES),
+    file: z.object({
+      name: z.string().trim().min(1).max(255),
+      caption: z.string().trim().max(MAX_CAPTION),
+      data: z
+        .string()
+        .min(1, "The file is empty.")
+        .max(MAX_ATTACHMENT_BASE64, `Attach files of at most ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`)
+        .regex(/^[A-Za-z0-9+/]+={0,2}$/, "The file must be sent as base64."),
+    }),
+  })
+  .refine((input) => input.incidentId !== null || input.testRunIds.length > 0, { message: "Name the incident or the runs to attach the file to.", path: ["testRunIds"] });
+
+export const defectFileUndoRequestSchema = z.object({ projectId: id, documentId: id });
 
 export const projectLookupSchema = z.object({ projectId: id });
 

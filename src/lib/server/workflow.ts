@@ -8,8 +8,10 @@ import type {
   AddedCaseResult,
   ApplyAction,
   ApplyActionResult,
+  AttachmentKind,
   Column,
   DefectCaseCreated,
+  DefectFileResult,
   DefectLogResult,
   ExecutionCaseInput,
   ExecutionResult,
@@ -25,11 +27,18 @@ import type {
   WorkflowContext,
 } from "@/lib/domain/types";
 import { testCaseSignature } from "@/lib/domain/defects";
+import { ARTIFACT_TYPE, attachmentDescription, attachmentFileName, attachmentsHtml, detectAttachment, MAX_ATTACHMENT_BYTES } from "@/lib/domain/defect-report";
 import { sealComparison, sealPreflight, verifiedPreflight, verifyComparisons } from "./seal";
 import {
   addTestStep,
   addToTestSet,
+  attachDocument,
   createIncident,
+  deleteAttachedDocument,
+  getDocument,
+  isLoggedIncident,
+  spiraStatus,
+  uploadDocument,
   createTestCase,
   deleteCreatedTestCase,
   getTestCaseFolderId,
@@ -601,6 +610,8 @@ export async function logDefect(input: {
   boards: Array<{ context: WorkflowContext; testSets: TestSetComparison[]; decisions: Record<string, Column> }>;
   defect: { name: string; description: string; typeId: number | null; priorityId: number | null; severityId: number | null };
   runs: Array<{ board: number; testRunId: number; testCaseId: number; testSetId: number; testSetTestCaseId: number }>;
+  /** Files already uploaded for the defect (Spira document ids): shown in the incident and attached to it. */
+  files?: Array<{ documentId: number; caption: string; kind: AttachmentKind }>;
 }): Promise<DefectLogResult> {
   const projectId = input.boards[0].context.projectId;
   if (input.boards.some((b) => b.context.projectId !== projectId)) throw new ApplyValidationError("Every module of a defect must be in the same Spira project.");
@@ -645,12 +656,99 @@ export async function logDefect(input: {
     throw new ApplyValidationError(`No run could be linked, so no incident was logged. ${unlinked.map((u) => u.message).join(" ")}`.trim());
   }
 
+  // Only files this app attached are shown and attached; one that cannot be read is reported.
+  const failedFiles: Array<{ documentId: number; message: string }> = [];
+  const docs = await inPool(input.files ?? [], 3, async (file) => {
+    try {
+      const doc = await getDocument(projectId, file.documentId);
+      if (doc.ours) return { ...file, name: doc.name };
+      failedFiles.push({ documentId: file.documentId, message: `Attachment ${file.documentId} was not added by this app.` });
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      failedFiles.push({ documentId: file.documentId, message: error.message });
+    }
+    return null;
+  });
+  const files = docs.filter((d) => d !== null);
+  const siteUrl = spiraStatus().siteUrl;
+  const filesHtml = attachmentsHtml(files, (documentId) => (siteUrl ? `${siteUrl}/${projectId}/Attachment/${documentId}.aspx` : null));
+
   const incidentId = await createIncident(projectId, {
     ...input.defect,
+    filesHtml,
     releaseId,
     testRunStepIds: linked.map((l) => l.testRunStepId),
   });
-  return { incidentId, linked, unlinked };
+  if (!input.files?.length) return { incidentId, linked, unlinked };
+  const attached: number[] = [];
+  await inPool(files, 3, async (file) => {
+    try {
+      await attachDocument(projectId, ARTIFACT_TYPE.incident, incidentId, file.documentId);
+      attached.push(file.documentId);
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      failedFiles.push({ documentId: file.documentId, message: error.message });
+    }
+  });
+  return { incidentId, linked, unlinked, files: { attached, failed: failedFiles } };
+}
+
+/**
+ * Uploads one file for a defect to Spira, attached to the defect's failed runs and, once it is logged,
+ * its incident. The file must be an image, a video, a PDF or a text log, checked from its bytes, and the
+ * incident and each run must be this app's: a run that is not is left out, an incident that is not is
+ * refused. The upload is a write and is never retried.
+ */
+export async function attachDefectFile(input: {
+  projectId: number;
+  incidentId: number | null;
+  testRunIds: number[];
+  file: { name: string; caption: string; data: string };
+}): Promise<DefectFileResult> {
+  const bytes = Buffer.from(input.file.data, "base64");
+  if (bytes.length === 0) throw new ApplyValidationError("The file is empty.");
+  if (bytes.length > MAX_ATTACHMENT_BYTES) throw new ApplyValidationError(`The file is larger than ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB.`);
+  const type = detectAttachment(bytes, input.file.name);
+  if (!type) throw new ApplyValidationError(`${input.file.name} is not a file Spira can show here: attach images, videos (MP4, MOV, WebM), PDFs or text logs.`);
+
+  if (input.incidentId !== null && !(await isLoggedIncident(input.projectId, input.incidentId))) {
+    throw new ApplyValidationError(`Incident ${input.incidentId} was not logged by this app, so nothing was attached to it.`, 409);
+  }
+  const runs = await inPool([...new Set(input.testRunIds)], 3, async (testRunId) => {
+    try {
+      return (await getRecordedRunSteps(input.projectId, testRunId)).ours ? testRunId : null;
+    } catch (error) {
+      if (!(error instanceof SpiraError)) throw error;
+      return null;
+    }
+  });
+  const testRunIds = runs.filter((r) => r !== null);
+  if (input.incidentId === null && testRunIds.length === 0) {
+    throw new ApplyValidationError("None of the defect's runs could be checked as recorded here, so the file was not attached.");
+  }
+  const name = attachmentFileName(input.file.name, type.ext);
+  const documentId = await uploadDocument(input.projectId, {
+    name,
+    description: attachmentDescription(input.file.caption, RUNNER_NAME),
+    data: input.file.data,
+    size: bytes.length,
+    artifacts: [
+      ...(input.incidentId !== null ? [{ artifactId: input.incidentId, artifactTypeId: ARTIFACT_TYPE.incident }] : []),
+      ...testRunIds.map((id) => ({ artifactId: id, artifactTypeId: ARTIFACT_TYPE.testRun })),
+    ],
+  });
+  return { documentId, name, size: bytes.length, kind: type.kind, onIncident: input.incidentId !== null, testRunIds };
+}
+
+/** Deletes a file this app attached for a defect; one already gone counts as deleted. */
+export async function deleteDefectFile(input: { projectId: number; documentId: number }): Promise<{ ok: true; message: string | null }> {
+  try {
+    await deleteAttachedDocument(input.projectId, input.documentId);
+    return { ok: true, message: null };
+  } catch (error) {
+    if (error instanceof SpiraError && error.upstream === 404) return { ok: true, message: "Already deleted in Spira." };
+    throw error;
+  }
 }
 
 /**

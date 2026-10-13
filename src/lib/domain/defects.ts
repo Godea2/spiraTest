@@ -190,22 +190,24 @@ export const MAX_NEW_CASE_SETS = 4;
 export const MAX_NEW_CASE_CHOICES = 60;
 
 /**
- * The incident's description: what the tester saw, how to reproduce it (the steps of the first failed
- * case up to the failure, as written in Spira), and every case it failed.
+ * The incident's description, in sections ("## " headings, read by reportHtml): what the tester saw,
+ * what should happen, how to reproduce it (the steps of the first failed case up to the failure, as
+ * written in Spira), where it was seen, and every case it failed.
  */
 export function incidentDescription(input: {
   runner: string;
   tester: string;
   description: string;
   expected: string;
+  environment?: string;
   reproduce: RunnableStep[];
   failAt: string | null;
   cases: IncidentCase[];
 }): string {
-  const lines = [input.description.trim(), ""];
-  if (input.expected.trim()) lines.push(`Expected: ${input.expected.trim()}`, "");
+  const lines = ["## What happened", input.description.trim(), ""];
+  if (input.expected.trim()) lines.push("## Expected result", input.expected.trim(), "");
   if (input.reproduce.length > 0) {
-    lines.push("Steps to reproduce:");
+    lines.push("## Steps to reproduce");
     for (const s of input.reproduce) {
       const data = s.step.sampleData.trim() ? ` (data: ${s.step.sampleData.trim()})` : "";
       lines.push(`${s.label}. ${s.step.description.trim() || "(no action text)"}${data}`);
@@ -213,8 +215,9 @@ export function incidentDescription(input: {
     }
     lines.push("");
   }
+  if (input.environment?.trim()) lines.push("## Environment", input.environment.trim(), "");
   const modules = [...new Set(input.cases.map((c) => c.module ?? ""))];
-  lines.push(`Failed test cases (${input.cases.length}${modules.length > 1 ? ` in ${modules.length} modules` : ""}):`);
+  lines.push(`## Failed test cases (${input.cases.length}${modules.length > 1 ? ` in ${modules.length} modules` : ""})`);
   for (const name of modules) {
     if (modules.length > 1) lines.push(`${name || "Other"}:`);
     for (const c of input.cases.filter((x) => (x.module ?? "") === name)) {

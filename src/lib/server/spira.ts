@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { EXECUTED_STATUS_IDS, EXECUTION_STATUS, EXECUTION_STATUS_NAMES, RUNNER_NAME, runSignature, type RunStepSlot } from "@/lib/domain/execution";
+import { attachmentSignature, reportHtml } from "@/lib/domain/defect-report";
 import { incidentSignature, testCaseSignature } from "@/lib/domain/defects";
 import { richText } from "@/lib/domain/text";
 import type {
@@ -196,7 +197,7 @@ async function call(method: "GET" | "SEARCH" | "POST" | "PUT" | "DELETE", path: 
     if (!response.ok) throw await describeFailure(response, what);
     if (method === "DELETE") return null;
     const text = await response.text().catch(() => "");
-    if (!text.trim() && method === "PUT") return null;
+    if (!text.trim() && (method === "PUT" || method === "POST")) return null;
     try {
       return JSON.parse(text);
     } catch {
@@ -616,7 +617,10 @@ export async function getRunDetail(projectId: number, testRunId: number): Promis
 
 export interface IncidentInput {
   name: string;
+  /** Sectioned text, written to Spira as rich text by reportHtml. */
   description: string;
+  /** Rich text for the defect's files, placed before the failed test cases. */
+  filesHtml?: string;
   typeId: number | null;
   priorityId: number | null;
   severityId: number | null;
@@ -629,7 +633,7 @@ export async function createIncident(projectId: number, input: IncidentInput): P
   const what = "logging the defect as an incident";
   const body = {
     Name: input.name.slice(0, 255),
-    Description: textToHtml(input.description),
+    Description: reportHtml(input.description, input.filesHtml ?? ""),
     IncidentTypeId: input.typeId,
     PriorityId: input.priorityId,
     SeverityId: input.severityId,
@@ -640,14 +644,68 @@ export async function createIncident(projectId: number, input: IncidentInput): P
   return raw.IncidentId;
 }
 
-/** Deletes an incident, but only one this app logged: its description must carry the app's signature. */
-export async function deleteLoggedIncident(projectId: number, incidentId: number): Promise<void> {
+/** Whether an incident was logged by this app: its description carries the app's signature. Read-only. */
+export async function isLoggedIncident(projectId: number, incidentId: number): Promise<boolean> {
   const what = `reading incident ${incidentId}`;
   const raw = parse(z.object({ IncidentId: id, Description: z.string().nullish() }).passthrough(), await call("GET", `projects/${projectId}/incidents/${incidentId}`, what), what);
-  if (!richText(raw.Description).includes(incidentSignature(RUNNER_NAME))) {
+  return richText(raw.Description).includes(incidentSignature(RUNNER_NAME));
+}
+
+/** Deletes an incident, but only one this app logged: its description must carry the app's signature. */
+export async function deleteLoggedIncident(projectId: number, incidentId: number): Promise<void> {
+  if (!(await isLoggedIncident(projectId, incidentId))) {
     throw new SpiraError(`Incident ${incidentId} was not logged by this app, so it was not deleted.`, 409);
   }
   await call("DELETE", `projects/${projectId}/incidents/${incidentId}`, `deleting incident ${incidentId}`);
+}
+
+export interface SpiraDocument {
+  documentId: number;
+  name: string;
+  /** True when its description carries the signature of a file this app attached. */
+  ours: boolean;
+}
+
+const documentSchema = z.object({ AttachmentId: id, FilenameOrUrl: z.string().nullish(), Description: z.string().nullish() }).passthrough();
+
+/** One document (attachment) of a project. Read-only. */
+export async function getDocument(projectId: number, documentId: number): Promise<SpiraDocument> {
+  const what = `reading attachment ${documentId}`;
+  const raw = parse(documentSchema, await call("GET", `projects/${projectId}/documents/${documentId}`, what), what);
+  return { documentId: raw.AttachmentId, name: raw.FilenameOrUrl ?? "", ours: richText(raw.Description).includes(attachmentSignature(RUNNER_NAME)) };
+}
+
+/**
+ * Uploads a file as a project document, attached to the given artifacts (an incident, test runs). Its
+ * description carries the app's signature. A write: never retried.
+ */
+export async function uploadDocument(
+  projectId: number,
+  input: { name: string; description: string; data: string; size: number; artifacts: Array<{ artifactId: number; artifactTypeId: number }> },
+): Promise<number> {
+  const what = `uploading ${input.name}`;
+  const body = {
+    AttachmentTypeId: 1,
+    FilenameOrUrl: input.name,
+    Description: textToHtml(input.description),
+    BinaryData: input.data,
+    Size: input.size,
+    AttachedArtifacts: input.artifacts.map((a) => ({ ArtifactId: a.artifactId, ArtifactTypeId: a.artifactTypeId })),
+  };
+  const raw = parse(z.object({ AttachmentId: id }).passthrough(), await call("POST", `projects/${projectId}/documents/file`, what, body), what);
+  return raw.AttachmentId;
+}
+
+/** Attaches an existing document to another artifact. A write: never retried. */
+export async function attachDocument(projectId: number, artifactTypeId: number, artifactId: number, documentId: number): Promise<void> {
+  await call("POST", `projects/${projectId}/artifact-types/${artifactTypeId}/artifacts/${artifactId}/documents/${documentId}`, `attaching file ${documentId}`);
+}
+
+/** Deletes a document, but only a file this app attached: its description must carry the signature. */
+export async function deleteAttachedDocument(projectId: number, documentId: number): Promise<void> {
+  const doc = await getDocument(projectId, documentId);
+  if (!doc.ours) throw new SpiraError(`Attachment ${documentId} was not added by this app, so it was not deleted.`, 409);
+  await call("DELETE", `projects/${projectId}/documents/${documentId}`, `deleting attachment ${documentId}`);
 }
 
 /** The folder a test case is in (null for the root), so a new case can go next to its test set's cases. Read-only. */

@@ -363,6 +363,32 @@ export interface DefectRecord {
   cases: DefectCaseRecord[];
   /** A test case this app created in Spira for the defect, because no existing case covered it. */
   created?: CreatedDefectCase | null;
+  /** Screenshots and files uploaded to Spira for the defect, attached to its failed runs and its incident. */
+  attachments?: DefectAttachment[];
+}
+
+export type AttachmentKind = "image" | "video" | "file";
+
+/** A file uploaded to Spira as a document for a defect. */
+export interface DefectAttachment {
+  documentId: number;
+  name: string;
+  size: number;
+  kind: AttachmentKind;
+  caption: string;
+  /** Whether it is attached to the defect's incident (it is to its runs from the start). */
+  onIncident: boolean;
+}
+
+/** What uploading one file for a defect did. */
+export interface DefectFileResult {
+  documentId: number;
+  name: string;
+  size: number;
+  kind: AttachmentKind;
+  onIncident: boolean;
+  /** Runs it is attached to; runs that could not be checked as this app's are left out. */
+  testRunIds: number[];
 }
 
 export interface CreatedDefectCase {
@@ -415,6 +441,8 @@ export interface DefectLogResult {
   incidentId: number;
   linked: Array<{ testRunId: number; testRunStepId: number }>;
   unlinked: Array<{ testRunId: number; message: string }>;
+  /** The defect's files attached to the incident, and those that could not be. */
+  files?: { attached: number[]; failed: Array<{ documentId: number; message: string }> };
 }
 
 export interface TestSetStatusState {

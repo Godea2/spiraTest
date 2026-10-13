@@ -22,6 +22,7 @@ import {
   type DefectTarget,
   type VerifiedCase,
 } from "@/lib/domain/defects";
+import { MAX_ATTACHMENTS, MAX_ENVIRONMENT } from "@/lib/domain/defect-report";
 import { recordComparison, recordMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
 import { executedSteps, RUNNER_NAME, runnableSteps, type RunnableStep } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
@@ -30,8 +31,10 @@ import type {
   CreatedDefectCase,
   DefectAnalysis,
   DefectCandidate,
+  DefectAttachment,
   DefectCaseCreated,
   DefectCaseRecord,
+  DefectFileResult,
   DefectLogResult,
   DefectMatch,
   DefectRecord,
@@ -47,6 +50,7 @@ import type {
 } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { api, ApiError, errorMessage } from "./api";
+import { toBase64, type PendingFile } from "./attachments";
 import { allDrafts, getDraft, mutateDraft } from "./drafts";
 import { recordResults, refreshExecution } from "./execution";
 import { readItem, writeItem } from "./storage";
@@ -411,6 +415,22 @@ export function storeAutoNewCase(on: boolean): void {
   }
 }
 
+const ENVIRONMENT_KEY = "defect-environment";
+
+/** The device, OS and app version this tester last reported a defect on: kept on this browser, since it is their device. */
+export function readEnvironment(): string {
+  const value = readItem<unknown>(ENVIRONMENT_KEY);
+  return typeof value === "string" ? value.slice(0, MAX_ENVIRONMENT) : "";
+}
+
+export function storeEnvironment(value: string): void {
+  try {
+    writeItem(ENVIRONMENT_KEY, value.trim().slice(0, MAX_ENVIRONMENT));
+  } catch {
+    // Only a convenience: it is still used for this defect.
+  }
+}
+
 /** The test case status last chosen for a new defect case in this project; null for the project's default. */
 export function readNewCaseStatus(projectId: number): number | null {
   const stored = readItem<Record<string, unknown>>(NEW_CASE_STATUS_KEY);
@@ -616,6 +636,57 @@ export interface RaiseOutcome {
   moved: Array<{ draftId: string; module: string; count: number; completed: boolean }>;
   incident: DefectLogResult | null;
   incidentError: string | null;
+  /** The screenshots and files uploaded, and those that were not; null when none were picked. */
+  files?: AttachOutcome | null;
+}
+
+export interface AttachOutcome {
+  added: DefectAttachment[];
+  failed: Array<{ name: string; message: string }>;
+}
+
+/**
+ * Uploads files for a defect, one per request, each attached to the defect's failed runs and, when it
+ * is logged, its incident. Each upload is saved on the defect as it lands, so a later failure loses
+ * nothing; files that fail are reported and can be attached again.
+ */
+export async function attachFiles(defectId: string, files: PendingFile[], onProgress?: (done: number, total: number) => void): Promise<AttachOutcome> {
+  const start = readStore().find((d) => d.id === defectId);
+  if (!start) throw new Error("This defect is no longer in the list.");
+  const room = MAX_ATTACHMENTS - (start.attachments?.length ?? 0);
+  if (files.length > room) throw new Error(room > 0 ? `This defect can take ${room} more file${room === 1 ? "" : "s"}.` : `A defect can have at most ${MAX_ATTACHMENTS} files.`);
+  const out: AttachOutcome = { added: [], failed: [] };
+  for (const [i, file] of files.entries()) {
+    onProgress?.(i, files.length);
+    const record = readStore().find((d) => d.id === defectId);
+    if (!record) break;
+    try {
+      const result = await api<DefectFileResult>("/api/execution/defect/attachment", {
+        method: "POST",
+        body: {
+          projectId: record.projectId,
+          incidentId: record.incidentId,
+          testRunIds: record.cases.map((c) => c.testRunId),
+          file: { name: file.name, caption: file.caption.trim(), data: await toBase64(file.blob) },
+        },
+      });
+      const added: DefectAttachment = { documentId: result.documentId, name: result.name, size: result.size, kind: result.kind, caption: file.caption.trim(), onIncident: result.onIncident };
+      saveDefect({ ...record, attachments: [...(record.attachments ?? []), added] });
+      out.added.push(added);
+    } catch (err) {
+      out.failed.push({ name: file.name, message: errorMessage(err) });
+    }
+  }
+  onProgress?.(files.length, files.length);
+  const record = readStore().find((d) => d.id === defectId);
+  if (record && out.added.length > 0) {
+    logActivity({
+      type: "defect.filesAttached",
+      message: `Attached ${out.added.length} file(s) to defect "${record.title}"${record.incidentId ? ` (incident ${record.incidentId})` : ""}${out.failed.length ? `; ${out.failed.length} not attached` : ""}.`,
+      details: { defectId, documentIds: out.added.map((a) => a.documentId), failed: out.failed },
+    });
+  }
+  return out;
 }
 
 /** What each picked case is sent as: a Failed run with the description on the failing step. */
@@ -649,14 +720,18 @@ export async function raiseDefect(
     description: string;
     title: string;
     expected: string;
+    /** Device, OS and app version the defect was seen on. */
+    environment?: string;
     passBefore: boolean;
     logIncident: boolean;
     fields: IncidentFields;
     /** A test case created for this defect: kept on the record so undo deletes it too. */
     created?: CreatedDefectCase | null;
+    /** Screenshots and files: uploaded once the runs are recorded, before the incident is logged. */
+    files?: PendingFile[];
   },
   tester: string,
-  options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean } = {},
+  options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean; onFiles?: (done: number, total: number) => void } = {},
 ): Promise<RaiseOutcome> {
   const { description } = input;
   const title = input.title.trim();
@@ -788,6 +863,7 @@ export async function raiseDefect(
     tester,
     description,
     expected: input.expected,
+    environment: input.environment,
     reproduce: stepsToReproduce(first.steps, first.stepLabel),
     failAt: first.stepLabel,
     cases: recordedPicks.map((p) => ({
@@ -834,12 +910,21 @@ export async function raiseDefect(
     details: { defectId: record.id, testRunIds: record.cases.map((c) => c.testRunId), moved },
   });
 
-  if (!input.logIncident) return { record, results, failed, moved, incident: null, incidentError: null };
+  let files: AttachOutcome | null = null;
+  if (input.files?.length) {
+    try {
+      files = await attachFiles(record.id, input.files, options.onFiles);
+    } catch (err) {
+      files = { added: [], failed: input.files.map((f) => ({ name: f.name, message: errorMessage(err) })) };
+    }
+  }
+  const latest = readStore().find((d) => d.id === record.id) ?? record;
+  if (!input.logIncident) return { record: latest, results, failed, moved, incident: null, incidentError: null, files };
   try {
     const logged = await logIncident(record.id, input.fields);
-    return { record: logged.record, results, failed, moved, incident: logged.incident, incidentError: null };
+    return { record: logged.record, results, failed, moved, incident: logged.incident, incidentError: null, files };
   } catch (err) {
-    return { record, results, failed, moved, incident: null, incidentError: errorMessage(err) };
+    return { record: latest, results, failed, moved, incident: null, incidentError: errorMessage(err), files };
   }
 }
 
@@ -863,18 +948,30 @@ export async function logIncident(defectId: string, fields: IncidentFields): Pro
     return board === undefined ? [] : [{ board, testRunId: c.testRunId, testCaseId: c.testCaseId, testSetId: c.testSetId, testSetTestCaseId: c.testSetTestCaseId }];
   });
   if (runs.length === 0) throw new Error("The drafts of this defect's cases were deleted, so its runs cannot be checked.");
+  const attachments = record.attachments ?? [];
   const incident = await api<DefectLogResult>("/api/execution/defect", {
     method: "POST",
-    body: { boards, defect: { name: record.title || clip(record.description, 120), description: record.report, ...fields }, runs },
+    body: {
+      boards,
+      defect: { name: record.title || clip(record.description, 120), description: record.report, ...fields },
+      runs,
+      ...(attachments.length ? { files: attachments.map(({ documentId, caption, kind }) => ({ documentId, caption, kind })) } : {}),
+    },
   });
-  const updated: DefectRecord = { ...record, incidentId: incident.incidentId, linkedSteps: incident.linked.length };
+  const onIncident = new Set(incident.files?.attached ?? []);
+  const updated: DefectRecord = {
+    ...record,
+    incidentId: incident.incidentId,
+    linkedSteps: incident.linked.length,
+    ...(attachments.length ? { attachments: attachments.map((a) => ({ ...a, onIncident: onIncident.has(a.documentId) })) } : {}),
+  };
   saveDefect(updated);
   const modules = [...new Set(record.cases.map((c) => c.module))];
   logActivity({
     type: "defect.logged",
-    message: `Logged incident ${incident.incidentId} "${updated.title}", linked to ${incident.linked.length} failed run(s) in ${modules.join(", ")}.`,
+    message: `Logged incident ${incident.incidentId} "${updated.title}", linked to ${incident.linked.length} failed run(s) in ${modules.join(", ")}${onIncident.size ? `, with ${onIncident.size} file(s)` : ""}.`,
     module: modules.length === 1 ? modules[0] : null,
-    details: { defectId, incidentId: incident.incidentId, linked: incident.linked, unlinked: incident.unlinked },
+    details: { defectId, incidentId: incident.incidentId, linked: incident.linked, unlinked: incident.unlinked, files: incident.files ?? null },
   });
   return { record: updated, incident };
 }
@@ -889,6 +986,16 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
   const record = readStore().find((d) => d.id === defectId);
   if (!record) throw new Error("This defect is no longer in the list.");
   const errors: string[] = [];
+  // Files first: Spira keeps a document when the incident or run it is attached to is deleted.
+  const attachments: DefectAttachment[] = [];
+  for (const file of record.attachments ?? []) {
+    try {
+      await api("/api/execution/defect/attachment/undo", { method: "POST", body: { projectId: record.projectId, documentId: file.documentId } });
+    } catch (err) {
+      errors.push(`${file.name}: ${errorMessage(err)}`);
+      attachments.push(file);
+    }
+  }
   let incidentId = record.incidentId;
   if (incidentId) {
     try {
@@ -987,8 +1094,8 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
     }
   }
 
-  if (!incidentId && remaining.length === 0 && !created) forgetDefect(defectId);
-  else saveDefect({ ...record, incidentId, cases: remaining, created });
+  if (!incidentId && remaining.length === 0 && !created && attachments.length === 0) forgetDefect(defectId);
+  else saveDefect({ ...record, incidentId, cases: remaining, created, attachments });
   const deletedCase = record.created && !created ? ` and test case TC${record.created.testCaseId}` : "";
   logActivity({
     type: errors.length ? "defect.undoneWithErrors" : "defect.undone",

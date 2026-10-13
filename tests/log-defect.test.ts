@@ -7,13 +7,20 @@ const spira = vi.hoisted(() => ({
   getRecordedRunSteps: vi.fn(),
   createIncident: vi.fn(),
   deleteLoggedIncident: vi.fn(),
+  getDocument: vi.fn(),
+  attachDocument: vi.fn(),
+  uploadDocument: vi.fn(),
+  isLoggedIncident: vi.fn(),
+  deleteAttachedDocument: vi.fn(),
+  spiraStatus: vi.fn(),
 }));
 
 vi.mock("@/lib/server/spira", async (importOriginal) => ({ ...(await importOriginal<object>()), ...spira }));
 
 const { SpiraError } = await import("@/lib/server/spira");
 const { sealComparison } = await import("@/lib/server/seal");
-const { logDefect, undoDefect } = await import("@/lib/server/workflow");
+const { attachDefectFile, deleteDefectFile, logDefect, undoDefect } = await import("@/lib/server/workflow");
+const { attachmentSignature } = await import("@/lib/domain/defect-report");
 
 const ctx: WorkflowContext = { projectId: 24, releaseId: 5, module: "Onboarding" };
 const homeCtx: WorkflowContext = { projectId: 24, releaseId: 6, module: "Home Screen" };
@@ -68,6 +75,86 @@ beforeEach(() => {
   for (const fn of Object.values(spira)) fn.mockReset();
   spira.getRecordedRunSteps.mockImplementation(async (_p: number, testRunId: number) => steps(testRunId));
   spira.createIncident.mockResolvedValue(77);
+  spira.spiraStatus.mockReturnValue({ siteUrl: "https://x.spiraservice.net" });
+  spira.getDocument.mockImplementation(async (_p: number, documentId: number) => ({ documentId, name: `shot-${documentId}.png`, ours: documentId !== 666 }));
+  spira.attachDocument.mockResolvedValue(undefined);
+  spira.uploadDocument.mockResolvedValue(555);
+  spira.isLoggedIncident.mockResolvedValue(true);
+});
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString("base64");
+
+describe("logDefect with files", () => {
+  it("shows this app's files in the incident and attaches them to it", async () => {
+    const out = await logDefect({
+      ...request([run(1)]),
+      files: [
+        { documentId: 51, caption: "OTP screen", kind: "image" },
+        { documentId: 666, caption: "", kind: "image" },
+      ],
+    });
+    const input = spira.createIncident.mock.calls[0][1];
+    expect(input.filesHtml).toContain('<img src="https://x.spiraservice.net/24/Attachment/51.aspx"');
+    expect(input.filesHtml).toContain("shot-51.png</a> OTP screen");
+    expect(input.filesHtml).not.toContain("666");
+    expect(spira.attachDocument).toHaveBeenCalledTimes(1);
+    expect(spira.attachDocument).toHaveBeenCalledWith(24, 3, 77, 51);
+    expect(out.files).toEqual({ attached: [51], failed: [{ documentId: 666, message: "Attachment 666 was not added by this app." }] });
+  });
+
+  it("still logs the incident when a file cannot be attached to it", async () => {
+    spira.attachDocument.mockRejectedValue(new SpiraError("Spira returned HTTP 500.", 502, 500));
+    const out = await logDefect({ ...request([run(1)]), files: [{ documentId: 51, caption: "", kind: "image" }] });
+    expect(out.incidentId).toBe(77);
+    expect(out.files).toEqual({ attached: [], failed: [{ documentId: 51, message: "Spira returned HTTP 500." }] });
+  });
+
+  it("does not read or attach files when there are none", async () => {
+    const out = await logDefect(request([run(1)]));
+    expect(out.files).toBeUndefined();
+    expect(spira.getDocument).not.toHaveBeenCalled();
+    expect(spira.createIncident.mock.calls[0][1].filesHtml).toBe("");
+  });
+});
+
+describe("attachDefectFile", () => {
+  const file = (over: Partial<{ name: string; caption: string; data: string }> = {}) => ({ name: "Login screen.jpg", caption: "Continue enabled", data: PNG, ...over });
+
+  it("uploads to the incident and this app's runs, named for what the file really is", async () => {
+    spira.getRecordedRunSteps.mockImplementation(async (_p: number, testRunId: number) => steps(testRunId, { ours: testRunId !== 902 }));
+    const out = await attachDefectFile({ projectId: 24, incidentId: 77, testRunIds: [901, 902, 901], file: file() });
+    expect(out).toEqual({ documentId: 555, name: "Login screen.png", size: 11, kind: "image", onIncident: true, testRunIds: [901] });
+    const upload = spira.uploadDocument.mock.calls[0][1];
+    expect(upload.artifacts).toEqual([
+      { artifactId: 77, artifactTypeId: 3 },
+      { artifactId: 901, artifactTypeId: 5 },
+    ]);
+    expect(upload.description).toBe(`Continue enabled\n${attachmentSignature("Spira Test Set Reconciler")}`);
+    expect(upload.data).toBe(PNG);
+  });
+
+  it("refuses a file that is not an image, video, PDF or text", async () => {
+    const exe = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03]).toString("base64");
+    await expect(attachDefectFile({ projectId: 24, incidentId: 77, testRunIds: [], file: file({ data: exe, name: "setup.exe" }) })).rejects.toThrow(/not a file Spira can show/);
+    expect(spira.uploadDocument).not.toHaveBeenCalled();
+  });
+
+  it("refuses an incident this app did not log, and runs that are not this app's", async () => {
+    spira.isLoggedIncident.mockResolvedValue(false);
+    await expect(attachDefectFile({ projectId: 24, incidentId: 12, testRunIds: [901], file: file() })).rejects.toThrow(/not logged by this app/);
+    spira.getRecordedRunSteps.mockImplementation(async (_p: number, testRunId: number) => steps(testRunId, { ours: false }));
+    await expect(attachDefectFile({ projectId: 24, incidentId: null, testRunIds: [901], file: file() })).rejects.toThrow(/None of the defect's runs/);
+    expect(spira.uploadDocument).not.toHaveBeenCalled();
+  });
+
+  it("deletes a file it attached, and counts one already gone as deleted", async () => {
+    spira.deleteAttachedDocument.mockResolvedValueOnce(undefined);
+    await expect(deleteDefectFile({ projectId: 24, documentId: 555 })).resolves.toEqual({ ok: true, message: null });
+    spira.deleteAttachedDocument.mockRejectedValueOnce(new SpiraError("not found", 502, 404));
+    await expect(deleteDefectFile({ projectId: 24, documentId: 555 })).resolves.toEqual({ ok: true, message: "Already deleted in Spira." });
+    spira.deleteAttachedDocument.mockRejectedValueOnce(new SpiraError("Attachment 9 was not added by this app, so it was not deleted.", 409));
+    await expect(deleteDefectFile({ projectId: 24, documentId: 9 })).rejects.toThrow(/not added by this app/);
+  });
 });
 
 describe("logDefect", () => {

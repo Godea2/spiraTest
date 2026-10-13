@@ -1,16 +1,37 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, Bug, ChevronDown, ExternalLink, Layers, Plus, Quote, RefreshCw, Search, Sparkles, Square, Undo2, UserRound } from "lucide-react";
+import {
+  ArrowRight,
+  Bug,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  Film,
+  ImageIcon,
+  Layers,
+  Paperclip,
+  Plus,
+  Quote,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Square,
+  Undo2,
+  Upload,
+  UserRound,
+} from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Dialog, EmptyState, Notice, PageHeader, ProgressBar, Section, Spinner, Switch } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
+import { releaseFiles, type PendingFile } from "@/lib/client/attachments";
 import {
   adoptDraftDefects,
   alreadyFailedMessage,
+  attachFiles,
   createDefectTestCase,
   listDefects,
   logIncident,
@@ -18,11 +39,13 @@ import {
   newCaseTargets,
   raiseDefect,
   readAutoNewCase,
+  readEnvironment,
   readIncidentOptions,
   readLeftOutModules,
   readNewCaseStatus,
   searchDefect,
   storeAutoNewCase,
+  storeEnvironment,
   storeLeftOutModules,
   storeNewCaseStatus,
   suggestNewCase,
@@ -39,6 +62,7 @@ import { allDrafts } from "@/lib/client/drafts";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { effectiveColumn, isCompleted } from "@/lib/domain/board";
+import { MAX_ATTACHMENTS, MAX_ENVIRONMENT } from "@/lib/domain/defect-report";
 import { defectTargets, failedForDefect, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity, similarDefects } from "@/lib/domain/defects";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
 import {
@@ -52,6 +76,7 @@ import {
   type NewDefectCase,
 } from "@/lib/domain/types";
 import { COLUMN_STYLE } from "../drafts/[id]/board-parts";
+import { AttachmentPicker } from "./attachment-picker";
 import { StatusChip } from "../drafts/[id]/execute/runner";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -332,6 +357,15 @@ function Finder({
   const [timing, setTiming] = useState<{ startedAt: number; tookMs: number | null } | null>(null);
   const [picks, setPicks] = useState<Record<string, Pick>>({});
   const [title, setTitle] = useState("");
+  const [actual, setActual] = useState("");
+  const [expected, setExpected] = useState("");
+  const [environment, setEnvironment] = useState(readEnvironment);
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const filesRef = useRef(files);
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+  useEffect(() => () => releaseFiles(filesRef.current), []);
   const [options, setOptions] = useState<IncidentOptions | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [fields, setFields] = useState<IncidentFields>({ typeId: null, priorityId: null, severityId: null });
@@ -339,7 +373,7 @@ function Finder({
   const [logInSpira, setLogInSpira] = useState(true);
   const [showUnaffected, setShowUnaffected] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [job, setJob] = useState<{ done: number; total: number; stopping: boolean; creating?: boolean } | null>(null);
+  const [job, setJob] = useState<{ done: number; total: number; stopping: boolean; creating?: boolean; uploading?: { done: number; total: number } } | null>(null);
   const [outcome, setOutcome] = useState<RaiseOutcome | null>(null);
   const [outcomeNotes, setOutcomeNotes] = useState<string[]>([]);
   const [retrying, setRetrying] = useState(false);
@@ -393,6 +427,8 @@ function Finder({
       if (!shown) {
         shown = true;
         setTitle(s.analysis.title);
+        setActual(s.description);
+        setExpected(s.analysis.expected);
         optionsLoad.current = loadOptions(s.analysis.severity);
       }
     };
@@ -481,7 +517,7 @@ function Finder({
         : null;
   const newBlocker = newCase ? (newCaseProblem(newCase) ?? newDuplicate) : null;
   const total = chosen.length + (newCase ? newTargets.length : 0);
-  const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && !job && !searching;
+  const canRaise = total > 0 && needsStep.length === 0 && !newBlocker && !changedSince && title.trim().length >= 3 && actual.trim().length >= 10 && !job && !searching;
   const chosenModules = [...new Set([...chosen.map((c) => c.target.module), ...newTargets.map((t) => t.module)])];
   const moving = chosen.filter((c) => columnOf(c) !== "defects");
   const recheck = [...new Set(moving.filter((c) => !draftsById.get(c.target.draftId) || !isCompleted(draftsById.get(c.target.draftId)!.status)).map((c) => c.target.module))];
@@ -518,19 +554,30 @@ function Finder({
       const out = await raiseDefect(
         {
           picks: [...chosen.map((c) => ({ target: c.target, steps: c.steps, stepLabel: picks[idOf(c)]?.stepLabel ?? null })), ...extra],
-          description: search.description,
+          description: actual.trim(),
           title,
-          expected: search.analysis.expected,
+          expected: expected.trim(),
+          environment: environment.trim(),
           passBefore,
           logIncident: logInSpira,
           fields,
           created,
+          files,
         },
         tester,
-        { onProgress: (done, all) => setJob((j) => (j ? { ...j, done, total: all, creating: false } : j)), keepGoing: () => !stopRef.current },
+        {
+          onProgress: (done, all) => setJob((j) => (j ? { ...j, done, total: all, creating: false } : j)),
+          keepGoing: () => !stopRef.current,
+          onFiles: (done, all) => setJob((j) => (j ? { ...j, uploading: { done, total: all } } : j)),
+        },
       );
+      storeEnvironment(environment);
       setOutcome(out);
       setOutcomeNotes(notes);
+      if (out.files) {
+        releaseFiles(files);
+        setFiles([]);
+      }
       if (out.record) {
         const done = new Set(out.record.cases.map((c) => `${c.draftId}|${c.testSetId}:${c.testSetTestCaseId}`));
         setPicks((prev) => Object.fromEntries(Object.entries(prev).map(([k, p]) => [k, done.has(k) ? { ...p, on: false } : p])));
@@ -802,10 +849,46 @@ function Finder({
 
             {(search.cases.length > unaffected.length || newCase) && (
               <div className="flex flex-col gap-4 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.03]">
+                <div>
+                  <h3 className="text-sm font-semibold">Bug report</h3>
+                  <p className="text-xs text-slate-600 dark:text-zinc-400">
+                    Filled in from your description and Gemini&apos;s reading of it; edit anything before it goes to Spira. Steps to reproduce come from the failing case&apos;s own steps.
+                  </p>
+                </div>
                 <label className="flex flex-col gap-1 text-sm">
                   <span className="font-medium">Defect title</span>
                   <input className="input" value={title} maxLength={255} onChange={(e) => setTitle(e.target.value)} />
                 </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="font-medium">What happened</span>
+                    <textarea className="input min-h-24" value={actual} maxLength={MAX_DEFECT_TEXT} onChange={(e) => setActual(e.target.value)} />
+                    <span className="text-xs text-slate-500">Also the actual result on each failing step{actual.trim().length < 10 ? ". At least 10 characters." : "."}</span>
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="font-medium">Expected result</span>
+                    <textarea className="input min-h-24" value={expected} maxLength={MAX_DEFECT_TEXT} placeholder="What should happen instead" onChange={(e) => setExpected(e.target.value)} />
+                  </label>
+                </div>
+                <label className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium">Environment <span className="font-normal text-slate-500">(optional, remembered on this browser)</span></span>
+                  <input
+                    className="input"
+                    value={environment}
+                    maxLength={MAX_ENVIRONMENT}
+                    placeholder="Device, OS and app version, e.g. iPhone 14, iOS 17.5, app 1.0.2 (45)"
+                    onChange={(e) => setEnvironment(e.target.value)}
+                  />
+                </label>
+                <div className="flex flex-col gap-1 text-sm">
+                  <span className="font-medium">Screenshots and recordings</span>
+                  <AttachmentPicker files={files} onChange={setFiles} max={MAX_ATTACHMENTS} disabled={!!job} />
+                  {files.length > 0 && (
+                    <span className="text-xs text-slate-500">
+                      Uploaded to Spira once the cases are failed: attached to each failed run{logInSpira ? ", and to the incident, where screenshots show in the description" : ""}.
+                    </span>
+                  )}
+                </div>
                 {logInSpira && (
                   <div className="grid gap-3 sm:grid-cols-3">
                     <OptionSelect label="Type" list={options?.types} value={fields.typeId} onChange={(typeId) => setFields((f) => ({ ...f, typeId }))} />
@@ -864,7 +947,11 @@ function Finder({
             }
           >
             <ProgressBar value={job.done} max={Math.max(1, job.total)} tone="danger" />
-            {logInSpira && <p className="mt-1.5 text-xs">The defect is logged once the runs are saved.</p>}
+            {job.uploading ? (
+              <p className="mt-1.5 text-xs">Uploading screenshots and files: {Math.min(job.uploading.done + 1, job.uploading.total)} of {job.uploading.total}…</p>
+            ) : (
+              logInSpira && <p className="mt-1.5 text-xs">The defect is logged once the runs are saved{files.length ? " and the files uploaded" : ""}.</p>
+            )}
           </Notice>
         )}
       </div>
@@ -891,7 +978,8 @@ function Finder({
           <p>
             This writes to Spira: {newTargets.length > 0 && <>a new test case, added to {plural(newTargets.length, "test set")}; </>}
             {plural(total, "Failed test run")} in {plural(chosenModules.length, "module")}
-            {logInSpira ? ", and one incident linked to them" : ""}. It can be undone from the defect list below{newTargets.length > 0 ? ", which also deletes the new test case" : ""}.
+            {logInSpira ? ", and one incident linked to them" : ""}
+            {files.length > 0 ? `; ${plural(files.length, "file")} uploaded and attached to ${logInSpira ? "them" : "the runs"}` : ""}. It can be undone from the defect list below{newTargets.length > 0 ? ", which also deletes the new test case" : ""}.
           </p>
           {newCase && newTargets.length > 0 && (
             <div className="rounded-lg border border-violet-200 px-3 py-2 text-sm dark:border-violet-400/20">
@@ -910,7 +998,12 @@ function Finder({
               {recheck.length > 0 && <> Before the live apply of {recheck.join(", ")}, run the membership check again: moving cards asks for a fresh one.</>}
             </p>
           )}
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs whitespace-pre-wrap dark:bg-white/[0.04]">{search?.description}</p>
+          <div className="flex flex-col gap-1 rounded-lg bg-slate-50 px-3 py-2 text-xs dark:bg-white/[0.04]">
+            <p className="whitespace-pre-wrap">{actual.trim()}</p>
+            {expected.trim() && <p className="whitespace-pre-wrap text-slate-600 dark:text-zinc-400">Expected: {expected.trim()}</p>}
+            {environment.trim() && <p className="text-slate-600 dark:text-zinc-400">Environment: {environment.trim()}</p>}
+            {files.length > 0 && <p className="text-slate-600 dark:text-zinc-400">{plural(files.length, "file")} attached: {files.map((f) => f.name).join(", ")}</p>}
+          </div>
           <ul className="max-h-56 overflow-y-auto text-xs">
             {chosenModules.map((name) => (
               <li key={name} className="py-1">
@@ -1216,7 +1309,12 @@ function OutcomeNotice({
   onDismiss: () => void;
 }) {
   const recorded = outcome.record?.cases.length ?? 0;
-  const problems = outcome.failed.length > 0 || outcome.incidentError !== null || (outcome.incident?.unlinked.length ?? 0) > 0;
+  const problems =
+    outcome.failed.length > 0 ||
+    outcome.incidentError !== null ||
+    (outcome.incident?.unlinked.length ?? 0) > 0 ||
+    (outcome.files?.failed.length ?? 0) > 0 ||
+    (outcome.incident?.files?.failed.length ?? 0) > 0;
   const url = outcome.incident ? incidentUrl(outcome.incident.incidentId) : null;
   const recheck = outcome.moved.filter((m) => !m.completed);
   return (
@@ -1244,6 +1342,21 @@ function OutcomeNotice({
           </li>
         )}
         {outcome.incident?.unlinked.map((u) => <li key={u.testRunId}>{u.message}</li>)}
+        {outcome.files && outcome.files.added.length > 0 && (
+          <li>
+            {plural(outcome.files.added.length, "file")} uploaded and attached to the failed runs
+            {outcome.record?.incidentId ? ` and incident ${outcome.record.incidentId}` : ""}.
+          </li>
+        )}
+        {outcome.incident?.files?.failed.map((f) => <li key={`link-${f.documentId}`}>Attachment {f.documentId} is on the runs but not the incident: {f.message}</li>)}
+        {outcome.files && outcome.files.failed.length > 0 && (
+          <li>
+            Not attached; add {outcome.files.failed.length === 1 ? "it" : "them"} again from Defects found below:
+            <ul className="mt-1 list-disc pl-5 text-xs">
+              {outcome.files.failed.map((f) => <li key={f.name}>{f.name}: {f.message}</li>)}
+            </ul>
+          </li>
+        )}
         {outcome.incidentError && outcome.record && (
           <li className="flex flex-wrap items-center gap-2">
             The defect was not logged: {outcome.incidentError}
@@ -1287,6 +1400,9 @@ function DefectLog({
   const [open, setOpen] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const [undoing, setUndoing] = useState<DefectRecord | null>(null);
+  const [adding, setAdding] = useState<DefectRecord | null>(null);
+  const [addFiles, setAddFiles] = useState<PendingFile[]>([]);
+  const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
   const { settings } = useSettings();
   const modulesOf = (r: DefectRecord) => [...new Set([...r.cases.map((c) => c.module), ...(r.created?.memberships.map((m) => m.module) ?? [])])];
   const modules = useMemo(() => [...new Set(records.flatMap(modulesOf))].sort(), [records]);
@@ -1297,11 +1413,38 @@ function DefectLog({
     setWorking(record.id);
     try {
       const out = await logIncident(record.id, { typeId: null, priorityId: null, severityId: null });
-      toast.success(`Logged as incident ${out.incident.incidentId}, linked to ${plural(out.incident.linked.length, "failed run")}`);
+      const withFiles = out.incident.files?.attached.length ? `, with ${plural(out.incident.files.attached.length, "file")}` : "";
+      toast.success(`Logged as incident ${out.incident.incidentId}, linked to ${plural(out.incident.linked.length, "failed run")}${withFiles}`);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
       setWorking(null);
+      onChanged();
+    }
+  }
+
+  function closeAdding() {
+    releaseFiles(addFiles);
+    setAddFiles([]);
+    setAdding(null);
+  }
+
+  async function upload(record: DefectRecord) {
+    setUploading({ done: 0, total: addFiles.length });
+    try {
+      const out = await attachFiles(record.id, addFiles, (done, total) => setUploading({ done, total }));
+      if (out.failed.length === 0) toast.success(`${plural(out.added.length, "file")} attached in Spira`);
+      else toast.warning(`${plural(out.added.length, "file")} attached; ${out.failed.length} not. ${out.failed[0].name}: ${out.failed[0].message}`);
+      // Files that did not go stay in the dialog to try again.
+      const failed = new Set(out.failed.map((f) => f.name));
+      releaseFiles(addFiles.filter((f) => !failed.has(f.name)));
+      const keep = addFiles.filter((f) => failed.has(f.name));
+      setAddFiles(keep);
+      if (keep.length === 0) setAdding(null);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setUploading(null);
       onChanged();
     }
   }
@@ -1357,6 +1500,11 @@ function DefectLog({
                       {d.tester ? ` by ${d.tester}` : ""}
                       {d.created && <Badge tone="brand">New TC{d.created.testCaseId}</Badge>}
                       {inModules.map((m) => <Badge key={m}>{m}</Badge>)}
+                      {(d.attachments?.length ?? 0) > 0 && (
+                        <Badge>
+                          <Paperclip aria-hidden /> {d.attachments!.length}
+                        </Badge>
+                      )}
                     </span>
                   </span>
                 </button>
@@ -1373,6 +1521,11 @@ function DefectLog({
                     Log in Spira
                   </Button>
                 ) : null}
+                {(d.cases.length > 0 || d.incidentId) && (d.attachments?.length ?? 0) < MAX_ATTACHMENTS && (
+                  <Button size="sm" variant="ghost" icon={Paperclip} disabled={!!working} onClick={() => setAdding(d)} title="Attach screenshots or files in Spira">
+                    Add files
+                  </Button>
+                )}
                 <Button size="sm" variant="ghostDanger" icon={Undo2} disabled={!!working} onClick={() => setUndoing(d)}>
                   Undo
                 </Button>
@@ -1380,6 +1533,28 @@ function DefectLog({
               {expanded && (
                 <div className="mt-2 ml-6 flex flex-col gap-2 text-xs">
                   <p className="whitespace-pre-wrap text-slate-600 dark:text-zinc-400">{d.description}</p>
+                  {(d.attachments?.length ?? 0) > 0 && (
+                    <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                      {d.attachments!.map((a) => {
+                        const fileUrl = link(`Attachment/${a.documentId}.aspx`);
+                        const Icon = a.kind === "image" ? ImageIcon : a.kind === "video" ? Film : FileText;
+                        return (
+                          <li key={a.documentId} className="inline-flex items-center gap-1">
+                            <Icon className="size-3.5 text-slate-400" aria-hidden />
+                            {fileUrl ? (
+                              <a href={fileUrl} target="_blank" rel="noreferrer noopener" className="font-medium text-brand-700 hover:underline dark:text-brand-300">
+                                {a.name}
+                              </a>
+                            ) : (
+                              <span className="font-medium">{a.name}</span>
+                            )}
+                            {a.caption && <span className="text-slate-500">{clip(a.caption, 60)}</span>}
+                            {d.incidentId && !a.onIncident && <span className="text-amber-700 dark:text-amber-300">(runs only)</span>}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                   {d.created && (
                     <p className="flex flex-wrap items-center gap-1.5">
                       <Badge tone="brand">Created for this defect</Badge>
@@ -1446,8 +1621,42 @@ function DefectLog({
         {undoing && (
           <p>
             Deletes {undoing.incidentId ? `incident ${undoing.incidentId} and ` : ""}the {plural(undoing.cases.length, "Failed run")} recorded for &ldquo;{undoing.title}&rdquo;, then moves each card back to the column it came from (unless another defect still holds it). Each case then shows its previous result.
-            {undoing.created && <> Test case TC{undoing.created.testCaseId}, created for this defect, is deleted too and its boards are recompared.</>} Only what this app recorded is deleted.
+            {undoing.created && <> Test case TC{undoing.created.testCaseId}, created for this defect, is deleted too and its boards are recompared.</>}
+            {(undoing.attachments?.length ?? 0) > 0 && <> Its {plural(undoing.attachments!.length, "attached file")} {undoing.attachments!.length === 1 ? "is" : "are"} deleted from Spira&apos;s documents as well.</>} Only
+            what this app recorded is deleted.
           </p>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={adding !== null}
+        onClose={() => {
+          if (!uploading) closeAdding();
+        }}
+        title="Attach screenshots or files"
+        wide
+        footer={
+          adding && (
+            <>
+              <Button disabled={!!uploading} onClick={closeAdding}>
+                Cancel
+              </Button>
+              <Button variant="primary" icon={Upload} busy={!!uploading} disabled={addFiles.length === 0} onClick={() => void upload(adding)}>
+                {uploading ? `Uploading ${Math.min(uploading.done + 1, uploading.total)} of ${uploading.total}` : `Upload ${addFiles.length || ""}`.trim()}
+              </Button>
+            </>
+          )
+        }
+      >
+        {adding && (
+          <div className="flex flex-col gap-3">
+            <p>
+              For &ldquo;{adding.title}&rdquo;. Each file is uploaded to Spira and attached to{" "}
+              {adding.incidentId ? `incident ${adding.incidentId} and ` : ""}
+              {plural(adding.cases.length, "failed run")}.{adding.incidentId ? " The incident's description is not changed; the files show on its Attachments tab." : ""}
+            </p>
+            <AttachmentPicker files={addFiles} onChange={setAddFiles} max={MAX_ATTACHMENTS - (adding.attachments?.length ?? 0)} disabled={!!uploading} />
+          </div>
         )}
       </Dialog>
     </Section>
