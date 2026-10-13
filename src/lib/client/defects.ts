@@ -22,11 +22,12 @@ import {
   type DefectTarget,
   type VerifiedCase,
 } from "@/lib/domain/defects";
-import { MAX_ATTACHMENTS, MAX_ENVIRONMENT } from "@/lib/domain/defect-report";
+import { MAX_ATTACHMENTS, MAX_ENVIRONMENT, runFailure, type RunFailure } from "@/lib/domain/defect-report";
 import { recordComparison, recordMoves, recordExecutionUndo } from "@/lib/domain/draft-ops";
 import { executedSteps, RUNNER_NAME, runnableSteps, type RunnableStep } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import type {
+  Card,
   Column,
   CreatedDefectCase,
   DefectAnalysis,
@@ -45,6 +46,7 @@ import type {
   NewDefectCase,
   NewDefectCaseSuggestion,
   Platform,
+  RunDetail,
   TestSetComparison,
   TestSetMapping,
 } from "@/lib/domain/types";
@@ -976,6 +978,132 @@ export async function logIncident(defectId: string, fields: IncidentFields): Pro
   return { record: updated, incident };
 }
 
+/** A failed run's incident, before it is raised: read from the run and its test case in Spira. */
+export interface RunIncidentDraft {
+  steps: RunnableStep[];
+  failure: RunFailure;
+  /** The case's steps up to the failing one. */
+  reproduce: RunnableStep[];
+}
+
+/** The defect raised for a run, if any. */
+export function defectForRun(testRunId: number): DefectRecord | null {
+  return readStore().find((d) => d.cases.some((c) => c.testRunId === testRunId)) ?? null;
+}
+
+/** Reads a failed run and its test case from Spira (read only) to fill in its incident. */
+export async function prepareRunIncident(projectId: number, card: Card, testRunId: number): Promise<RunIncidentDraft> {
+  const [testCase, { runs, errors }] = await Promise.all([
+    readTestCase(projectId, card.testCaseId),
+    api<{ runs: RunDetail[]; errors: Array<{ testRunId: number; message: string }> }>("/api/execution/runs", { method: "POST", body: { projectId, testRunIds: [testRunId] } }),
+  ]);
+  const detail = runs.find((r) => r.testRunId === testRunId);
+  if (!detail) throw new Error(errors[0]?.message ?? `Test run ${testRunId} could not be read from Spira.`);
+  const steps = runnableSteps(testCase.steps);
+  const failure = runFailure(detail, steps);
+  return { steps, failure, reproduce: stepsToReproduce(steps, failure.stepLabel) };
+}
+
+/** Gemini's title and severity for a failed run's defect; null when Gemini cannot answer. */
+export async function suggestRunIncident(draft: Draft, card: Card, failure: RunFailure, steps: RunnableStep[]): Promise<{ title: string; severity: string } | null> {
+  const step = steps.find((s) => s.label === failure.stepLabel);
+  const description = [
+    `Test case "${card.name}" failed${step ? ` at step ${step.label}: ${step.step.description}` : ""}.`,
+    failure.actual && `What happened: ${failure.actual}`,
+    failure.expected && `Expected: ${failure.expected}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, MAX_SCENARIO_TEXT * 4);
+  try {
+    const analysis = await understand(description, [{ module: draft.module, testSets: draft.testSets.map((s) => s.testSetName) }]);
+    return analysis.title.trim() ? { title: analysis.title.trim(), severity: analysis.severity } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Raises a case failed on the execute page as a Spira incident: the run is already recorded, so this
+ * keeps a defect for it (shown under Defects found, with undo deleting only the incident and files),
+ * uploads the files to the run, then logs the incident linked to the run's Failed step.
+ */
+export async function raiseRunIncident(
+  input: {
+    draftId: string;
+    card: Card;
+    testRunId: number;
+    title: string;
+    description: string;
+    expected: string;
+    environment: string;
+    stepLabel: string | null;
+    reproduce: RunnableStep[];
+    fields: IncidentFields;
+    files: PendingFile[];
+  },
+  tester: string,
+  options: { onFiles?: (done: number, total: number) => void } = {},
+): Promise<RaiseOutcome> {
+  const draft = getDraft(input.draftId);
+  const held = defectForRun(input.testRunId);
+  if (held?.incidentId) throw new Error(`This run is already logged as incident ${held.incidentId}.`);
+  const { card } = input;
+  const title = input.title.trim();
+  const description = input.description.trim();
+  const step = input.reproduce.find((s) => s.label === input.stepLabel);
+  const caseRecord: DefectCaseRecord = {
+    draftId: draft.id,
+    module: draft.module,
+    testSetId: card.testSetId,
+    testCaseId: card.testCaseId,
+    testSetTestCaseId: card.testSetTestCaseId,
+    name: card.name,
+    testRunId: input.testRunId,
+    stepLabel: input.stepLabel,
+    from: effectiveColumn(card, draft.decisions),
+  };
+  const report = incidentDescription({
+    runner: RUNNER_NAME,
+    tester,
+    description,
+    expected: input.expected,
+    environment: input.environment,
+    reproduce: input.reproduce,
+    failAt: input.stepLabel,
+    cases: [{ testCaseId: card.testCaseId, name: card.name, module: draft.module, stepLabel: input.stepLabel, stepText: clip(step?.step.description ?? "", 120), testRunId: input.testRunId }],
+  });
+  const record: DefectRecord = held
+    ? { ...held, title, description, report }
+    : { id: crypto.randomUUID(), projectId: draft.projectId, at: new Date().toISOString(), title, description, tester, report, incidentId: null, linkedSteps: 0, cases: [caseRecord], origin: "execution" };
+  saveDefect(record);
+  if (!held) {
+    logActivity({
+      type: "defect.raisedFromRun",
+      message: `Raised defect "${title}" from the failed run ${input.testRunId} of TC${card.testCaseId}.`,
+      draftId: draft.id,
+      module: draft.module,
+      details: { defectId: record.id, testRunId: input.testRunId },
+    });
+  }
+
+  let files: AttachOutcome | null = null;
+  if (input.files.length) {
+    try {
+      files = await attachFiles(record.id, input.files, options.onFiles);
+    } catch (err) {
+      files = { added: [], failed: input.files.map((f) => ({ name: f.name, message: errorMessage(err) })) };
+    }
+  }
+  const latest = readStore().find((d) => d.id === record.id) ?? record;
+  try {
+    const logged = await logIncident(record.id, input.fields);
+    return { record: logged.record, results: [], failed: [], moved: [], incident: logged.incident, incidentError: null, files };
+  } catch (err) {
+    return { record: latest, results: [], failed: [], moved: [], incident: null, incidentError: errorMessage(err), files };
+  }
+}
+
 /**
  * Undoes a defect: deletes its incident and the runs recorded for it (each checked to be this app's),
  * moves each case back to the column it came from unless another defect still holds it, then reads the
@@ -1008,7 +1136,9 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
 
   const deleted = new Set<number>();
   const others = readStore();
-  for (const draftId of new Set(record.cases.map((c) => c.draftId))) {
+  // A defect raised from a run failed on the execute page keeps its run: only the incident and files go.
+  const keepRuns = record.origin === "execution";
+  for (const draftId of keepRuns ? [] : new Set(record.cases.map((c) => c.draftId))) {
     const cases = record.cases.filter((c) => c.draftId === draftId);
     let draft: Draft;
     try {
@@ -1053,7 +1183,7 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
     }
   }
 
-  const remaining = record.cases.filter((c) => !deleted.has(c.testRunId));
+  const remaining = keepRuns ? (incidentId || attachments.length ? record.cases : []) : record.cases.filter((c) => !deleted.has(c.testRunId));
 
   // The test case created for the defect goes last, once none of its runs is left.
   const made = record.created ?? null;
@@ -1099,7 +1229,9 @@ export async function undoDefect(defectId: string, mappings: TestSetMapping[]): 
   const deletedCase = record.created && !created ? ` and test case TC${record.created.testCaseId}` : "";
   logActivity({
     type: errors.length ? "defect.undoneWithErrors" : "defect.undone",
-    message: `Undid defect "${record.title}": ${deleted.size} run(s)${record.incidentId && !incidentId ? `, incident ${record.incidentId}` : ""}${deletedCase} deleted from Spira${errors.length ? `; ${errors.length} could not be deleted` : ""}.`,
+    message: keepRuns
+      ? `Undid defect "${record.title}": ${record.incidentId && !incidentId ? `incident ${record.incidentId}` : "nothing"} deleted from Spira, its failed run kept${errors.length ? `; ${errors.length} could not be deleted` : ""}.`
+      : `Undid defect "${record.title}": ${deleted.size} run(s)${record.incidentId && !incidentId ? `, incident ${record.incidentId}` : ""}${deletedCase} deleted from Spira${errors.length ? `; ${errors.length} could not be deleted` : ""}.`,
     details: { defectId, deleted: [...deleted], errors },
   });
   return { errors };

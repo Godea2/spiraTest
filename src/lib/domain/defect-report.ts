@@ -1,5 +1,5 @@
-import { runSignature } from "./execution";
-import type { AttachmentKind } from "./types";
+import { EXECUTION_STATUS, RUNNER_NAME, runSignature, type RunnableStep } from "./execution";
+import type { AttachmentKind, RunDetail } from "./types";
 
 /** Files one defect can carry. */
 export const MAX_ATTACHMENTS = 10;
@@ -63,6 +63,37 @@ export function attachmentSignature(runner: string): string {
 /** The description a file gets in Spira: its caption, then the signature. */
 export function attachmentDescription(caption: string, runner: string): string {
   return [caption.trim(), attachmentSignature(runner)].filter(Boolean).join("\n");
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const EXECUTED_BY = new RegExp(`\\s*Executed by [^\\n]*${escapeRegExp(runSignature(RUNNER_NAME))}\\s*$`);
+
+/** Where a failed run failed, read back from Spira: the step, what the tester wrote there and what was expected. */
+export interface RunFailure {
+  /** The failing step's label ("3", "2.1"); null when no step is marked Failed or it cannot be matched. */
+  stepLabel: string | null;
+  /** What the tester wrote on the failing step, and their comment, without the app's note. */
+  actual: string;
+  expected: string;
+}
+
+/**
+ * Finds the first Failed step of a run and matches it to the case's steps: by position when Spira laid
+ * out the same steps, otherwise by test step ID.
+ */
+export function runFailure(detail: RunDetail, steps: RunnableStep[]): RunFailure {
+  const at = detail.steps.findIndex((s) => s.statusId === EXECUTION_STATUS.failed);
+  const failed = at >= 0 ? detail.steps[at] : (detail.steps.find((s) => s.actualResult.trim()) ?? null);
+  const step =
+    at < 0
+      ? null
+      : steps.length === detail.steps.length
+        ? steps[at]
+        : (steps.find((s) => failed?.testStepId != null && s.step.testStepId === failed.testStepId) ?? null);
+  const text = (failed?.actualResult ?? "").replace(EXECUTED_BY, "").trim();
+  const comment = /(?:^|\n)Comment: ([\s\S]*)$/.exec(text);
+  const actual = [comment ? text.slice(0, comment.index).trim() : text, comment?.[1].trim() ?? ""].filter(Boolean).join("\n\n");
+  return { stepLabel: step?.label ?? null, actual, expected: step?.step.expectedResult.trim() ?? "" };
 }
 
 export function escapeHtml(text: string): string {

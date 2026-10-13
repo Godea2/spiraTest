@@ -365,6 +365,11 @@ export interface DefectRecord {
   created?: CreatedDefectCase | null;
   /** Screenshots and files uploaded to Spira for the defect, attached to its failed runs and its incident. */
   attachments?: DefectAttachment[];
+  /**
+   * "execution" when raised from a run failed on the execute page: the run was recorded on its own, so
+   * undo deletes only the incident and files and keeps the run. Left out for defects found on the Defects page.
+   */
+  origin?: "execution";
 }
 
 export type AttachmentKind = "image" | "video" | "file";

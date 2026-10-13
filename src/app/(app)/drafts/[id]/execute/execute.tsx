@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Dialog, Notice, PageHeader, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
+import { listDefects, logIncident } from "@/lib/client/defects";
 import { getDraft } from "@/lib/client/drafts";
 import {
   getTester,
@@ -32,7 +33,8 @@ import {
   TEST_SET_STATUS,
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
-import { EXECUTION_STATUSES, type Card, type ExecutionResult, type ExecutionStatus } from "@/lib/domain/types";
+import { EXECUTION_STATUSES, type Card, type DefectRecord, type ExecutionResult, type ExecutionRun, type ExecutionStatus } from "@/lib/domain/types";
+import { IncidentDialog } from "./incident-dialog";
 import { MarkMenu } from "./mark-menu";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
 
@@ -82,6 +84,10 @@ export function Execute({ id }: { id: string }) {
   const [bulk, setBulk] = useState<{ status: ExecutionStatus; comment: string } | null>(null);
   const [job, setJob] = useState<{ status: ExecutionStatus; total: number; done: number; stopping: boolean; checking: boolean } | null>(null);
   const [report, setReport] = useState<BulkReport | null>(null);
+  /** The failed case whose incident is being raised, with its run. */
+  const [raising, setRaising] = useState<{ card: Card; run: ExecutionRun } | null>(null);
+  const [logging, setLogging] = useState<string | null>(null);
+  const [defectsTick, setDefectsTick] = useState(0);
   const stopRef = useRef(false);
   const bulkRunning = job !== null;
   const checkedOnOpen = useRef(false);
@@ -105,6 +111,15 @@ export function Execute({ id }: { id: string }) {
 
   const cards = useMemo(() => (draft ? executionCards(draft) : []), [draft]);
   const counts = useMemo(() => executionCounts(cards, draft?.execution), [cards, draft]);
+  /** Defects raised for runs of this project, by run, so a failed case shows its incident. */
+  const projectId = draft?.projectId ?? null;
+  const defectByRun = useMemo(() => {
+    void defectsTick;
+    const map = new Map<number, DefectRecord>();
+    if (projectId === null) return map;
+    for (const d of listDefects(projectId)) for (const c of d.cases) if (!map.has(c.testRunId)) map.set(c.testRunId, d);
+    return map;
+  }, [projectId, defectsTick]);
 
   const filter: Filter = pickedFilter ?? (counts.notRun > 0 ? "notRun" : "all");
 
@@ -288,6 +303,20 @@ export function Execute({ id }: { id: string }) {
       toast.error(errorMessage(err));
     } finally {
       setSettling(null);
+    }
+  }
+
+  /** Logs again an incident that could not be created when it was raised. */
+  async function logAgain(record: DefectRecord) {
+    setLogging(record.id);
+    try {
+      const out = await logIncident(record.id, { typeId: null, priorityId: null, severityId: null });
+      toast.success(`Logged as incident IN:${out.incident.incidentId}`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setLogging(null);
+      setDefectsTick((t) => t + 1);
     }
   }
 
@@ -626,6 +655,28 @@ export function Execute({ id }: { id: string }) {
                     </a>
                   )}
                   {inProgress && <Badge tone="brand">In progress</Badge>}
+                  {status === "failed" && lastRun?.status === "failed" && (() => {
+                    const raised = defectByRun.get(lastRun.testRunId);
+                    if (raised?.incidentId) {
+                      const url = spira?.siteUrl ? `${spira.siteUrl}/${draft.projectId}/Incident/${raised.incidentId}.aspx` : null;
+                      return url ? (
+                        <a href={url} target="_blank" rel="noreferrer noopener" title={raised.title} className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-red-700 hover:underline dark:text-red-300">
+                          <Bug className="size-3.5" aria-hidden /> IN:{raised.incidentId} <ExternalLink className="size-3" aria-hidden />
+                        </a>
+                      ) : (
+                        <Badge tone="danger" className="shrink-0"><Bug aria-hidden /> IN:{raised.incidentId}</Badge>
+                      );
+                    }
+                    return raised ? (
+                      <Button size="sm" variant="ghostDanger" icon={Bug} busy={logging === raised.id} disabled={!!logging} title="The incident could not be created; log it again" onClick={() => void logAgain(raised)}>
+                        Log incident
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghostDanger" icon={Bug} title="Raise this failure as an incident in Spira" disabled={working || bulkRunning} onClick={() => setRaising({ card, run: lastRun })}>
+                        <span className="hidden sm:inline">Raise incident</span>
+                      </Button>
+                    );
+                  })()}
                   {effectiveColumn(card, draft.decisions) === "defects" && (
                     <Badge tone="danger" className="shrink-0"><Bug aria-hidden /> Defect</Badge>
                   )}
@@ -656,6 +707,21 @@ export function Execute({ id }: { id: string }) {
         onFinish={queue ? finishRun : null}
         onChange={setDraft}
       />
+
+      {raising && (
+        <IncidentDialog
+          key={raising.run.testRunId}
+          draft={draft}
+          card={raising.card}
+          run={raising.run}
+          tester={tester.trim()}
+          onClose={() => setRaising(null)}
+          onDone={() => {
+            setRaising(null);
+            setDefectsTick((t) => t + 1);
+          }}
+        />
+      )}
 
       <Dialog
         open={bulk !== null}

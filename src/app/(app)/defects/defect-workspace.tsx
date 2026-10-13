@@ -77,6 +77,7 @@ import {
 } from "@/lib/domain/types";
 import { COLUMN_STYLE } from "../drafts/[id]/board-parts";
 import { AttachmentPicker } from "./attachment-picker";
+import { OptionSelect } from "./option-select";
 import { StatusChip } from "../drafts/[id]/execute/runner";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -1277,22 +1278,6 @@ function CaseRow({
   );
 }
 
-function OptionSelect({ label, list, value, onChange }: { label: string; list: IncidentOptions["types"] | undefined; value: number | null; onChange: (id: number | null) => void }) {
-  return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className="font-medium">{label}</span>
-      <select className="input" value={value ?? ""} disabled={!list} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
-        <option value="">{list ? "Spira default" : "Loading…"}</option>
-        {(list ?? []).map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 function OutcomeNotice({
   outcome,
   notes,
@@ -1455,6 +1440,7 @@ function DefectLog({
     try {
       const out = await undoDefect(record.id, settings?.mappings ?? []);
       if (out.errors.length) toast.warning(`Partly undone: ${out.errors[0]}${out.errors.length > 1 ? ` (and ${out.errors.length - 1} more)` : ""}`);
+      else if (record.origin === "execution") toast.success(`Undone: "${record.title}"${record.incidentId ? `, incident ${record.incidentId}` : ""} deleted from Spira; the failed run stays`);
       else
         toast.success(
           `Undone: "${record.title}", its ${plural(record.cases.length, "run")}${record.created ? ` and test case TC${record.created.testCaseId}` : ""} deleted from Spira and the cards moved back`,
@@ -1499,6 +1485,7 @@ function DefectLog({
                       {plural(d.cases.length, "case")} failed {formatDateTime(d.at)}
                       {d.tester ? ` by ${d.tester}` : ""}
                       {d.created && <Badge tone="brand">New TC{d.created.testCaseId}</Badge>}
+                      {d.origin === "execution" && <Badge>Raised from a run</Badge>}
                       {inModules.map((m) => <Badge key={m}>{m}</Badge>)}
                       {(d.attachments?.length ?? 0) > 0 && (
                         <Badge>
@@ -1618,7 +1605,14 @@ function DefectLog({
           )
         }
       >
-        {undoing && (
+        {undoing?.origin === "execution" && (
+          <p>
+            Deletes {undoing.incidentId ? `incident ${undoing.incidentId}` : "the defect"}
+            {(undoing.attachments?.length ?? 0) > 0 ? ` and its ${plural(undoing.attachments!.length, "attached file")}` : ""} from Spira. It was raised from a run failed on the execute
+            page, so the {plural(undoing.cases.length, "Failed run")} stay{undoing.cases.length === 1 ? "s" : ""} as recorded. Only what this app recorded is deleted.
+          </p>
+        )}
+        {undoing && undoing.origin !== "execution" && (
           <p>
             Deletes {undoing.incidentId ? `incident ${undoing.incidentId} and ` : ""}the {plural(undoing.cases.length, "Failed run")} recorded for &ldquo;{undoing.title}&rdquo;, then moves each card back to the column it came from (unless another defect still holds it). Each case then shows its previous result.
             {undoing.created && <> Test case TC{undoing.created.testCaseId}, created for this defect, is deleted too and its boards are recompared.</>}
