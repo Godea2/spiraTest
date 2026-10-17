@@ -3,8 +3,8 @@ import { PLATFORMS, type AppSettings, type Platform, type SpiraRelease } from ".
 
 /**
  * The team's project and releases, used in every browser until Settings are changed there.
- * Fresh browsers start on SIT; switch to UAT (or back) with the Testing cycle control in Settings —
- * UAT is resolved from Spira by version 1.0.0.0.0004 so the RL id does not have to be hard-coded.
+ * Fresh browsers start on SIT; switch to UAT (or back) with the Testing cycle control in Settings.
+ * UAT is RL:160 (1.0.0.0.0004 - UAT Cycle 1), also matched by version if the id moves.
  */
 export const TEAM_DEFAULTS = {
   projectId: 24,
@@ -13,7 +13,7 @@ export const TEAM_DEFAULTS = {
   planReleaseId: 156,
 } as const;
 
-/** Named cycles the team flips between. SIT keeps known RL ids; UAT matches Spira by version. */
+/** Named cycles the team flips between. SIT and UAT keep known RL ids; version is the fallback. */
 export const CYCLE_PRESETS = {
   sit: {
     id: "sit" as const,
@@ -30,8 +30,8 @@ export const CYCLE_PRESETS = {
     label: "UAT",
     hint: "UAT - Phase 1 build 1.0.0.0.0004 (folder UAT - Phase 1)",
     projectId: TEAM_DEFAULTS.projectId,
-    releaseId: null as number | null,
-    releaseLabel: "1.0.0.0.0004",
+    releaseId: 160 as number | null,
+    releaseLabel: "1.0.0.0.0004 - UAT Cycle 1",
     planReleaseId: TEAM_DEFAULTS.planReleaseId,
     versionNumber: "1.0.0.0.0004",
   },

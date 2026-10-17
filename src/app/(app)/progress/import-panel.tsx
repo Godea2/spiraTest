@@ -24,21 +24,24 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 const RESULTS: ExecutionStatus[] = ["passed", "failed", "blocked", "caution"];
 
 /**
- * Upload a colleague's progress / issue spreadsheet so runs land in Spira for the existing Reports
- * template — not a parallel report. Columns are detected (Module, Feature, Issue, Status, Retest
- * Result, …), Gemini maps each actionable row to In Scope cases, and you confirm Pass / Fail /
- * Blocked before Spira is updated.
+ * Upload a colleague's issue log or UAT smoke pack so runs land in Spira for the existing Reports
+ * template — not a parallel report. Columns are detected (issue log or SMK / iOS–Android / Overall),
+ * Gemini maps each actionable row to In Scope cases, and you confirm Pass / Fail / Blocked before
+ * Spira is updated. Sheet "Tester" fills the Progress tester name used on Spira runs.
  */
 export function ImportPanel({
   drafts,
   tester,
   aiOn,
   onChanged,
+  onTesterDetected,
 }: {
   drafts: Draft[];
   tester: string;
   aiOn: boolean;
   onChanged: () => void;
+  /** When the sheet names a tester (e.g. Adejumoke Ariyibi), apply it for Spira runs. */
+  onTesterDetected?: (name: string) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [sheet, setSheet] = useState<ImportSheet | null>(null);
@@ -62,6 +65,7 @@ export function ImportPanel({
       const parsed = await parseProgressSheet(file);
       setSheet(parsed);
       setFileName(file.name);
+      if (parsed.testerName?.trim()) onTesterDetected?.(parsed.testerName.trim());
     } catch (err) {
       setParseError(errorMessage(err));
     }
@@ -85,18 +89,18 @@ export function ImportPanel({
   const picks = mapped ? picksFromImport(mapped) : [];
   const actionableRows = mapped?.filter((m) => m.result && m.selected.size > 0) ?? [];
 
-  function setResult(rowNumber: number, result: ExecutionStatus | null) {
-    setMapped((list) => list?.map((m) => (m.row.rowNumber === rowNumber ? { ...m, result, reason: result ? `Record as ${STATUS_LABEL[result]} (edited).` : m.reason } : m)) ?? null);
+  function setResult(rowKey: string, result: ExecutionStatus | null) {
+    setMapped((list) => list?.map((m) => (m.key === rowKey ? { ...m, result, reason: result ? `Record as ${STATUS_LABEL[result]} (edited).` : m.reason } : m)) ?? null);
   }
 
-  function toggleCase(rowNumber: number, key: string) {
+  function toggleCase(rowKey: string, caseKey: string) {
     setMapped(
       (list) =>
         list?.map((m) => {
-          if (m.row.rowNumber !== rowNumber) return m;
+          if (m.key !== rowKey) return m;
           const selected = new Set(m.selected);
-          if (selected.has(key)) selected.delete(key);
-          else selected.add(key);
+          if (selected.has(caseKey)) selected.delete(caseKey);
+          else selected.add(caseKey);
           return { ...m, selected };
         }) ?? null,
     );
@@ -126,7 +130,7 @@ export function ImportPanel({
     <Section
       icon={FileSpreadsheet}
       title="Upload a progress sheet"
-      description="Drop a colleague's Excel or CSV issue / retest log. Columns are detected automatically (Module, Feature, Issue Observed, Status, Retest Result, Platform). Gemini maps each row that has a clear Pass, Fail or Deferred outcome to In Scope cases; you confirm before Spira is updated."
+      description="Drop an issue / retest log or a UAT smoke pack (.xlsx / .csv). Columns are detected automatically — Summary tabs are skipped. Smoke packs use iOS / Android / Overall Status; issue logs use Status / Retest Result. A Tester column sets who is written on Spira runs."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && (
@@ -146,7 +150,7 @@ export function ImportPanel({
         >
           <Upload className="size-6 text-slate-400" aria-hidden />
           <span className="font-medium">Drop a .xlsx or .csv here, or click to choose</span>
-          <span className="text-xs text-slate-500">First sheet is used. Headers can be Module, Feature / Area, Issue Observed, Status, Retest Result, …</span>
+          <span className="text-xs text-slate-500">Best tab is chosen (not Summary). Issue log or ST ID / Smoke Test Case / iOS–Android / Overall Status.</span>
           <input
             ref={input}
             type="file"
@@ -167,7 +171,9 @@ export function ImportPanel({
               <div>
                 <p className="text-sm font-medium">{fileName}</p>
                 <p className="text-xs text-slate-500">
-                  Sheet &quot;{sheet.sheetName}&quot; · {plural(sheet.rows.length, "row")} · {sheet.actionable} with a Pass / Fail / Blocked outcome · {sheet.skipped} skipped for now
+                  Sheet &quot;{sheet.sheetName}&quot; · {sheet.kind === "smoke" ? "smoke pack" : "issue log"} · {plural(sheet.rows.length, "row")} ·{" "}
+                  {sheet.actionable} with a Pass / Fail / Blocked outcome · {sheet.skipped} skipped for now
+                  {sheet.testerName ? ` · tester ${sheet.testerName}` : ""}
                 </p>
                 <p className="mt-1 text-xs text-slate-600 dark:text-zinc-400">
                   Columns used:{" "}
@@ -223,28 +229,34 @@ export function ImportPanel({
             <ul className="flex flex-col gap-3">
               {mapped.map((m) => {
                 const keyOf = (c: (typeof m.matches)[0]) => `${c.target.draftId}|${c.target.card.key}`;
+                const title =
+                  m.row.caseId || m.row.caseName
+                    ? `${m.row.caseId ? `${m.row.caseId} · ` : ""}${clip(m.row.caseName || m.row.feature, 80)}`
+                    : `${m.row.sn ? `#${m.row.sn} · ` : ""}${m.row.module || "No module"}${m.row.feature ? ` · ${clip(m.row.feature, 80)}` : ""}`;
+                const body = m.row.caseName
+                  ? [m.row.module, m.row.feature, m.row.uatRef && `UAT ${m.row.uatRef}`, m.row.testerComment].filter(Boolean).join(" · ")
+                  : m.row.issue || m.row.testerComment || "(no issue text)";
                 return (
-                  <li key={m.row.rowNumber} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
+                  <li key={m.key} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium">
-                          {m.row.sn ? `#${m.row.sn} · ` : ""}
-                          {m.row.module || "No module"}
-                          {m.row.feature ? ` · ${clip(m.row.feature, 80)}` : ""}
-                        </p>
-                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-slate-600 dark:text-zinc-400">{clip(m.row.issue || m.row.testerComment || "(no issue text)", 280)}</p>
+                        <p className="text-sm font-medium">{title}</p>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-slate-600 dark:text-zinc-400">{clip(body, 280)}</p>
                         <p className="mt-1 text-xs text-slate-500">{m.reason}</p>
                         {m.error && <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">{m.error}</p>}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        {m.row.status && <Badge>{m.row.status}</Badge>}
+                        {m.row.iosStatus && <Badge>iOS {m.row.iosStatus}</Badge>}
+                        {m.row.androidStatus && <Badge>Android {m.row.androidStatus}</Badge>}
+                        {m.row.overallStatus && <Badge tone="brand">Overall {m.row.overallStatus}</Badge>}
+                        {m.row.status && !m.row.overallStatus && <Badge>{m.row.status}</Badge>}
                         {m.row.retest && <Badge tone="brand">{clip(m.row.retest, 40)}</Badge>}
                         <select
                           className="input h-8 w-auto text-xs"
-                          aria-label={`Result for row ${m.row.sn || m.row.rowNumber}`}
+                          aria-label={`Result for ${m.key}`}
                           value={m.result ?? ""}
                           disabled={!!job}
-                          onChange={(e) => setResult(m.row.rowNumber, (e.target.value || null) as ExecutionStatus | null)}
+                          onChange={(e) => setResult(m.key, (e.target.value || null) as ExecutionStatus | null)}
                         >
                           <option value="">Skip</option>
                           {RESULTS.map((s) => (
@@ -261,15 +273,15 @@ export function ImportPanel({
                     {m.matches.length > 0 && (
                       <ul className="mt-2 divide-y divide-slate-100 rounded-lg border border-slate-100 dark:divide-white/[0.06] dark:border-white/10">
                         {m.matches.map((c) => {
-                          const key = keyOf(c);
+                          const caseKey = keyOf(c);
                           return (
-                            <li key={key} className="flex items-center gap-2 px-2 py-1.5 text-xs">
+                            <li key={caseKey} className="flex items-center gap-2 px-2 py-1.5 text-xs">
                               <input
                                 type="checkbox"
                                 className="size-4 accent-brand-600"
-                                checked={m.selected.has(key)}
+                                checked={m.selected.has(caseKey)}
                                 disabled={!!job || !m.result}
-                                onChange={() => toggleCase(m.row.rowNumber, key)}
+                                onChange={() => toggleCase(m.key, caseKey)}
                               />
                               <span className="font-mono text-slate-500">TC{c.target.card.testCaseId}</span>
                               <span className="min-w-0 flex-1 truncate">{c.target.card.name}</span>
@@ -299,7 +311,13 @@ export function ImportPanel({
                     ? "Tick cases on rows with a Pass, Fail or Blocked result."
                     : `${plural(picks.length, "run")} from ${plural(actionableRows.length, "sheet row")}${tester ? `, tested by ${tester}` : ""}.`}
                 </p>
-                <Button variant="primary" icon={Check} disabled={picks.length === 0 || !!job || !!mapping} onClick={() => setConfirming(true)}>
+                <Button
+                  variant="primary"
+                  icon={Check}
+                  disabled={picks.length === 0 || !tester.trim() || !!job || !!mapping}
+                  onClick={() => setConfirming(true)}
+                  title={!tester.trim() ? "Set the Tester name above (e.g. Adejumoke Ariyibi)" : undefined}
+                >
                   Record {picks.length || ""} in Spira
                 </Button>
               </div>
@@ -350,7 +368,17 @@ export function ImportPanel({
         }
       >
         <div className="flex flex-col gap-3 text-sm">
-          <p>Writes test runs from the sheet into Spira (Passed, Failed or Blocked as reviewed). Failed cases can then be raised as incidents from Execute or Defects.</p>
+          <p>
+            Writes test runs into Spira (Passed, Failed or Blocked as reviewed)
+            {tester ? (
+              <>
+                , attributed to <span className="font-medium">{tester}</span>
+              </>
+            ) : (
+              <> — set the Tester name above first so Spira shows who ran them</>
+            )}
+            . Failed cases can then be raised as incidents from Execute or Defects.
+          </p>
           <ul className="max-h-56 overflow-y-auto text-xs">
             {RESULTS.filter((s) => picks.some((p) => p.status === s)).map((s) => (
               <li key={s} className="flex items-center gap-2 py-0.5">

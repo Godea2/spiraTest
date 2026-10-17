@@ -276,7 +276,17 @@ export function ProgressWorkspace() {
           {mode === "describe" ? (
             <Finder aiOn={aiOn} aiKnown={!!ai} drafts={scoped} draftsById={draftsById} tester={tester.trim()} siteUrl={spira?.siteUrl ?? null} projectId={projectId} onChanged={refresh} />
           ) : (
-            <ImportPanel drafts={scoped} tester={tester.trim()} aiOn={aiOn} onChanged={refresh} />
+            <ImportPanel
+              drafts={scoped}
+              tester={tester.trim()}
+              aiOn={aiOn}
+              onChanged={refresh}
+              onTesterDetected={(name) => {
+                setTester(name);
+                storeTester(name);
+                toast.success(`Tester set to ${name} for Spira runs`);
+              }}
+            />
           )}
         </>
       )}

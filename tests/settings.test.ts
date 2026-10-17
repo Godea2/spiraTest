@@ -103,31 +103,36 @@ describe("SIT / UAT testing cycles", () => {
   const releases = [
     release(156, "1.0.0.0001", "1.0.0.0001 - Sprint2"),
     release(157, "1.0.0.0002", "1.0.0.0002 - Sprint3"),
-    release(201, "1.0.0.0.0004", "1.0.0.0.0004"),
+    release(160, "1.0.0.0.0004", "1.0.0.0.0004 - UAT Cycle 1"),
   ];
 
-  it("resolves SIT by known RL id and UAT by version number", () => {
+  it("resolves SIT and UAT by known RL id", () => {
     expect(resolveCycleRelease(releases, CYCLE_PRESETS.sit)?.releaseId).toBe(157);
-    expect(resolveCycleRelease(releases, CYCLE_PRESETS.uat)?.releaseId).toBe(201);
+    expect(resolveCycleRelease(releases, CYCLE_PRESETS.uat)?.releaseId).toBe(160);
   });
 
-  it("applies UAT without hard-coding its RL id", () => {
+  it("applies UAT Cycle 1 (RL:160)", () => {
     expect(cycleSettingsPatch(releases, "uat")).toEqual({
       projectId: 24,
-      releaseId: 201,
-      releaseLabel: "1.0.0.0.0004",
+      releaseId: 160,
+      releaseLabel: "1.0.0.0.0004 - UAT Cycle 1",
       planReleaseId: 156,
     });
   });
 
   it("detects the active cycle from the working release", () => {
     expect(detectCycle(157, releases)).toBe("sit");
-    expect(detectCycle(201, releases)).toBe("uat");
+    expect(detectCycle(160, releases)).toBe("uat");
     expect(detectCycle(999, releases)).toBeNull();
   });
 
+  it("falls back to version when the UAT RL id is absent but the build exists", () => {
+    const moved = [release(156, "1.0.0.0001"), release(157, "1.0.0.0002"), release(999, "1.0.0.0.0004", "1.0.0.0.0004")];
+    expect(resolveCycleRelease(moved, CYCLE_PRESETS.uat)?.releaseId).toBe(999);
+  });
+
   it("explains when UAT is missing from Spira", () => {
-    expect(() => cycleSettingsPatch(releases.filter((r) => r.releaseId !== 201), "uat")).toThrow(/1\.0\.0\.0\.0004/);
+    expect(() => cycleSettingsPatch(releases.filter((r) => r.releaseId !== 160), "uat")).toThrow(/1\.0\.0\.0\.0004/);
   });
 });
 
