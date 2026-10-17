@@ -1,3 +1,7 @@
+/**
+ * Parse and interpret colleague progress / issue sheets for Progress → Spira runs.
+ * Stays inside the existing Reports template: this is intake for execution results, not a report format.
+ */
 import { wordingSimilarity } from "./defects";
 import type { ExecutionStatus, Platform } from "./types";
 

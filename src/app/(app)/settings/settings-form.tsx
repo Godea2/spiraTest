@@ -9,7 +9,15 @@ import { api, errorMessage } from "@/lib/client/api";
 import { formatDateTime } from "@/lib/client/format";
 import { saveSettings } from "@/lib/client/settings-store";
 import { INITIAL_SYNC, storeSync } from "@/lib/client/store-sync";
-import { guessMapping, SettingsValidationError, type SettingsUpdate } from "@/lib/domain/settings";
+import {
+  CYCLE_PRESETS,
+  cycleSettingsPatch,
+  detectCycle,
+  guessMapping,
+  SettingsValidationError,
+  type CycleId,
+  type SettingsUpdate,
+} from "@/lib/domain/settings";
 import {
   PLATFORMS,
   type AppSettings,
@@ -202,6 +210,31 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     return e;
   }
 
+  const activeCycle = useMemo(() => {
+    if (!releaseList) {
+      const id = optionalId(form.releaseId);
+      if (id === CYCLE_PRESETS.sit.releaseId) return "sit" as CycleId;
+      return null;
+    }
+    return detectCycle(optionalId(form.releaseId), releaseList);
+  }, [form.releaseId, releaseList]);
+
+  function persist(next: SettingsUpdate, okText: string) {
+    const saved = saveSettings(next);
+    replace(saved);
+    logActivity({
+      type: "settings.updated",
+      message: okText,
+      details: { projectId: saved.projectId, releaseId: saved.releaseId, planReleaseId: saved.planReleaseId, mappings: saved.mappings.length },
+    });
+    const f = toForm(saved);
+    setForm(f);
+    setInitial(JSON.stringify(f));
+    setErrors({});
+    setMessage({ tone: "success", text: okText });
+    return saved;
+  }
+
   async function save() {
     const clientErrors = validate();
     setErrors(clientErrors);
@@ -212,36 +245,62 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
     setSaving(true);
     setMessage(null);
     try {
-      const update: SettingsUpdate = {
-        projectId: optionalId(form.projectId),
-        releaseId: optionalId(form.releaseId),
-        releaseLabel: form.releaseLabel.trim(),
-        planReleaseId: optionalId(form.planReleaseId),
-        mappings: form.mappings.map((m) => ({
-          id: m.id,
-          module: m.module.trim(),
-          testSetId: Number(m.testSetId),
-          testSetName: m.testSetName.trim(),
-          platform: m.platform,
-        })),
-        moduleAliases: Object.fromEntries(
-          Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
-        ),
-      };
-      const saved = saveSettings(update);
-      replace(saved);
-      logActivity({
-        type: "settings.updated",
-        message: "Settings saved.",
-        details: { projectId: saved.projectId, releaseId: saved.releaseId, planReleaseId: saved.planReleaseId, mappings: saved.mappings.length },
-      });
-      const f = toForm(saved);
-      setForm(f);
-      setInitial(JSON.stringify(f));
-      setErrors({});
-      setMessage({ tone: "success", text: "Settings saved." });
+      persist(
+        {
+          projectId: optionalId(form.projectId),
+          releaseId: optionalId(form.releaseId),
+          releaseLabel: form.releaseLabel.trim(),
+          planReleaseId: optionalId(form.planReleaseId),
+          mappings: form.mappings.map((m) => ({
+            id: m.id,
+            module: m.module.trim(),
+            testSetId: Number(m.testSetId),
+            testSetName: m.testSetName.trim(),
+            platform: m.platform,
+          })),
+          moduleAliases: Object.fromEntries(
+            Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
+          ),
+        },
+        "Settings saved.",
+      );
     } catch (err) {
       if (err instanceof SettingsValidationError) setErrors(err.fieldErrors);
+      setMessage({ tone: "danger", text: errorMessage(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function switchCycle(cycleId: CycleId) {
+    if (!releaseList) {
+      setMessage({ tone: "danger", text: "Connect Spira and wait for the release list before switching cycle." });
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      const patch = cycleSettingsPatch(releaseList, cycleId);
+      persist(
+        {
+          projectId: patch.projectId,
+          releaseId: patch.releaseId,
+          releaseLabel: patch.releaseLabel,
+          planReleaseId: patch.planReleaseId,
+          mappings: form.mappings.map((m) => ({
+            id: m.id,
+            module: m.module.trim(),
+            testSetId: Number(m.testSetId),
+            testSetName: m.testSetName.trim(),
+            platform: m.platform,
+          })),
+          moduleAliases: Object.fromEntries(
+            Object.entries(form.moduleAliases).map(([k, v]) => [k.trim(), v.trim()]).filter(([, v]) => v),
+          ),
+        },
+        `Switched to ${CYCLE_PRESETS[cycleId].label} (${patch.releaseLabel}). New Compare work uses this build; existing drafts keep theirs.`,
+      );
+    } catch (err) {
       setMessage({ tone: "danger", text: errorMessage(err) });
     } finally {
       setSaving(false);
@@ -265,8 +324,32 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       <Section
         icon={FolderKanban}
         title="Spira project"
-        description="Set to Project-Simba with Phase 1 in 1.0.0.0002 and the total test plan in 1.0.0.0001 unless changed here. Used for every new comparison and report; existing drafts keep the values they were created with."
+        description="Project-Simba with the build under test and the total test plan. Use Testing cycle to flip SIT ↔ UAT in one click. New comparisons and reports use the saved release; existing drafts keep the values they were created with."
       >
+        <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-zinc-900">Testing cycle</p>
+            <p className="text-xs text-zinc-500">
+              {activeCycle ? CYCLE_PRESETS[activeCycle].hint : "Custom release — pick SIT or UAT, or choose a release below."}
+              {!releaseList && " Connect Spira to resolve UAT by build version."}
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {(Object.keys(CYCLE_PRESETS) as CycleId[]).map((id) => (
+              <Button
+                key={id}
+                size="sm"
+                variant={activeCycle === id ? "primary" : "secondary"}
+                busy={saving}
+                disabled={saving || activeCycle === id || (!releaseList && id === "uat")}
+                onClick={() => void switchCycle(id)}
+                title={CYCLE_PRESETS[id].hint}
+              >
+                {CYCLE_PRESETS[id].label}
+              </Button>
+            ))}
+          </div>
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Project"
@@ -290,11 +373,11 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
             }
           </Field>
           <Field
-            label="Phase 1 release"
+            label="Working release"
             error={errors.releaseId ?? releaseLookup.error}
             hint={
               releaseList
-                ? "The release being tested now. Compare uses it, and the report shows it as Phase 1."
+                ? "The build under test (SIT or UAT). Compare uses it; Reports show it as Phase 1 / this build."
                 : releases.status === "loading"
                   ? "Reading releases from Spira…"
                   : releases.status === "error"

@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { PLATFORMS, type AppSettings, type Platform } from "./types";
+import { PLATFORMS, type AppSettings, type Platform, type SpiraRelease } from "./types";
 
 /**
- * The team's project and releases, used in every browser until Settings are changed there:
- * Project-Simba, Phase 1 in 1.0.0.0002 (Sprint3) and the total test plan in 1.0.0.0001 (Sprint2).
+ * The team's project and releases, used in every browser until Settings are changed there.
+ * Fresh browsers start on SIT; switch to UAT (or back) with the Testing cycle control in Settings —
+ * UAT is resolved from Spira by version 1.0.0.0.0004 so the RL id does not have to be hard-coded.
  */
 export const TEAM_DEFAULTS = {
   projectId: 24,
@@ -12,12 +13,87 @@ export const TEAM_DEFAULTS = {
   planReleaseId: 156,
 } as const;
 
+/** Named cycles the team flips between. SIT keeps known RL ids; UAT matches Spira by version. */
+export const CYCLE_PRESETS = {
+  sit: {
+    id: "sit" as const,
+    label: "SIT",
+    hint: "SIT Cycle / Phase 1 build 1.0.0.0002",
+    projectId: TEAM_DEFAULTS.projectId,
+    releaseId: TEAM_DEFAULTS.releaseId,
+    releaseLabel: TEAM_DEFAULTS.releaseLabel,
+    planReleaseId: TEAM_DEFAULTS.planReleaseId,
+    versionNumber: "1.0.0.0002",
+  },
+  uat: {
+    id: "uat" as const,
+    label: "UAT",
+    hint: "UAT - Phase 1 build 1.0.0.0.0004 (folder UAT - Phase 1)",
+    projectId: TEAM_DEFAULTS.projectId,
+    releaseId: null as number | null,
+    releaseLabel: "1.0.0.0.0004",
+    planReleaseId: TEAM_DEFAULTS.planReleaseId,
+    versionNumber: "1.0.0.0.0004",
+  },
+} as const;
+
+export type CycleId = keyof typeof CYCLE_PRESETS;
+
 export function defaultSettings(): AppSettings {
   return {
     ...TEAM_DEFAULTS,
     mappings: [],
     moduleAliases: {},
     updatedAt: null,
+  };
+}
+
+function versionKey(version: string): string {
+  return version.trim().toLowerCase();
+}
+
+/** Finds the Spira release for a cycle: known RL id first, else exact version number. */
+export function resolveCycleRelease(
+  releases: SpiraRelease[],
+  cycle: (typeof CYCLE_PRESETS)[CycleId],
+): SpiraRelease | null {
+  if (cycle.releaseId !== null) {
+    const byId = releases.find((r) => r.releaseId === cycle.releaseId);
+    if (byId) return byId;
+  }
+  const want = versionKey(cycle.versionNumber);
+  return releases.find((r) => versionKey(r.versionNumber) === want) ?? null;
+}
+
+/** Which cycle the current Settings release matches, if any. */
+export function detectCycle(releaseId: number | null, releases: SpiraRelease[]): CycleId | null {
+  if (releaseId === null) return null;
+  for (const id of Object.keys(CYCLE_PRESETS) as CycleId[]) {
+    const resolved = resolveCycleRelease(releases, CYCLE_PRESETS[id]);
+    if (resolved?.releaseId === releaseId) return id;
+  }
+  const sit = CYCLE_PRESETS.sit;
+  if (releaseId === sit.releaseId) return "sit";
+  return null;
+}
+
+/** Project + releases to apply for a cycle. Throws when UAT (or any version-matched cycle) is missing in Spira. */
+export function cycleSettingsPatch(
+  releases: SpiraRelease[],
+  cycleId: CycleId,
+): Pick<AppSettings, "projectId" | "releaseId" | "releaseLabel" | "planReleaseId"> {
+  const cycle = CYCLE_PRESETS[cycleId];
+  const release = resolveCycleRelease(releases, cycle);
+  if (!release) {
+    throw new Error(
+      `Spira has no release matching ${cycle.label} (${cycle.versionNumber}). Open the release list in Settings or check the build is planned in Project-Simba.`,
+    );
+  }
+  return {
+    projectId: cycle.projectId,
+    releaseId: release.releaseId,
+    releaseLabel: release.label,
+    planReleaseId: cycle.planReleaseId,
   };
 }
 

@@ -63,7 +63,10 @@ export function ProgressWorkspace() {
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [tester, setTester] = useState("");
   const [completedOnly, setCompletedOnly] = useState(true);
+  const [releaseOnly, setReleaseOnly] = useState(true);
   const [mode, setMode] = useState<"describe" | "upload">("describe");
+  const settingsReleaseId = settings?.releaseId ?? null;
+  const settingsReleaseLabel = settings?.releaseLabel?.trim() || (settingsReleaseId !== null ? `RL:${settingsReleaseId}` : "");
 
   const refresh = useCallback(() => {
     try {
@@ -101,7 +104,16 @@ export function ProgressWorkspace() {
   }, [pickedProject, projects, settingsProject]);
 
   const inProject = useMemo(() => (drafts ?? []).filter((d) => d.projectId === projectId && d.testSets.length > 0), [drafts, projectId]);
-  const pool = useMemo(() => (completedOnly ? inProject.filter((d) => isCompleted(d.status)) : inProject), [inProject, completedOnly]);
+  const inRelease = useMemo(() => {
+    if (!releaseOnly || settingsReleaseId === null) return inProject;
+    const matched = inProject.filter((d) => d.releaseId === settingsReleaseId);
+    return matched.length > 0 ? matched : inProject;
+  }, [inProject, releaseOnly, settingsReleaseId]);
+  const pool = useMemo(() => (completedOnly ? inRelease.filter((d) => isCompleted(d.status)) : inRelease), [inRelease, completedOnly]);
+  const releaseMatchCount = useMemo(
+    () => (settingsReleaseId === null ? inProject.length : inProject.filter((d) => d.releaseId === settingsReleaseId).length),
+    [inProject, settingsReleaseId],
+  );
   const scoped = useMemo(() => pool.filter((d) => !excluded.has(d.id)), [pool, excluded]);
   const draftsById = useMemo(() => new Map((drafts ?? []).map((d) => [d.id, d])), [drafts]);
   const caseCount = useMemo(() => new Map(pool.map((d) => [d.id, progressTargets([d]).length])), [pool]);
@@ -123,22 +135,42 @@ export function ProgressWorkspace() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Progress"
-        description="Bring outside testing into Spira: describe what you tested (WhatsApp-style), or upload a colleague's progress / issue spreadsheet. Gemini maps the work to In Scope cases; you confirm Pass, Fail or Blocked before anything is written. Reports then refresh for the weekly write-up."
-        actions={ai && <Badge tone={aiOn ? "brand" : "neutral"}>{aiOn ? <><Sparkles aria-hidden /> {ai.model}</> : "Gemini not configured"}</Badge>}
+        description="Bring outside testing into Spira: describe what you tested (WhatsApp-style), or upload a colleague's progress / issue spreadsheet. Gemini maps the work to In Scope cases; you confirm Pass, Fail or Blocked before anything is written. Reports then refresh on the current template."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {settingsReleaseLabel && <Badge tone="brand">{settingsReleaseLabel}</Badge>}
+            {ai && <Badge tone={aiOn ? "brand" : "neutral"}>{aiOn ? <><Sparkles aria-hidden /> {ai.model}</> : "Gemini not configured"}</Badge>}
+          </div>
+        }
       />
 
       {inProject.length === 0 ? (
         <EmptyState icon={CircleCheckBig} title="Nothing to search yet" action={<ButtonLink href="/" variant="primary">Start a comparison</ButtonLink>}>
-          Compare a module with its Spira test sets first. Once it is completed (or still in review), its In Scope cases can be found and marked Passed here.
+          Set the Testing cycle in Settings (UAT or SIT), then Compare that build&apos;s test sets. Once a module is completed (or still in review), its In Scope cases can be found and marked here.
         </EmptyState>
       ) : (
         <>
+          {settingsReleaseId !== null && releaseMatchCount === 0 && (
+            <Notice tone="warning" title={`No drafts yet for ${settingsReleaseLabel || "this build"}`}>
+              Progress is still listing modules from other builds. Compare the UAT / current-release test sets on{" "}
+              <Link href="/" className="font-medium underline">
+                Compare
+              </Link>
+              , or turn off &quot;This build only&quot; below to use older drafts.
+            </Notice>
+          )}
           <Section
             icon={Layers}
             title="Where to look"
-            description="Completed modules are the usual place to record weekly progress. Turn off Completed only to include drafts still in review."
+            description="Completed modules are the usual place to record weekly progress. Prefer the build chosen in Settings (Testing cycle); turn off filters to include other drafts."
             actions={
               <div className="flex flex-wrap items-center gap-2">
+                {settingsReleaseId !== null && (
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-zinc-400">
+                    <input type="checkbox" className="size-4 accent-brand-600" checked={releaseOnly} onChange={(e) => setReleaseOnly(e.target.checked)} />
+                    This build only
+                  </label>
+                )}
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-zinc-400">
                   <input type="checkbox" className="size-4 accent-brand-600" checked={completedOnly} onChange={(e) => setCompletedOnly(e.target.checked)} />
                   Completed only

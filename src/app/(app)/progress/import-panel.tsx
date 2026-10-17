@@ -24,9 +24,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 const RESULTS: ExecutionStatus[] = ["passed", "failed", "blocked", "caution"];
 
 /**
- * Upload a colleague's progress / issue spreadsheet: columns are detected (Module, Feature, Issue,
- * Status, Retest Result, …), Gemini maps each actionable row to In Scope cases, and you confirm the
- * Pass / Fail / Blocked runs before Spira is updated.
+ * Upload a colleague's progress / issue spreadsheet so runs land in Spira for the existing Reports
+ * template — not a parallel report. Columns are detected (Module, Feature, Issue, Status, Retest
+ * Result, …), Gemini maps each actionable row to In Scope cases, and you confirm Pass / Fail /
+ * Blocked before Spira is updated.
  */
 export function ImportPanel({
   drafts,

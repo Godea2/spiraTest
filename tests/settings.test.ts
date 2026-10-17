@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { loadSettings, saveSettings } from "@/lib/client/settings-store";
 import { writeItem } from "@/lib/client/storage";
-import { guessMapping, TEAM_DEFAULTS, type SettingsUpdate } from "@/lib/domain/settings";
+import {
+  CYCLE_PRESETS,
+  cycleSettingsPatch,
+  detectCycle,
+  guessMapping,
+  resolveCycleRelease,
+  TEAM_DEFAULTS,
+  type SettingsUpdate,
+} from "@/lib/domain/settings";
+import type { SpiraRelease } from "@/lib/domain/types";
 import { createSessionToken, verifySessionToken } from "@/lib/server/session";
 
 const mapping = (testSetId: number, module: string) => ({
@@ -70,11 +79,55 @@ describe("module and platform suggested from a Spira test set name", () => {
     ["Onboarding-IOS", "Onboarding", "iOS"],
     ["Cards - Android", "Cards", "Android"],
     ["Home Screen- iOS", "Home Screen", "iOS"],
+    ["Customer Onboarding & Home Screen- Android", "Customer Onboarding & Home Screen", "Android"],
+    ["Accounts & Transactions- iOS", "Accounts & Transactions", "iOS"],
     ["Payments (Web)", "Payments", "Web"],
     ["Regression pack", "Regression pack", "Other"],
     ["Android", "Android", "Other"],
   ])("%s → %s / %s", (name, module, platform) => {
     expect(guessMapping(name)).toEqual({ module, platform });
+  });
+});
+
+const release = (releaseId: number, versionNumber: string, label = versionNumber): SpiraRelease => ({
+  releaseId,
+  name: label,
+  versionNumber,
+  label,
+  depth: 0,
+  active: true,
+  type: null,
+});
+
+describe("SIT / UAT testing cycles", () => {
+  const releases = [
+    release(156, "1.0.0.0001", "1.0.0.0001 - Sprint2"),
+    release(157, "1.0.0.0002", "1.0.0.0002 - Sprint3"),
+    release(201, "1.0.0.0.0004", "1.0.0.0.0004"),
+  ];
+
+  it("resolves SIT by known RL id and UAT by version number", () => {
+    expect(resolveCycleRelease(releases, CYCLE_PRESETS.sit)?.releaseId).toBe(157);
+    expect(resolveCycleRelease(releases, CYCLE_PRESETS.uat)?.releaseId).toBe(201);
+  });
+
+  it("applies UAT without hard-coding its RL id", () => {
+    expect(cycleSettingsPatch(releases, "uat")).toEqual({
+      projectId: 24,
+      releaseId: 201,
+      releaseLabel: "1.0.0.0.0004",
+      planReleaseId: 156,
+    });
+  });
+
+  it("detects the active cycle from the working release", () => {
+    expect(detectCycle(157, releases)).toBe("sit");
+    expect(detectCycle(201, releases)).toBe("uat");
+    expect(detectCycle(999, releases)).toBeNull();
+  });
+
+  it("explains when UAT is missing from Spira", () => {
+    expect(() => cycleSettingsPatch(releases.filter((r) => r.releaseId !== 201), "uat")).toThrow(/1\.0\.0\.0\.0004/);
   });
 });
 
