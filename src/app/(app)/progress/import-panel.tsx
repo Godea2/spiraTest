@@ -139,7 +139,7 @@ export function ImportPanel({
     <Section
       icon={FileSpreadsheet}
       title="Upload a progress sheet"
-      description="Drop an issue / retest log or a UAT smoke pack (.xlsx / .csv). Columns are detected automatically — Summary tabs are skipped. Smoke packs use iOS / Android / Overall Status; issue logs use Status / Retest Result. A Tester column sets who is written on Spira runs."
+      description="Drop an issue / retest log or a UAT smoke pack (.xlsx / .csv). Columns are detected automatically — Summary tabs are skipped. Gemini maps each row to the right Spira cases in the background; you confirm before anything is written. A Tester column sets who appears on Spira runs."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && (

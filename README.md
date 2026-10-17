@@ -95,7 +95,7 @@ iOS and Android test sets hold the same Spira test cases, so a module run on one
 
 ### Week
 
-**Week** maps this week's Excel straight onto Spira for the build chosen under **Settings → Testing cycle** (UAT or SIT). No Compare workbook: click **Load cases from Spira**, then **Upload** an issue log or smoke pack. Gemini matches rows to cases; the **Tester** name (e.g. Adejumoke Ariyibi) is written on each Spira run. Same four-page **Reports** template afterwards.
+**Week** maps this week's Excel straight onto Spira for the build chosen under **Settings → Testing cycle** (UAT or SIT). No Compare workbook: click **Load cases from Spira**, then **Upload** an issue log or smoke pack. Gemini works in the background to match each row to the right cases (by module, feature, and wording); you review the ticks before anything is written. The **Tester** name (e.g. Adejumoke Ariyibi) goes on each Spira run. Same four-page **Reports** template afterwards.
 
 ### Progress
 

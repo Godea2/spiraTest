@@ -98,7 +98,7 @@ export function WeekWorkspace() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Week"
-        description="Bring this week's Excel results into Spira for the build in Settings — no Compare step. Upload an issue log or smoke pack; we map rows to UAT (or SIT) cases and record Pass / Fail / Blocked."
+        description="Bring this week's Excel results into Spira for the build in Settings — no Compare step. Gemini works in the background to match each row to the right UAT (or SIT) cases; you review, then record Pass / Fail / Blocked."
         actions={releaseLabel && <Badge tone="brand">{releaseLabel}</Badge>}
       />
 
@@ -154,7 +154,7 @@ export function WeekWorkspace() {
             )}
             {!catalog && !loading && !loadError && (
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                Click <strong>Load cases from Spira</strong> once. Then upload the week&apos;s Excel below.
+                Click <strong>Load cases from Spira</strong> once. Then upload the week&apos;s Excel — Gemini maps each issue or smoke case to the matching Spira tests before anything is written.
               </p>
             )}
           </Section>
