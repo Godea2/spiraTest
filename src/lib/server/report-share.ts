@@ -1,20 +1,31 @@
 import "server-only";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { z } from "zod";
 import { defaultReportOptions, reportOptionsSchema, type ReportOptions } from "@/lib/domain/report";
 import { PLATFORMS, type TestSetMapping } from "@/lib/domain/types";
+import { readItems, storeConfigured, writeItems } from "@/lib/server/store";
 
 /**
- * Public report links. The token holds the report's setup, signed by the server and with an expiry, so
- * whoever holds the link can read that one report and nothing else: it cannot be edited into another
- * report, and it opens no part of the app. Changing SESSION_SECRET revokes every link.
+ * Public report links. New links use a short code (`/r/xY7k2m9pQz`) stored in Supabase that points at a
+ * signed token. Older long tokens still work. The signed payload holds the report's setup and expiry so
+ * the link can only open that one report. Changing SESSION_SECRET revokes every signed token.
  */
 
 export const SHARE_DAYS = [7, 30, 90] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TOKEN = 12_000;
 const MAX_JSON = 200_000;
+/** Short public codes: URL-safe, no ambiguous 0/O/1/l. */
+const SHORT_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const SHORT_LEN = 10;
+const SHORT_KEY = (code: string) => `report-share:${code}`;
+
+const storedShareSchema = z.object({
+  v: z.literal(1),
+  token: z.string().min(20).max(MAX_TOKEN),
+  expiresAt: z.string().datetime(),
+});
 
 export const shareMappingSchema = z.object({
   id: z.string().max(100),
@@ -59,6 +70,53 @@ export function createShareToken(input: {
   return { token, expiresAt: new Date(payload.e * 1000).toISOString() };
 }
 
+/** True when the path segment is a short code, not a legacy signed token. */
+export function isShortShareCode(id: string): boolean {
+  return id.length >= 6 && id.length <= 32 && !id.includes(".") && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function shortCode(length = SHORT_LEN): string {
+  const bytes = randomBytes(length);
+  let out = "";
+  for (let i = 0; i < length; i += 1) out += SHORT_ALPHABET[bytes[i]! % SHORT_ALPHABET.length];
+  return out;
+}
+
+async function allocateShareCode(): Promise<string> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const code = shortCode();
+    const existing = await readItems([SHORT_KEY(code)]);
+    const row = existing[0];
+    if (!row || row.deleted || row.value == null) return code;
+  }
+  throw new ShareError("Could not allocate a short link. Try again.");
+}
+
+/**
+ * Creates a public link. Prefers a short `/r/{code}` stored in Supabase; falls back to the long signed
+ * token when shared storage is not configured.
+ */
+export async function createPublicShare(input: {
+  projectId: number;
+  options: ReportOptions;
+  mappings: TestSetMapping[];
+  days: number;
+  now?: number;
+}): Promise<{ path: string; expiresAt: string }> {
+  const { token, expiresAt } = createShareToken(input);
+  if (!storeConfigured()) {
+    return { path: `/r/${token}`, expiresAt };
+  }
+  try {
+    const code = await allocateShareCode();
+    await writeItems([{ key: SHORT_KEY(code), value: { v: 1, token, expiresAt } }]);
+    return { path: `/r/${code}`, expiresAt };
+  } catch (error) {
+    console.error("Short report link could not be stored; using the long token.", error);
+    return { path: `/r/${token}`, expiresAt };
+  }
+}
+
 export type ShareRead =
   | { ok: true; projectId: number; options: ReportOptions; mappings: TestSetMapping[]; expiresAt: string }
   | { ok: false; reason: "invalid" | "expired" };
@@ -88,4 +146,25 @@ export function readShareToken(token: string, now = Date.now()): ShareRead {
     mappings: parsed.m,
     expiresAt: new Date(parsed.e * 1000).toISOString(),
   };
+}
+
+/** Resolves a short code or a legacy long token into the report setup. */
+export async function resolveShare(id: string, now = Date.now()): Promise<ShareRead> {
+  const decoded = decodeURIComponent(id);
+  if (isShortShareCode(decoded)) {
+    if (!storeConfigured()) return { ok: false, reason: "invalid" };
+    try {
+      const items = await readItems([SHORT_KEY(decoded)]);
+      const row = items[0];
+      if (!row || row.deleted || row.value == null) return { ok: false, reason: "invalid" };
+      const stored = storedShareSchema.safeParse(row.value);
+      if (!stored.success) return { ok: false, reason: "invalid" };
+      if (Date.parse(stored.data.expiresAt) <= now) return { ok: false, reason: "expired" };
+      return readShareToken(stored.data.token, now);
+    } catch (error) {
+      console.error("Short report link could not be read", error);
+      return { ok: false, reason: "invalid" };
+    }
+  }
+  return readShareToken(decoded, now);
 }

@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { ReportDocument } from "@/app/(app)/reports/report-document";
 import { reportFileName, type Report } from "@/lib/domain/report";
 import { readLiveReport } from "@/lib/server/report-live";
-import { readShareToken } from "@/lib/server/report-share";
+import { resolveShare } from "@/lib/server/report-share";
 import { SharedReport } from "./shared-report";
 
 export const maxDuration = 120;
@@ -11,7 +11,7 @@ export const maxDuration = 120;
 type Props = { params: Promise<{ token: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const share = readShareToken((await params).token);
+  const share = await resolveShare((await params).token);
   return {
     title: { absolute: share.ok ? share.options.title.trim() || "Test report" : "Report link" },
     referrer: "no-referrer",
@@ -35,7 +35,7 @@ function Message({ icon: Icon, title, children }: { icon: LucideIcon; title: str
 
 /** A report shared by link: no sign-in, read live from Spira on the server, and only this report. */
 export default async function SharedReportPage({ params }: Props) {
-  const share = readShareToken((await params).token);
+  const share = await resolveShare((await params).token);
   if (!share.ok) {
     return share.reason === "expired" ? (
       <Message icon={Clock} title="This report link has expired">
