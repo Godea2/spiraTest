@@ -5,6 +5,7 @@ import {
   CYCLE_PRESETS,
   cycleSettingsPatch,
   detectCycle,
+  findCycleFolder,
   guessMapping,
   resolveCycleRelease,
   TEAM_DEFAULTS,
@@ -133,6 +134,15 @@ describe("SIT / UAT testing cycles", () => {
 
   it("explains when UAT is missing from Spira", () => {
     expect(() => cycleSettingsPatch(releases.filter((r) => r.releaseId !== 160), "uat")).toThrow(/1\.0\.0\.0\.0004/);
+  });
+
+  it("finds the UAT - Phase 1 folder by name", () => {
+    const folders = [
+      { folderId: 3, name: "SIT Cycle 2" },
+      { folderId: 7, name: "UAT - Phase 1" },
+      { folderId: 8, name: "API UAT" },
+    ];
+    expect(findCycleFolder(folders, CYCLE_PRESETS.uat.folderName)).toEqual({ folderId: 7, name: "UAT - Phase 1" });
   });
 });
 

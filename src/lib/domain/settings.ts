@@ -24,6 +24,8 @@ export const CYCLE_PRESETS = {
     releaseLabel: TEAM_DEFAULTS.releaseLabel,
     planReleaseId: TEAM_DEFAULTS.planReleaseId,
     versionNumber: "1.0.0.0002",
+    /** Spira test-set folder name (Week loads this folder so it matches the Spira tree). */
+    folderName: "SIT Cycle 2",
   },
   uat: {
     id: "uat" as const,
@@ -34,10 +36,26 @@ export const CYCLE_PRESETS = {
     releaseLabel: "1.0.0.0.0004 - UAT Cycle 1",
     planReleaseId: TEAM_DEFAULTS.planReleaseId,
     versionNumber: "1.0.0.0.0004",
+    folderName: "UAT - Phase 1",
   },
 } as const;
 
 export type CycleId = keyof typeof CYCLE_PRESETS;
+
+/** Finds the Spira test-set folder for a cycle name (e.g. "UAT - Phase 1"). */
+export function findCycleFolder(
+  folders: Array<{ folderId: number; name: string }>,
+  folderName: string,
+): { folderId: number; name: string } | null {
+  const norm = (name: string) => name.toLowerCase().replace(/\s+/g, " ").trim();
+  const want = norm(folderName);
+  const exact = folders.find((f) => norm(f.name) === want);
+  if (exact) return exact;
+  return folders.find((f) => {
+    const n = norm(f.name);
+    return n.includes(want) || want.includes(n);
+  }) ?? null;
+}
 
 export function defaultSettings(): AppSettings {
   return {

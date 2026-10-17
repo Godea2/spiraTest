@@ -119,7 +119,7 @@ export function WeekWorkspace() {
           <Section
             icon={CalendarDays}
             title="Spira cases for this build"
-            description="Reads the mobile test sets planned for the working release. API sets are left out."
+            description="Reads the Spira folder for this cycle (UAT - Phase 1 when on UAT), same tree you see in Spira. API sets are left out."
             actions={
               <Button icon={RefreshCw} variant="primary" busy={loading} onClick={() => void load()}>
                 {catalog ? "Reload from Spira" : "Load cases from Spira"}
@@ -139,6 +139,12 @@ export function WeekWorkspace() {
             {catalog && !loading && (
               <div className="flex flex-col gap-2">
                 <p className="text-sm text-slate-600 dark:text-zinc-400">
+                  {catalog.folderName ? (
+                    <>
+                      Folder <span className="font-medium">{catalog.folderName}</span>
+                      {" · "}
+                    </>
+                  ) : null}
                   {plural(catalog.caseCount, "case")} in {plural(catalog.modules.length, "module")} · {plural(catalog.testSetCount, "test set")}
                 </p>
                 <ul className="flex flex-wrap gap-2">

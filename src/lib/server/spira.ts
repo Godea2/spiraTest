@@ -950,6 +950,22 @@ export async function listTestSets(projectId: number, releaseId: number | null):
     .sort(byName);
 }
 
+/** Test sets in one Spira folder (and not its children). Optional release filter. Sorted by name. */
+export async function listTestSetsInFolder(
+  projectId: number,
+  folderId: number,
+  releaseId: number | null = null,
+): Promise<SpiraTestSetSummary[]> {
+  return (await readTestSetPages(projectId, releaseId, folderId))
+    .map((t) => ({
+      testSetId: t.TestSetId,
+      name: t.Name?.trim() || `Test set ${t.TestSetId}`,
+      releaseId: t.ReleaseId ?? null,
+      releaseVersion: t.ReleaseVersionNumber?.trim() || null,
+    }))
+    .sort(byName);
+}
+
 /**
  * Spira sends dates as ISO text in UTC without a zone, or as /Date(ms)/. Returns ISO, or null for
  * empty and placeholder (year 1) dates.

@@ -15,6 +15,7 @@ export interface WeekCatalog {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
+  folderName: string | null;
   modules: WeekModule[];
   testSetCount: number;
   caseCount: number;

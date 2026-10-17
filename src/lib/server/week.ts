@@ -1,11 +1,11 @@
 import "server-only";
 import { cardKey } from "@/lib/domain/board";
-import { guessMapping } from "@/lib/domain/settings";
-import type { Card, ExecutionCaseInput, ExecutionResult, TestSetComparison, WorkflowContext } from "@/lib/domain/types";
+import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, type CycleId } from "@/lib/domain/settings";
+import type { Card, ExecutionCaseInput, ExecutionResult, SpiraTestSetSummary, TestSetComparison, WorkflowContext } from "@/lib/domain/types";
 import { inPool, recordExecutions } from "./workflow";
 import { sealComparison } from "./seal";
 import { HttpError } from "./http";
-import { getTestSetCases, listTestSets } from "./spira";
+import { getTestSetCases, listTestSetFolders, listTestSets, listTestSetsInFolder } from "./spira";
 
 export interface WeekModule {
   module: string;
@@ -18,6 +18,8 @@ export interface WeekCatalog {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
+  /** Spira folder used, when Week loaded by folder (e.g. UAT - Phase 1). */
+  folderName: string | null;
   modules: WeekModule[];
   testSetCount: number;
   caseCount: number;
@@ -38,19 +40,50 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
   };
 }
 
+async function listWeekTestSets(
+  projectId: number,
+  releaseId: number,
+  cycleId: CycleId | null,
+): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null }> {
+  if (cycleId) {
+    const folderName = CYCLE_PRESETS[cycleId].folderName;
+    const folders = await listTestSetFolders(projectId);
+    const folder = findCycleFolder(folders, folderName);
+    if (folder) {
+      // Folder first (what you see in Spira). No release_id filter — the UI lists the whole folder.
+      const inFolder = await listTestSetsInFolder(projectId, folder.folderId, null);
+      if (inFolder.length) return { sets: inFolder, folderName: folder.name };
+    }
+  }
+  return { sets: await listTestSets(projectId, releaseId), folderName: null };
+}
+
 /**
- * Reads every test set planned for the working release, groups them by module name, and seals
- * boards with every case In Scope so weekly Excel results can be recorded without Compare.
+ * Reads Spira test sets for the working cycle (UAT - Phase 1 folder when on UAT; else the release),
+ * groups them by module, and seals boards so weekly Excel can be recorded without Compare.
  */
 export async function loadWeekCatalog(input: {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
 }): Promise<WeekCatalog> {
-  const listed = await listTestSets(input.projectId, input.releaseId);
+  // Soft detect from version / known RL ids (no full release list needed on the server).
+  const cycleId: CycleId | null =
+    input.releaseId === CYCLE_PRESETS.uat.releaseId || /1\.0\.0\.0\.0004/.test(input.releaseLabel)
+      ? "uat"
+      : input.releaseId === CYCLE_PRESETS.sit.releaseId || /1\.0\.0\.0002/.test(input.releaseLabel)
+        ? "sit"
+        : detectCycle(input.releaseId, []);
+
+  const { sets: listed, folderName } = await listWeekTestSets(input.projectId, input.releaseId, cycleId);
   const mobile = listed.filter((t) => !/\bapi\b/i.test(t.name));
   if (mobile.length === 0) {
-    throw new HttpError(400, `No mobile test sets are planned for release ${input.releaseLabel || input.releaseId} in Spira.`);
+    throw new HttpError(
+      400,
+      folderName
+        ? `No mobile test sets in Spira folder "${folderName}".`
+        : `No mobile test sets are planned for release ${input.releaseLabel || input.releaseId} in Spira.`,
+    );
   }
 
   const loaded = await inPool(mobile, 4, async (t) => {
@@ -88,6 +121,7 @@ export async function loadWeekCatalog(input: {
     projectId: input.projectId,
     releaseId: input.releaseId,
     releaseLabel: input.releaseLabel,
+    folderName,
     modules,
     testSetCount: mobile.length,
     caseCount: modules.reduce((n, m) => n + m.caseCount, 0),
