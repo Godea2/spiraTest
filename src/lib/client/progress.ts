@@ -11,16 +11,29 @@ import {
   unreadProgress,
   type ProgressTarget,
 } from "@/lib/domain/progress";
+import {
+  findImportHeader,
+  fitsPlatform,
+  matchImportModules,
+  parseImportRows,
+  sheetPlatform,
+  suggestSheetResult,
+  type ImportSheet,
+  type ImportSheetRow,
+} from "@/lib/domain/progress-import";
 import { currentStatus, MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
-import type { DefectCandidate, Draft, ExecutionResult, ProgressAnalysis } from "@/lib/domain/types";
+import { readWorkbook } from "@/lib/domain/workbook";
+import type { DefectCandidate, Draft, ExecutionResult, ExecutionStatus, ProgressAnalysis } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { api, ApiError, errorMessage } from "./api";
 import { getDraft } from "./drafts";
 import { recordResults } from "./execution";
 import { readItem, writeItem } from "./storage";
+import * as XLSX from "xlsx";
 
-export { MAX_PROGRESS_TEXT, progressTargets, type ProgressTarget };
+export { MAX_PROGRESS_TEXT, progressTargets, suggestSheetResult, type ProgressTarget };
+export type { ImportSheet, ImportSheetRow };
 
 const LEFT_OUT_KEY = "progress-left-out";
 
@@ -177,47 +190,55 @@ export async function searchProgress(drafts: Draft[], description: string, onPha
   return { description, analysis, searched, total: entries.length, modules, understood: true, complete: !failedPart, unreadError, cases };
 }
 
+export interface ProgressPick {
+  target: ProgressTarget;
+  status: ExecutionStatus;
+  comment: string;
+}
+
 export interface PassProgressOutcome {
   results: ExecutionResult[];
-  failed: Array<{ target: ProgressTarget; message: string }>;
+  failed: Array<{ target: ProgressTarget; message: string; status?: ExecutionStatus }>;
   recorded: number;
 }
 
 /**
- * Records Passed in Spira for every picked case, across modules, in batches per test set. Cases already
- * Passed stay listed as failed-to-record with a clear message unless force is set. A write: not retried.
+ * Records results in Spira for every pick, across modules, in batches per test set. A case already
+ * showing the same result is skipped unless force is set. A write: not retried.
  */
-export async function passProgress(
-  picks: ProgressTarget[],
+export async function recordProgress(
+  picks: ProgressPick[],
   tester: string,
-  comment: string,
   options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean; force?: boolean } = {},
 ): Promise<PassProgressOutcome> {
   const failed: PassProgressOutcome["failed"] = [];
   const results: ExecutionResult[] = [];
-  const ready = picks.filter((target) => {
+  const ready = picks.filter((pick) => {
     try {
-      const draft = getDraft(target.draftId);
-      const status = currentStatus(target.card, draft.execution);
-      if (status === "passed" && !options.force) {
-        failed.push({ target, message: "Already Passed in Spira; leave it, or tick Force to record a newer Passed run." });
+      const draft = getDraft(pick.target.draftId);
+      const status = currentStatus(pick.target.card, draft.execution);
+      if (status === pick.status && !options.force) {
+        failed.push({
+          target: pick.target,
+          status: pick.status,
+          message: `Already ${pick.status === "passed" ? "Passed" : pick.status === "failed" ? "Failed" : pick.status} in Spira; leave it, or tick Force to record a newer run.`,
+        });
         return false;
       }
       return true;
     } catch (err) {
-      failed.push({ target, message: errorMessage(err) });
+      failed.push({ target: pick.target, status: pick.status, message: errorMessage(err) });
       return false;
     }
   });
-  const byDraft = new Map<string, ProgressTarget[]>();
-  for (const p of ready) byDraft.set(p.draftId, [...(byDraft.get(p.draftId) ?? []), p]);
+  const byDraft = new Map<string, ProgressPick[]>();
+  for (const p of ready) byDraft.set(p.target.draftId, [...(byDraft.get(p.target.draftId) ?? []), p]);
   let done = 0;
-  const note = comment.trim();
 
   for (const [draftId, group] of byDraft) {
     if (options.keepGoing && !options.keepGoing()) break;
-    const bySet = new Map<number, ProgressTarget[]>();
-    for (const p of group) bySet.set(p.card.testSetId, [...(bySet.get(p.card.testSetId) ?? []), p]);
+    const bySet = new Map<number, ProgressPick[]>();
+    for (const p of group) bySet.set(p.target.card.testSetId, [...(bySet.get(p.target.card.testSetId) ?? []), p]);
     for (const [testSetId, setPicks] of bySet) {
       if (options.keepGoing && !options.keepGoing()) break;
       const before = done;
@@ -226,10 +247,10 @@ export async function passProgress(
           draftId,
           testSetId,
           setPicks.map((p) => ({
-            testCaseId: p.card.testCaseId,
-            testSetTestCaseId: p.card.testSetTestCaseId,
-            status: "passed" as const,
-            comment: note,
+            testCaseId: p.target.card.testCaseId,
+            testSetTestCaseId: p.target.card.testSetTestCaseId,
+            status: p.status,
+            comment: p.comment.trim(),
             steps: [],
           })),
           tester,
@@ -237,31 +258,161 @@ export async function passProgress(
         );
         results.push(...out.results);
         for (const r of out.results) {
-          const p = setPicks.find((x) => x.card.testSetTestCaseId === r.testSetTestCaseId);
+          const p = setPicks.find((x) => x.target.card.testSetTestCaseId === r.testSetTestCaseId);
           if (!p) continue;
-          if (r.result !== "recorded") failed.push({ target: p, message: r.message ?? r.result });
+          if (r.result !== "recorded") failed.push({ target: p.target, status: p.status, message: r.message ?? r.result });
         }
       } catch (err) {
-        for (const p of setPicks) failed.push({ target: p, message: errorMessage(err) });
+        for (const p of setPicks) failed.push({ target: p.target, status: p.status, message: errorMessage(err) });
       }
       done = before + setPicks.length;
       options.onProgress?.(done, ready.length);
     }
   }
   for (const p of ready) {
-    if (!results.some((r) => r.testSetTestCaseId === p.card.testSetTestCaseId && r.testSetId === p.card.testSetId) && !failed.some((f) => f.target === p)) {
-      failed.push({ target: p, message: "Stopped before it was recorded." });
+    if (
+      !results.some((r) => r.testSetTestCaseId === p.target.card.testSetTestCaseId && r.testSetId === p.target.card.testSetId) &&
+      !failed.some((f) => f.target === p.target)
+    ) {
+      failed.push({ target: p.target, status: p.status, message: "Stopped before it was recorded." });
     }
   }
   const recorded = results.filter((r) => r.result === "recorded").length;
   if (recorded > 0) {
-    const modules = [...new Set(ready.map((p) => p.module))];
+    const modules = [...new Set(ready.map((p) => p.target.module))];
+    const byStatus = new Map<string, number>();
+    for (const r of results) if (r.result === "recorded") byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
+    const summary = [...byStatus].map(([s, n]) => `${n} ${s}`).join(", ");
     logActivity({
-      type: "progress.passed",
-      message: `Recorded ${recorded} Passed run(s) in ${modules.join(", ")}${note ? ` (${clip(note, 80)})` : ""}.`,
+      type: "progress.recorded",
+      message: `Recorded ${recorded} run(s) from progress (${summary}) in ${modules.join(", ")}.`,
       module: modules.length === 1 ? modules[0] : null,
-      details: { recorded, failed: failed.length, comment: note, batch: MAX_EXECUTION_BATCH },
+      details: { recorded, failed: failed.length, byStatus: Object.fromEntries(byStatus), batch: MAX_EXECUTION_BATCH },
     });
   }
   return { results, failed, recorded };
+}
+
+/** Records Passed runs (the Describe flow). */
+export async function passProgress(
+  picks: ProgressTarget[],
+  tester: string,
+  comment: string,
+  options: { onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean; force?: boolean } = {},
+): Promise<PassProgressOutcome> {
+  return recordProgress(
+    picks.map((target) => ({ target, status: "passed", comment })),
+    tester,
+    options,
+  );
+}
+
+/** Reads a colleague's .xlsx / .xls / .csv progress sheet and finds Module / Issue / Status / Retest columns. */
+export async function parseProgressSheet(file: File): Promise<ImportSheet> {
+  if (!/\.(xlsx|xlsm|xls|csv)$/i.test(file.name)) throw new Error("Choose an Excel workbook or CSV (.xlsx, .xlsm, .xls or .csv).");
+  const workbook = /\.csv$/i.test(file.name) ? XLSX.read(await file.text(), { type: "string", raw: true }) : readWorkbook(await file.arrayBuffer());
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error("This file has no sheets.");
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, blankrows: true, raw: true });
+  const map = findImportHeader(matrix);
+  if (!map) {
+    throw new Error(
+      'Could not find a header row with Module (or Feature) and Issue, Status or Retest Result. Check the first sheet looks like a progress / issue log.',
+    );
+  }
+  const parsed = parseImportRows(matrix, map, sheetName);
+  if (parsed.rows.length === 0) throw new Error("No issue rows were found under that header.");
+  return parsed;
+}
+
+export interface MappedImportRow {
+  row: ImportSheetRow;
+  /** null when the sheet has nothing to write for this row yet (still Open, closed without retest, …). */
+  result: ExecutionStatus | null;
+  reason: string;
+  matches: ProgressCase[];
+  /** Case keys ticked for recording. */
+  selected: Set<string>;
+  error: string | null;
+}
+
+export type ImportMapPhase = { done: number; total: number; label: string };
+
+/**
+ * For each actionable sheet row, asks Gemini for the related In Scope cases in the matching modules
+ * (and platform). Rows with no result yet are kept for review but not matched. Read-only.
+ */
+export async function mapProgressSheet(
+  sheet: ImportSheet,
+  drafts: Draft[],
+  onPhase?: (phase: ImportMapPhase) => void,
+): Promise<MappedImportRow[]> {
+  const modules = [...new Set(drafts.map((d) => d.module))];
+  const allTargets = progressTargets(drafts);
+  const actionable = sheet.rows.filter((row) => suggestSheetResult(row.status, row.retest, row.testerComment));
+  const out: MappedImportRow[] = [];
+  let done = 0;
+
+  for (const row of sheet.rows) {
+    const result = suggestSheetResult(row.status, row.retest, row.testerComment);
+    const platform = sheetPlatform(row.platform);
+    const moduleNames = matchImportModules(row.module, modules);
+    const scopedDrafts = drafts.filter((d) => moduleNames.includes(d.module));
+    const reason = !result
+      ? row.status.trim()
+        ? `Sheet status "${row.status}"${row.retest ? ` / retest "${clip(row.retest, 40)}"` : ""} — nothing to write in Spira yet.`
+        : "No Status or Retest Result that maps to Passed, Failed or Blocked."
+      : `Record as ${result === "passed" ? "Passed" : result === "failed" ? "Failed" : "Blocked"} from ${row.retest.trim() ? "Retest Result" : "Status"}.`;
+
+    if (!result) {
+      out.push({ row, result, reason, matches: [], selected: new Set(), error: null });
+      continue;
+    }
+    if (scopedDrafts.length === 0 || allTargets.length === 0) {
+      out.push({ row, result, reason, matches: [], selected: new Set(), error: "No In Scope cases in the modules this row names." });
+      continue;
+    }
+
+    onPhase?.({ done, total: actionable.length, label: clip(row.feature || row.issue, 60) });
+    try {
+      // Prefer cases in the row's module and platform; searchProgress still understands the feature.
+      const filtered = scopedDrafts.map((d) => ({
+        ...d,
+        testSets: d.testSets.filter((s) => fitsPlatform(s.testSetName, platform)),
+      })).filter((d) => d.testSets.length > 0);
+      const searchDrafts = filtered.length ? filtered : scopedDrafts;
+      const search = await searchProgress(searchDrafts, row.query, () => {});
+      const matches = search.cases.filter((c) => fitsPlatform(c.target.testSetName, platform));
+      const selected = new Set(
+        matches.filter((c) => c.candidate.relevance === "high" || c.candidate.relevance === "medium").map((c) => `${c.target.draftId}|${c.target.card.key}`),
+      );
+      out.push({ row, result, reason, matches, selected, error: search.unreadError });
+    } catch (err) {
+      out.push({ row, result, reason, matches: [], selected: new Set(), error: errorMessage(err) });
+    }
+    done += 1;
+    onPhase?.({ done, total: actionable.length, label: clip(row.feature || row.issue, 60) });
+  }
+  return out;
+}
+
+/** Builds the Spira picks from a reviewed import mapping. */
+export function picksFromImport(mapped: MappedImportRow[]): ProgressPick[] {
+  const picks: ProgressPick[] = [];
+  const seen = new Set<string>();
+  for (const m of mapped) {
+    if (!m.result) continue;
+    const comment = clip(
+      [m.row.feature && `[${m.row.feature}]`, m.row.issue, m.row.retest && `Retest: ${m.row.retest}`].filter(Boolean).join("\n"),
+      1_500,
+    );
+    for (const c of m.matches) {
+      const key = `${c.target.draftId}|${c.target.card.key}`;
+      if (!m.selected.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      picks.push({ target: c.target, status: m.result, comment });
+    }
+  }
+  return picks;
 }

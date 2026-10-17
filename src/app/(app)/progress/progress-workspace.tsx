@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { Check, CircleCheckBig, Layers, RefreshCw, Search, Sparkles, Square, UserRound } from "lucide-react";
+import { Check, CircleCheckBig, FileSpreadsheet, Layers, RefreshCw, Search, Sparkles, Square, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import { isCompleted } from "@/lib/domain/board";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
 import type { BlockedConfidence, Draft, ExecutionStatus } from "@/lib/domain/types";
 import { StatusChip } from "../drafts/[id]/execute/runner";
+import { ImportPanel } from "./import-panel";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -62,6 +63,7 @@ export function ProgressWorkspace() {
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [tester, setTester] = useState("");
   const [completedOnly, setCompletedOnly] = useState(true);
+  const [mode, setMode] = useState<"describe" | "upload">("describe");
 
   const refresh = useCallback(() => {
     try {
@@ -121,7 +123,7 @@ export function ProgressWorkspace() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Progress"
-        description="Describe the work you tested. Gemini finds the related In Scope cases across the modules you choose (Completed by default), you tick which to mark Passed, and Spira is updated so Reports and your weekly figures stay current."
+        description="Bring outside testing into Spira: describe what you tested (WhatsApp-style), or upload a colleague's progress / issue spreadsheet. Gemini maps the work to In Scope cases; you confirm Pass, Fail or Blocked before anything is written. Reports then refresh for the weekly write-up."
         actions={ai && <Badge tone={aiOn ? "brand" : "neutral"}>{aiOn ? <><Sparkles aria-hidden /> {ai.model}</> : "Gemini not configured"}</Badge>}
       />
 
@@ -206,14 +208,44 @@ export function ProgressWorkspace() {
             </p>
           </Section>
 
-          <label className="flex min-w-[16rem] max-w-sm flex-col gap-1 text-sm">
-            <span className="flex items-center gap-1.5 font-medium">
-              <UserRound className="size-4 text-slate-400" aria-hidden /> Tester
-            </span>
-            <input className="input" placeholder="Your name, written on each Passed run" value={tester} maxLength={100} onChange={(e) => changeTester(e.target.value)} />
-          </label>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <label className="flex min-w-[16rem] max-w-sm flex-col gap-1 text-sm">
+              <span className="flex items-center gap-1.5 font-medium">
+                <UserRound className="size-4 text-slate-400" aria-hidden /> Tester
+              </span>
+              <input className="input" placeholder="Your name, written on each run" value={tester} maxLength={100} onChange={(e) => changeTester(e.target.value)} />
+            </label>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="How to bring results in">
+              {(
+                [
+                  { id: "describe" as const, label: "Describe", icon: Search },
+                  { id: "upload" as const, label: "Upload sheet", icon: FileSpreadsheet },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  aria-pressed={mode === m.id}
+                  onClick={() => setMode(m.id)}
+                  className={clsx(
+                    "inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition",
+                    mode === m.id
+                      ? "bg-slate-900 text-white ring-slate-900 dark:bg-white dark:text-zinc-900 dark:ring-white"
+                      : "text-slate-600 ring-slate-200 hover:bg-slate-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/[0.04]",
+                  )}
+                >
+                  <m.icon className="size-3.5" aria-hidden />
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-          <Finder aiOn={aiOn} aiKnown={!!ai} drafts={scoped} draftsById={draftsById} tester={tester.trim()} siteUrl={spira?.siteUrl ?? null} projectId={projectId} onChanged={refresh} />
+          {mode === "describe" ? (
+            <Finder aiOn={aiOn} aiKnown={!!ai} drafts={scoped} draftsById={draftsById} tester={tester.trim()} siteUrl={spira?.siteUrl ?? null} projectId={projectId} onChanged={refresh} />
+          ) : (
+            <ImportPanel drafts={scoped} tester={tester.trim()} aiOn={aiOn} onChanged={refresh} />
+          )}
         </>
       )}
     </div>

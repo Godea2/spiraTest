@@ -95,7 +95,12 @@ iOS and Android test sets hold the same Spira test cases, so a module run on one
 
 ### Progress
 
-**Progress** in the menu is the counterpart of Defects for work that passed. Describe what you tested this week (feature, journey, platform); Gemini works out which feature that is and picks the related In Scope cases across the modules you choose (Completed by default; drafts still in review can be included). Cases still Not Run are ticked when Gemini is at least medium sure; cases that already have a result are listed separately so you can re-pass Failed or Blocked after a fix, and Already Passed stays unticked unless you turn on Force. After a confirmation, each ticked case gets a Passed run in Spira (every step Passed, with a short "Progress: …" comment), in batches with a progress bar and **Stop**, the same recording path as Execute. Searching changes nothing; only confirming Passed writes. Regenerating **Reports** then shows the updated pass rates and execution figures for the weekly write-up. Only the description and case names are sent to Google, with storage turned off.
+**Progress** in the menu brings outside testing into Spira so weekly Reports stay current. Two ways in (same module picker, Completed by default):
+
+1. **Describe** — paste what you tested (WhatsApp-style). Gemini works out the feature and picks related In Scope cases; tick which to mark **Passed**, confirm, and Spira gets Passed runs (batches, Stop). Already Passed stays unticked unless Force is on.
+2. **Upload sheet** — drop a colleague's Excel or CSV progress / issue log. Columns are detected by meaning, not a fixed template (Module, Feature / Area, Issue Observed, Status, Retest Result, Platform / Device, Tester's Comment, …). Each row with a clear outcome is mapped: **Retest Result** wins (Pass / Fail / Pass (Data)), else Status (**Deferred** → Blocked, **Closed** with a successful retest note → Passed, **Open** without Fail → skipped until retested). Gemini matches each actionable row to In Scope cases in the matching module and platform; you review results and ticks, then record Passed, Failed or Blocked runs in Spira. Failed runs can then be raised as incidents from Execute or Defects.
+
+Searching and matching change nothing; only confirming writes. Regenerating **Reports** shows the updated figures. Only descriptions / sheet text and case names go to Google, with storage turned off.
 
 ### Defects
 
