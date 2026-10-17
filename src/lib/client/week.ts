@@ -103,21 +103,63 @@ export async function recordWeekPicks(
     }
   }
 
+  // One small request per batch — a single POST with the full catalog + 374 runs times out on Vercel
+  // and never moves the progress bar off "0 of 374".
+  const results: ExecutionResult[] = [];
+  const failed: Array<{ testCaseId: number; message: string }> = [];
+  let done = 0;
   options.onProgress?.(0, picks.length);
-  if (options.keepGoing && !options.keepGoing()) {
-    return { results: [], recorded: 0, failed: picks.map((p) => ({ testCaseId: p.target.card.testCaseId, message: "Stopped before it was recorded." })) };
+
+  for (const batch of batches) {
+    if (options.keepGoing && !options.keepGoing()) {
+      for (const c of batch.cases) failed.push({ testCaseId: c.testCaseId, message: "Stopped before it was recorded." });
+      done += batch.cases.length;
+      options.onProgress?.(done, picks.length);
+      continue;
+    }
+
+    const mod = catalog.modules.find((m) => m.module === batch.module);
+    if (!mod) {
+      for (const c of batch.cases) failed.push({ testCaseId: c.testCaseId, message: `Module "${batch.module}" is not in the loaded week catalog.` });
+      done += batch.cases.length;
+      options.onProgress?.(done, picks.length);
+      continue;
+    }
+
+    const slim: WeekCatalog = {
+      ...catalog,
+      modules: [mod],
+      testSetCount: mod.testSets.length,
+      caseCount: mod.caseCount,
+    };
+
+    try {
+      const out = await api<{ results: ExecutionResult[] }>("/api/week/record", {
+        method: "POST",
+        body: { catalog: slim, tester, batches: [batch] },
+      });
+      for (const r of out.results) {
+        results.push(r);
+        if (r.result !== "recorded") failed.push({ testCaseId: r.testCaseId, message: r.message ?? r.result });
+      }
+      // Cases the server omitted (should not happen) count as failed so progress stays honest.
+      for (const c of batch.cases) {
+        if (!out.results.some((r) => r.testSetTestCaseId === c.testSetTestCaseId && r.testSetId === batch.testSetId)) {
+          failed.push({ testCaseId: c.testCaseId, message: "No result returned from Spira for this case." });
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Recording failed.";
+      for (const c of batch.cases) failed.push({ testCaseId: c.testCaseId, message });
+    }
+
+    done += batch.cases.length;
+    options.onProgress?.(done, picks.length);
   }
 
-  try {
-    const out = await api<{ results: ExecutionResult[] }>("/api/week/record", {
-      method: "POST",
-      body: { catalog, tester, batches },
-    });
-    options.onProgress?.(picks.length, picks.length);
-    const failed = out.results.filter((r) => r.result !== "recorded").map((r) => ({ testCaseId: r.testCaseId, message: r.message ?? r.result }));
-    return { results: out.results, recorded: out.results.filter((r) => r.result === "recorded").length, failed };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Recording failed.";
-    return { results: [], recorded: 0, failed: picks.map((p) => ({ testCaseId: p.target.card.testCaseId, message })) };
-  }
+  return {
+    results,
+    recorded: results.filter((r) => r.result === "recorded").length,
+    failed,
+  };
 }

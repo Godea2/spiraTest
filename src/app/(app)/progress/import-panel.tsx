@@ -126,6 +126,13 @@ export function ImportPanel({
         keepGoing: () => !stopRef.current,
       });
       setOutcome(out);
+      if (out.recorded === 0) {
+        toast.error(out.failed[0]?.message ?? "Nothing was recorded in Spira.");
+      } else if (out.failed.length) {
+        toast.success(`Recorded ${out.recorded}; ${out.failed.length} did not write`);
+      } else {
+        toast.success(`Recorded ${out.recorded} run(s) in Spira`);
+      }
       onChanged();
     } catch (err) {
       toast.error(errorMessage(err));
