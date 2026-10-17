@@ -620,12 +620,15 @@ export async function understandProgress(description: string, modules: DefectMod
 }
 
 const NOTES_PARSE_INSTRUCTION = `You are a senior QA test analyst. Testers paste informal status notes (often from WhatsApp or chat):
-bullet lists of what works, and a "What's left" (or similar) section for unfinished work. Module headings like
-"Cards", "Account", "Transfers" may appear.
+bullet lists of what works, bugs that block login, dummy/placeholder data, and a "What's left" (or similar)
+section for unfinished work. Module headings like "Cards", "Account", "Profile", "Onboarding" may appear.
 
 Split the notes into discrete testable bullets. For each bullet:
-- bucket "done": the note says the behaviour works / was verified / is successful.
-- bucket "left": under "what's left", "pending", "not yet", or clearly unfinished work.
+- bucket "done": the note says the behaviour works / was verified / passed for this build
+  (including "all features in this build passed except … not in build" — treat the passed part as done;
+  do not invent separate bullets for features that are explicitly not in the build).
+- bucket "left": under "what's left", "pending", "not yet", unfinished work, OR a clear failure / defect /
+  broken behaviour (cannot log in after reset, still shows dummy data, BVN not validated, etc.).
 Ignore greetings, phone numbers, and meta lines that are not product behaviour.
 moduleHint: best-matching app module name from the list provided (e.g. "Cards", "Accounts & Transactions",
 "Customer Onboarding & Home Screen", "Profile & Notifications"). Use "" when unclear.

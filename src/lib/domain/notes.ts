@@ -31,6 +31,19 @@ export interface NotesRawItem {
   platform: "iOS" | "Android" | "both" | "unknown" | "";
 }
 
+export interface NotesMatchPick extends ImportMatchPick {
+  /** Spira display name on the card, e.g. "Passed", "Failed", "Not Run". */
+  executionStatus?: string;
+}
+
+/**
+ * Cases already Passed or Failed in Spira are left alone — Notes never overwrites them.
+ */
+export function isSettledNotesStatus(executionStatus: string | null | undefined): boolean {
+  const s = (executionStatus ?? "").trim().toLowerCase();
+  return s === "passed" || s === "failed";
+}
+
 /**
  * Normalises Gemini output: trims, drops empties, caps count, assigns stable ids.
  * Platform "unknown"/empty → null.
@@ -60,9 +73,10 @@ export function shapeNotesParse(title: string, raw: NotesRawItem[]): NotesParseR
 
 /**
  * Pre-ticks at most one Spira case for a done note (same discipline as smoke).
- * Left items never auto-select for recording.
+ * Left items never auto-select. Already Passed/Failed matches are ignored.
  */
-export function defaultNotesSelection(item: NotesItem, matches: ImportMatchPick[]): Set<string> {
+export function defaultNotesSelection(item: NotesItem, matches: NotesMatchPick[]): Set<string> {
   if (item.bucket !== "done") return new Set();
-  return defaultImportSelection("smoke", { uatRef: "", caseName: item.text }, matches);
+  const open = matches.filter((m) => !isSettledNotesStatus(m.executionStatus));
+  return defaultImportSelection("smoke", { uatRef: "", caseName: item.text }, open);
 }

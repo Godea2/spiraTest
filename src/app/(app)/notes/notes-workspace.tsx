@@ -18,7 +18,7 @@ import {
 } from "@/lib/client/notes";
 import type { PassProgressOutcome } from "@/lib/client/progress";
 import { loadWeekCatalog, recordWeekPicks, weekCatalogAsDrafts, type WeekCatalog } from "@/lib/client/week";
-import { MAX_NOTES_TEXT } from "@/lib/domain/notes";
+import { isSettledNotesStatus, MAX_NOTES_TEXT } from "@/lib/domain/notes";
 import type { BlockedConfidence } from "@/lib/domain/types";
 import { StatusChip } from "../drafts/[id]/execute/runner";
 
@@ -140,6 +140,8 @@ export function NotesWorkspace() {
       (list) =>
         list?.map((m) => {
           if (m.item.id !== itemId) return m;
+          const match = m.matches.find((c) => `${c.target.draftId}|${c.target.card.key}` === caseKey);
+          if (match && isSettledNotesStatus(match.target.card.executionStatus)) return m;
           const selected = new Set(m.selected);
           if (selected.has(caseKey)) selected.delete(caseKey);
           else selected.add(caseKey);
@@ -195,7 +197,7 @@ export function NotesWorkspace() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Notes"
-        description="Paste informal tester updates (WhatsApp-style done / what’s left). Gemini maps each bullet to Spira cases on this build; you review, then Record Passed for done items only."
+        description="Paste informal tester updates (done, what’s left, and known bugs). Gemini maps bullets to Spira cases on this build; Record Passed for done items only. Already Passed or Failed cases are left alone."
         actions={releaseLabel && <Badge tone="brand">{releaseLabel}</Badge>}
       />
 
@@ -265,7 +267,11 @@ export function NotesWorkspace() {
               should be UAT, then Load cases above.
             </Notice>
           ) : (
-            <Section icon={NotebookPen} title="Paste tester notes" description="Cards / Account updates, “What’s left” headings, and freeform bullets all work.">
+            <Section
+              icon={NotebookPen}
+              title="Paste tester notes"
+              description="Build pass summaries, “What’s left”, and bug lines (reset password, dummy data, BVN…) all work. Failures stay visibility-only."
+            >
               {!aiOn && (
                 <Notice tone="warning" title="Gemini is not configured on the server">
                   Parsing and matching need GEMINI_API_KEY.
@@ -319,7 +325,10 @@ export function NotesWorkspace() {
               </p>
 
               {doneMapped.length > 0 && (
-                <Section title="Done — Record as Passed" description="One case pre-ticked per bullet when Gemini is confident. Untick or tick others before Record.">
+                <Section
+                  title="Done — Record as Passed"
+                  description="One case pre-ticked per bullet when Gemini is confident. Already Passed or Failed matches are ignored."
+                >
                   <ul className="flex flex-col gap-4">
                     {doneMapped.map((m) => (
                       <NoteCard key={m.item.id} row={m} onToggle={toggleCase} recordable />
@@ -453,22 +462,29 @@ function NoteCard({
         <ul className="mt-3 flex flex-col gap-1.5">
           {row.matches.map((c) => {
             const key = `${c.target.draftId}|${c.target.card.key}`;
-            const checked = row.selected.has(key);
+            const settled = isSettledNotesStatus(c.target.card.executionStatus);
+            const checked = !settled && row.selected.has(key);
+            const canTick = recordable && !settled;
             return (
               <li key={key}>
-                <label className={`flex items-start gap-2 text-sm ${recordable ? "cursor-pointer" : "opacity-80"}`}>
+                <label className={`flex items-start gap-2 text-sm ${canTick ? "cursor-pointer" : "opacity-70"}`}>
                   <input
                     type="checkbox"
                     className="mt-0.5 size-4 accent-brand-600"
                     checked={checked}
-                    disabled={!recordable}
+                    disabled={!canTick}
                     onChange={() => onToggle(row.item.id, key)}
                   />
                   <span className="min-w-0">
                     <span className="font-mono text-xs text-slate-500">TC{c.target.card.testCaseId}</span> {c.target.card.name}
-                    <span className="ml-2 inline-flex gap-1">
+                    <span className="ml-2 inline-flex flex-wrap gap-1">
                       <Badge tone={RELEVANCE_TONE[c.candidate.relevance]}>{c.candidate.relevance}</Badge>
                       <Badge>{clip(c.target.testSetName, 28)}</Badge>
+                      {settled ? (
+                        <Badge tone="neutral">Already {c.target.card.executionStatus} · ignored</Badge>
+                      ) : (
+                        <Badge tone="neutral">{c.target.card.executionStatus || "Not Run"}</Badge>
+                      )}
                     </span>
                   </span>
                 </label>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultNotesSelection, shapeNotesParse } from "@/lib/domain/notes";
+import { defaultNotesSelection, isSettledNotesStatus, shapeNotesParse } from "@/lib/domain/notes";
 import { picksFromNotes } from "@/lib/client/notes";
 import type { ProgressTarget } from "@/lib/domain/progress";
 import type { MappedNotesItem } from "@/lib/client/notes";
@@ -21,11 +21,20 @@ describe("shapeNotesParse", () => {
   });
 });
 
+describe("isSettledNotesStatus", () => {
+  it("treats Passed and Failed as settled", () => {
+    expect(isSettledNotesStatus("Passed")).toBe(true);
+    expect(isSettledNotesStatus("failed")).toBe(true);
+    expect(isSettledNotesStatus("Not Run")).toBe(false);
+    expect(isSettledNotesStatus("Blocked")).toBe(false);
+  });
+});
+
 describe("defaultNotesSelection", () => {
   const matches = [
-    { key: "a|1", name: "Request virtual card", relevance: "high" as const },
-    { key: "a|2", name: "Block card", relevance: "medium" as const },
-    { key: "a|3", name: "Unrelated photo", relevance: "low" as const },
+    { key: "a|1", name: "Request virtual card", relevance: "high" as const, executionStatus: "Not Run" },
+    { key: "a|2", name: "Block card", relevance: "medium" as const, executionStatus: "Not Run" },
+    { key: "a|3", name: "Unrelated photo", relevance: "low" as const, executionStatus: "Not Run" },
   ];
 
   it("ticks at most one case for done notes", () => {
@@ -43,30 +52,53 @@ describe("defaultNotesSelection", () => {
     );
     expect([...selected]).toEqual([]);
   });
+
+  it("skips already Passed or Failed matches and may pick the next open case", () => {
+    const selected = defaultNotesSelection(
+      { id: "n1", text: "User is able to successfully create virtual cards", bucket: "done", moduleHint: "Cards", platform: "both" },
+      [
+        { key: "a|1", name: "Request virtual card", relevance: "high", executionStatus: "Passed" },
+        { key: "a|2", name: "Create virtual card successfully", relevance: "high", executionStatus: "Not Run" },
+      ],
+    );
+    expect([...selected]).toEqual(["a|2"]);
+  });
+
+  it("selects nothing when every match is already Passed or Failed", () => {
+    const selected = defaultNotesSelection(
+      { id: "n1", text: "Profile features in this build passed", bucket: "done", moduleHint: "Profile", platform: null },
+      [
+        { key: "a|1", name: "Edit profile", relevance: "high", executionStatus: "Passed" },
+        { key: "a|2", name: "View profile", relevance: "medium", executionStatus: "Failed" },
+      ],
+    );
+    expect([...selected]).toEqual([]);
+  });
 });
 
 describe("picksFromNotes", () => {
+  const target = (key: string, id: number, executionStatus = "Not Run"): ProgressTarget => ({
+    draftId: "d1",
+    draftName: "Cards",
+    module: "Cards",
+    completed: true,
+    testSetName: "Cards - iOS",
+    column: "inScope",
+    card: {
+      key,
+      testSetId: 1,
+      testCaseId: id,
+      testSetTestCaseId: id,
+      name: `Case ${id}`,
+      tcId: null,
+      executionStatus,
+      executed: executionStatus !== "Not Run",
+      suggestion: "inScope",
+      reason: "",
+    },
+  });
+
   it("only builds Passed picks from done selected cases", () => {
-    const target = (key: string, id: number): ProgressTarget => ({
-      draftId: "d1",
-      draftName: "Cards",
-      module: "Cards",
-      completed: true,
-      testSetName: "Cards - iOS",
-      column: "inScope",
-      card: {
-        key,
-        testSetId: 1,
-        testCaseId: id,
-        testSetTestCaseId: id,
-        name: `Case ${id}`,
-        tcId: null,
-        executionStatus: "Not Run",
-        executed: false,
-        suggestion: "inScope",
-        reason: "",
-      },
-    });
     const mapped: MappedNotesItem[] = [
       {
         item: { id: "n1", text: "Create virtual cards", bucket: "done", moduleHint: "Cards", platform: "both" },
@@ -88,5 +120,17 @@ describe("picksFromNotes", () => {
     expect(picks).toHaveLength(1);
     expect(picks[0]).toMatchObject({ status: "passed", comment: expect.stringContaining("Create virtual cards") });
     expect(picks[0].target.card.testCaseId).toBe(1);
+  });
+
+  it("drops selected cases that are already Passed or Failed", () => {
+    const mapped: MappedNotesItem[] = [
+      {
+        item: { id: "n1", text: "Onboarding passed", bucket: "done", moduleHint: "Onboarding", platform: null },
+        matches: [{ target: target("1:1", 1, "Passed"), candidate: { key: "1:1", relevance: "high" } }],
+        selected: new Set(["d1|1:1"]),
+        error: null,
+      },
+    ];
+    expect(picksFromNotes(mapped)).toEqual([]);
   });
 });

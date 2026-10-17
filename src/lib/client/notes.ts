@@ -1,4 +1,9 @@
-import { defaultNotesSelection, type NotesItem, type NotesParseResult } from "@/lib/domain/notes";
+import {
+  defaultNotesSelection,
+  isSettledNotesStatus,
+  type NotesItem,
+  type NotesParseResult,
+} from "@/lib/domain/notes";
 import { fitsPlatform, matchImportModules } from "@/lib/domain/progress-import";
 import type { Draft } from "@/lib/domain/types";
 import { api, ApiError, errorMessage } from "./api";
@@ -38,7 +43,7 @@ export function parseNotes(notes: string, modules: string[]): Promise<NotesParse
 
 /**
  * Maps each note bullet to Spira cases. Done items pre-tick at most one case; left items are
- * matched for review only (no auto-select for recording).
+ * matched for review only (no auto-select for recording). Already Passed/Failed cases are skipped.
  */
 export async function mapNotesItems(
   items: NotesItem[],
@@ -80,6 +85,7 @@ export async function mapNotesItems(
           key: `${c.target.draftId}|${c.target.card.key}`,
           name: c.target.card.name,
           relevance: c.candidate.relevance,
+          executionStatus: c.target.card.executionStatus,
         })),
       );
       out.push({ item, matches, selected, error: search.unreadError });
@@ -92,7 +98,7 @@ export async function mapNotesItems(
   return out;
 }
 
-/** Pass picks from done notes only (left items never become writes). */
+/** Pass picks from done notes only. Left items and already Passed/Failed cases never become writes. */
 export function picksFromNotes(mapped: MappedNotesItem[]): ProgressPick[] {
   const picks: ProgressPick[] = [];
   const seen = new Set<string>();
@@ -102,6 +108,7 @@ export function picksFromNotes(mapped: MappedNotesItem[]): ProgressPick[] {
     for (const c of m.matches) {
       const key = `${c.target.draftId}|${c.target.card.key}`;
       if (!m.selected.has(key) || seen.has(key)) continue;
+      if (isSettledNotesStatus(c.target.card.executionStatus)) continue;
       seen.add(key);
       picks.push({ target: c.target, status: "passed", comment });
     }
