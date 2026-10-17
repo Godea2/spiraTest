@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultImportSelection,
   fieldForHeader,
   findImportHeader,
   fitsPlatform,
@@ -185,5 +186,31 @@ describe("module and platform helpers", () => {
     expect(fitsPlatform("Payments- Android", "Android")).toBe(true);
     expect(fitsPlatform("Payments - iOS", "Android")).toBe(false);
     expect(fitsPlatform("Payments - iOS", "both")).toBe(true);
+  });
+});
+
+describe("defaultImportSelection", () => {
+  const matches = [
+    { key: "a|1", name: "Change email - invalid format", relevance: "medium" as const },
+    { key: "a|2", name: "View personal data UAT-PRF-038", relevance: "high" as const },
+    { key: "a|3", name: "Profile menu", relevance: "medium" as const },
+    { key: "a|4", name: "Update profile photo", relevance: "low" as const },
+  ];
+
+  it("ticks high+medium on issue logs", () => {
+    const selected = defaultImportSelection("issues", { uatRef: "", caseName: "" }, matches);
+    expect([...selected].sort()).toEqual(["a|1", "a|2", "a|3"]);
+  });
+
+  it("ticks only the best smoke match (UAT ref wins)", () => {
+    const selected = defaultImportSelection("smoke", { uatRef: "UAT-PRF-038", caseName: "View personal data" }, matches);
+    expect([...selected]).toEqual(["a|2"]);
+  });
+
+  it("does not auto-tick a lone low smoke match", () => {
+    const selected = defaultImportSelection("smoke", { uatRef: "", caseName: "Something obscure" }, [
+      { key: "a|4", name: "Update profile photo", relevance: "low" },
+    ]);
+    expect([...selected]).toEqual([]);
   });
 });

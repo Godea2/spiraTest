@@ -12,6 +12,7 @@ import {
   type ProgressTarget,
 } from "@/lib/domain/progress";
 import {
+  defaultImportSelection,
   findImportHeader,
   fitsPlatform,
   matchImportModules,
@@ -412,8 +413,14 @@ export async function mapProgressSheet(
       const searchDrafts = filtered.length ? filtered : scopedDrafts;
       const search = await searchProgress(searchDrafts, row.query, () => {});
       const matches = search.cases.filter((c) => fitsPlatform(c.target.testSetName, platform));
-      const selected = new Set(
-        matches.filter((c) => c.candidate.relevance === "high" || c.candidate.relevance === "medium").map((c) => `${c.target.draftId}|${c.target.card.key}`),
+      const selected = defaultImportSelection(
+        sheet.kind,
+        row,
+        matches.map((c) => ({
+          key: `${c.target.draftId}|${c.target.card.key}`,
+          name: c.target.card.name,
+          relevance: c.candidate.relevance,
+        })),
       );
       out.push({ key, row, result, reason, matches, selected, error: search.unreadError });
     } catch (err) {

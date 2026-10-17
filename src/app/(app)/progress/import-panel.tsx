@@ -146,7 +146,7 @@ export function ImportPanel({
     <Section
       icon={FileSpreadsheet}
       title="Upload a progress sheet"
-      description="Drop the UAT smoke pack (.xlsx / .csv). Uses Module, Feature / Journey, Smoke Test Case, and iOS / Android status (Overall / Not Run / N/A skipped). Gemini matches in the background; you confirm before Record. A Tester column sets who appears on Spira runs."
+      description="Drop the UAT smoke pack (.xlsx / .csv). Uses Module, Feature / Journey, Smoke Test Case, and iOS / Android status. Each row pre-ticks at most one Spira case (best UAT-ref / name match) so a Fail does not fan out — review, then Record."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && (

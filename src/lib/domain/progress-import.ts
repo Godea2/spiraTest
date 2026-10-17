@@ -336,6 +336,49 @@ export function fitsPlatform(testSetName: string, platform: Platform | "both" | 
   return ios || !android;
 }
 
+/** One Gemini match considered for default ticks on an import row. */
+export interface ImportMatchPick {
+  key: string;
+  name: string;
+  relevance: "high" | "medium" | "low";
+}
+
+/**
+ * Which matches are ticked before the tester reviews. Issue logs keep high+medium.
+ * Smoke packs tick at most one best case (UAT ref / name / high relevance) so a single
+ * Fail does not fan out across a whole module in Spira.
+ */
+export function defaultImportSelection(
+  kind: ImportKind,
+  row: Pick<ImportSheetRow, "uatRef" | "caseName">,
+  matches: ImportMatchPick[],
+): Set<string> {
+  if (kind !== "smoke") {
+    return new Set(matches.filter((m) => m.relevance === "high" || m.relevance === "medium").map((m) => m.key));
+  }
+  if (matches.length === 0) return new Set();
+
+  const uat = norm(row.uatRef).replace(/\s+/g, "");
+  const uatLoose = norm(row.uatRef);
+  const caseName = norm(row.caseName);
+  const scored = matches
+    .map((m) => {
+      const n = norm(m.name);
+      const compact = n.replace(/\s+/g, "");
+      let score = m.relevance === "high" ? 300 : m.relevance === "medium" ? 200 : 50;
+      if (uat && (compact.includes(uat) || n.includes(uatLoose))) score += 500;
+      if (caseName) score += Math.round(wordingSimilarity(caseName, n) * 120);
+      return { key: m.key, score, relevance: m.relevance };
+    })
+    .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+
+  const best = scored[0];
+  // Need a real signal — not a lone low match.
+  if (best.relevance === "low" && best.score < 400) return new Set();
+  if (best.score < 200) return new Set();
+  return new Set([best.key]);
+}
+
 /**
  * Turns a sheet matrix into import rows. `map` must come from findImportHeader. Empty issue/case
  * rows are dropped.
