@@ -13,6 +13,7 @@ import {
   type ImportSheet,
   type MappedImportRow,
   type PassProgressOutcome,
+  type ProgressPick,
 } from "@/lib/client/progress";
 import { STATUS_LABEL } from "@/lib/domain/execution";
 import type { Draft, ExecutionStatus } from "@/lib/domain/types";
@@ -35,6 +36,7 @@ export function ImportPanel({
   aiOn,
   onChanged,
   onTesterDetected,
+  recordPicks,
 }: {
   drafts: Draft[];
   tester: string;
@@ -42,6 +44,12 @@ export function ImportPanel({
   onChanged: () => void;
   /** When the sheet names a tester (e.g. Adejumoke Ariyibi), apply it for Spira runs. */
   onTesterDetected?: (name: string) => void;
+  /** Override Spira write (Week menu records without Compare drafts). */
+  recordPicks?: (
+    picks: ProgressPick[],
+    tester: string,
+    options: { force?: boolean; onProgress?: (done: number, total: number) => void; keepGoing?: () => boolean },
+  ) => Promise<PassProgressOutcome>;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [sheet, setSheet] = useState<ImportSheet | null>(null);
@@ -111,7 +119,8 @@ export function ImportPanel({
     stopRef.current = false;
     setJob({ done: 0, total: picks.length, stopping: false });
     try {
-      const out = await recordProgress(picks, tester, {
+      const write = recordPicks ?? recordProgress;
+      const out = await write(picks, tester, {
         force,
         onProgress: (done, total) => setJob((j) => (j ? { ...j, done, total } : j)),
         keepGoing: () => !stopRef.current,

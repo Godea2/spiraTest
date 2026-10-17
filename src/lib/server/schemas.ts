@@ -403,5 +403,51 @@ export const releaseListSchema = z.object({ projectId: id });
 
 export const testSetListSchema = z.object({ projectId: id, releaseId: id.nullable() });
 
+export const weekCatalogRequestSchema = z.object({
+  projectId: id,
+  releaseId: id,
+  releaseLabel: z.string().trim().max(200),
+});
+
+const weekModuleSchema = z.object({
+  module: z.string().trim().min(1).max(120),
+  context: contextSchema,
+  testSets,
+  caseCount: z.number().int().nonnegative(),
+});
+
+export const weekRecordRequestSchema = z.object({
+  catalog: z.object({
+    projectId: id,
+    releaseId: id,
+    releaseLabel: z.string().trim().max(200),
+    modules: z.array(weekModuleSchema).min(1).max(60),
+    testSetCount: z.number().int().nonnegative(),
+    caseCount: z.number().int().nonnegative(),
+  }),
+  tester: z.string().trim().min(1, "Enter the tester's name.").max(100),
+  batches: z
+    .array(
+      z.object({
+        module: z.string().trim().min(1).max(120),
+        testSetId: id,
+        cases: z
+          .array(
+            z.object({
+              testCaseId: id,
+              testSetTestCaseId: id,
+              status: z.enum(EXECUTION_STATUSES),
+              comment: z.string().max(4_000),
+              steps: z.array(executedStepSchema).max(300),
+            }),
+          )
+          .min(1)
+          .max(MAX_EXECUTION_BATCH),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
+
 export const reportResultsRequestSchema = z.object({ projectId: id, testSetIds: z.array(id).min(1).max(MAX_REPORT_SETS) });
 export const reportLinksRequestSchema = z.object({ projectId: id, testCaseIds: z.array(id).min(1).max(MAX_REPORT_LINKS) });
