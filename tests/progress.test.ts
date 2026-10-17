@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Card, Draft } from "@/lib/domain/types";
+import type { ProgressTarget } from "@/lib/domain/progress";
+import type { MappedImportRow } from "@/lib/client/progress";
 
 const calls = vi.hoisted(() => ({ api: vi.fn(), recordResults: vi.fn() }));
 
@@ -149,14 +151,27 @@ describe("passProgress", () => {
 
 describe("picksFromImport clearSmokeSiblings", () => {
   it("writes Not Run for unticked high/medium smoke matches", () => {
-    const target = (key: string, name: string) => ({
+    const target = (key: string, name: string, id: number): ProgressTarget => ({
       draftId: "d1",
+      draftName: "Profile",
       module: "Profile",
-      card: { key, testSetId: 1, testCaseId: 1, testSetTestCaseId: 1, name, tcId: null, executionStatus: "Failed", executed: true, suggestion: "inScope" as const, reason: "" },
+      completed: true,
       testSetName: "Profile - iOS",
-      platform: "iOS" as const,
+      column: "inScope",
+      card: {
+        key,
+        testSetId: 1,
+        testCaseId: id,
+        testSetTestCaseId: id,
+        name,
+        tcId: null,
+        executionStatus: "Failed",
+        executed: true,
+        suggestion: "inScope",
+        reason: "",
+      },
     });
-    const mapped = [
+    const mapped: MappedImportRow[] = [
       {
         key: "1:iOS",
         row: {
@@ -181,12 +196,12 @@ describe("picksFromImport clearSmokeSiblings", () => {
           expected: "",
           query: "Module: Profile",
         },
-        result: "failed" as const,
+        result: "failed",
         reason: "Record as Failed",
         matches: [
-          { target: target("1:1", "View personal data"), candidate: { key: "1:1", relevance: "high" as const } },
-          { target: target("1:2", "Change email"), candidate: { key: "1:2", relevance: "medium" as const } },
-          { target: target("1:3", "Photo"), candidate: { key: "1:3", relevance: "low" as const } },
+          { target: target("1:1", "View personal data", 1), candidate: { key: "1:1", relevance: "high" } },
+          { target: target("1:2", "Change email", 2), candidate: { key: "1:2", relevance: "medium" } },
+          { target: target("1:3", "Photo", 3), candidate: { key: "1:3", relevance: "low" } },
         ],
         selected: new Set(["d1|1:1"]),
         error: null,
