@@ -6,7 +6,7 @@ const calls = vi.hoisted(() => ({ api: vi.fn(), recordResults: vi.fn() }));
 vi.mock("@/lib/client/api", async (importOriginal) => ({ ...(await importOriginal<object>()), api: calls.api }));
 vi.mock("@/lib/client/execution", async (importOriginal) => ({ ...(await importOriginal<object>()), recordResults: calls.recordResults }));
 
-const { passProgress, searchProgress } = await import("@/lib/client/progress");
+const { passProgress, picksFromImport, searchProgress } = await import("@/lib/client/progress");
 const { progressTargets } = await import("@/lib/domain/progress");
 const { emptyApplyState } = await import("@/lib/domain/draft-ops");
 const { getDraft } = await import("@/lib/client/drafts");
@@ -144,5 +144,62 @@ describe("passProgress", () => {
     );
     expect(forced.recorded).toBe(1);
     expect(forced.failed).toEqual([]);
+  });
+});
+
+describe("picksFromImport clearSmokeSiblings", () => {
+  it("writes Not Run for unticked high/medium smoke matches", () => {
+    const target = (key: string, name: string) => ({
+      draftId: "d1",
+      module: "Profile",
+      card: { key, testSetId: 1, testCaseId: 1, testSetTestCaseId: 1, name, tcId: null, executionStatus: "Failed", executed: true, suggestion: "inScope" as const, reason: "" },
+      testSetName: "Profile - iOS",
+      platform: "iOS" as const,
+    });
+    const mapped = [
+      {
+        key: "1:iOS",
+        row: {
+          rowNumber: 2,
+          sn: "",
+          caseId: "SMK-60",
+          module: "Profile",
+          feature: "Personal data",
+          issue: "",
+          caseName: "View personal data",
+          uatRef: "UAT-PRF-038",
+          status: "",
+          retest: "",
+          iosStatus: "Fail",
+          androidStatus: "",
+          overallStatus: "Fail",
+          platform: "",
+          severity: "",
+          testerComment: "",
+          devComment: "",
+          testerName: "",
+          expected: "",
+          query: "Module: Profile",
+        },
+        result: "failed" as const,
+        reason: "Record as Failed",
+        matches: [
+          { target: target("1:1", "View personal data"), candidate: { key: "1:1", relevance: "high" as const } },
+          { target: target("1:2", "Change email"), candidate: { key: "1:2", relevance: "medium" as const } },
+          { target: target("1:3", "Photo"), candidate: { key: "1:3", relevance: "low" as const } },
+        ],
+        selected: new Set(["d1|1:1"]),
+        error: null,
+      },
+    ];
+    const picks = picksFromImport(mapped, { clearSmokeSiblings: true });
+    expect(picks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: "failed", comment: expect.stringContaining("SMK-60") }),
+        expect.objectContaining({ status: "notRun", comment: expect.stringContaining("over-matched") }),
+      ]),
+    );
+    expect(picks.filter((p) => p.status === "notRun")).toHaveLength(1);
+    expect(picks.filter((p) => p.status === "failed")).toHaveLength(1);
   });
 });

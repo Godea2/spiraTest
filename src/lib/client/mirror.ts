@@ -308,8 +308,8 @@ export async function copyResults(
   return report;
 }
 
-function countBy(statuses: ExecutionStatus[]): Partial<Record<ExecutionStatus, number>> {
-  const counts: Partial<Record<ExecutionStatus, number>> = {};
+function countBy(statuses: Array<ExecutionStatus | "notRun">): Partial<Record<ExecutionStatus | "notRun", number>> {
+  const counts: Partial<Record<ExecutionStatus | "notRun", number>> = {};
   for (const s of statuses) counts[s] = (counts[s] ?? 0) + 1;
   return counts;
 }

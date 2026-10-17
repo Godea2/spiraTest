@@ -7,6 +7,7 @@ import type {
   ExecutionProgress,
   ExecutionResult,
   ExecutionStatus,
+  RecordStatus,
   StepStatus,
   TestCaseStep,
 } from "./types";
@@ -143,20 +144,24 @@ export function executedSteps(progress: ExecutionProgress | undefined, steps: Ru
   }));
 }
 
+/** Display name for a status written to Spira (includes Not Run). */
+export const recordLabel = (status: RecordStatus) => (status === "notRun" ? "Not Run" : STATUS_LABEL[status]);
+
 /** What still needs saying before a result can be saved, or null when it can be saved. */
-export function missingForSave(status: ExecutionStatus | null, comment: string, steps: ExecutedStep[]): string | null {
+export function missingForSave(status: RecordStatus | null, comment: string, steps: ExecutedStep[]): string | null {
   if (!status) return "Mark the steps, or pick a result, first.";
-  if (status === "passed") return null;
+  if (status === "passed" || status === "notRun") return null;
   const explained = comment.trim() || steps.some((s) => s.status && s.status !== "passed" && s.status !== "notApplicable" && s.actualResult.trim());
-  return explained ? null : `Say what happened: add the actual result on the ${STATUS_LABEL[status]} step, or a comment.`;
+  return explained ? null : `Say what happened: add the actual result on the ${recordLabel(status)} step, or a comment.`;
 }
 
 /** Why a result cannot be recorded as sent, or null when it is consistent. Checked on the server too. */
-export function invalidResult(status: ExecutionStatus, comment: string, steps: ExecutedStep[]): string | null {
+export function invalidResult(status: RecordStatus, comment: string, steps: ExecutedStep[]): string | null {
+  if (status === "notRun") return null;
   if (steps.length > 0) {
     const fromSteps = caseStatus(steps.map((s) => s.status));
     if (fromSteps !== status) {
-      return fromSteps ? `The steps say ${STATUS_LABEL[fromSteps]}, not ${STATUS_LABEL[status]}.` : "Mark every step, or stop at a failed or blocked step.";
+      return fromSteps ? `The steps say ${STATUS_LABEL[fromSteps]}, not ${recordLabel(status)}.` : "Mark every step, or stop at a failed or blocked step.";
     }
   }
   return missingForSave(status, comment, steps);
@@ -170,13 +175,16 @@ export function runReport(input: {
   tester: string;
   module: string;
   draftName: string;
-  status: ExecutionStatus;
+  status: RecordStatus;
   comment: string;
   steps: ExecutedStep[];
 }): { message: string; details: string } {
-  const label = STATUS_LABEL[input.status];
+  const label = recordLabel(input.status);
   const by = input.tester ? ` by ${input.tester}` : "";
-  const problem = input.steps.find((s) => s.status === input.status && input.status !== "passed");
+  const problem =
+    input.status === "passed" || input.status === "notRun"
+      ? undefined
+      : input.steps.find((s) => s.status === input.status);
   const summary =
     firstLine(input.comment) ||
     (problem ? `step ${problem.label}${firstLine(problem.actualResult) ? `: ${firstLine(problem.actualResult)}` : ""}` : "") ||

@@ -58,6 +58,8 @@ export function ImportPanel({
   const [mapped, setMapped] = useState<MappedImportRow[] | null>(null);
   const [mapping, setMapping] = useState<{ done: number; total: number; label: string } | null>(null);
   const [force, setForce] = useState(false);
+  /** Smoke: write unticked high/medium matches as Not Run to undo a prior Fail fan-out. */
+  const [clearSiblings, setClearSiblings] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [job, setJob] = useState<{ done: number; total: number; stopping: boolean } | null>(null);
   const [outcome, setOutcome] = useState<PassProgressOutcome | null>(null);
@@ -94,7 +96,9 @@ export function ImportPanel({
     }
   }
 
-  const picks = mapped ? picksFromImport(mapped) : [];
+  const smokeSheet = sheet?.kind === "smoke";
+  const picks = mapped ? picksFromImport(mapped, { clearSmokeSiblings: smokeSheet && clearSiblings }) : [];
+  const clearCount = picks.filter((p) => p.status === "notRun").length;
   const actionableRows = mapped?.filter((m) => m.result && m.selected.size > 0) ?? [];
 
   function setResult(rowKey: string, result: ExecutionStatus | null) {
@@ -121,7 +125,8 @@ export function ImportPanel({
     try {
       const write = recordPicks ?? recordProgress;
       const out = await write(picks, tester, {
-        force,
+        // Clearing siblings must overwrite existing Fail/Blocked on those cases.
+        force: force || (smokeSheet && clearSiblings && clearCount > 0),
         onProgress: (done, total) => setJob((j) => (j ? { ...j, done, total } : j)),
         keepGoing: () => !stopRef.current,
       });
@@ -314,6 +319,24 @@ export function ImportPanel({
             </ul>
 
             <div className="flex flex-col gap-3 rounded-xl bg-slate-50 p-4 dark:bg-white/[0.03]">
+              {smokeSheet && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-4 accent-brand-600"
+                    checked={clearSiblings}
+                    disabled={!!job}
+                    onChange={(e) => setClearSiblings(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">Fix inflated matches</span>
+                    <span className="block text-xs text-slate-500">
+                      Set extra high/medium suggestions (not ticked) back to Not Run in Spira. Use after a previous Record that failed too many related cases.
+                      {clearCount > 0 ? ` ${clearCount} to clear.` : ""}
+                    </span>
+                  </span>
+                </label>
+              )}
               <label className="flex items-start gap-2 text-sm">
                 <input type="checkbox" className="mt-0.5 size-4 accent-brand-600" checked={force} disabled={!!job} onChange={(e) => setForce(e.target.checked)} />
                 <span>
@@ -325,7 +348,7 @@ export function ImportPanel({
                 <p className="text-xs text-slate-600 dark:text-zinc-400">
                   {picks.length === 0
                     ? "Tick cases on rows with a Pass, Fail or Blocked result."
-                    : `${plural(picks.length, "run")} from ${plural(actionableRows.length, "sheet row")}${tester ? `, tested by ${tester}` : ""}.`}
+                    : `${plural(picks.length, "run")} from ${plural(actionableRows.length, "sheet row")}${clearCount ? ` · ${clearCount} clear to Not Run` : ""}${tester ? `, tested by ${tester}` : ""}.`}
                 </p>
                 <Button
                   variant="primary"
@@ -402,6 +425,12 @@ export function ImportPanel({
                 <span>{plural(picks.filter((p) => p.status === s).length, "case")}</span>
               </li>
             ))}
+            {clearCount > 0 && (
+              <li className="flex items-center gap-2 py-0.5">
+                <Badge>Not Run</Badge>
+                <span>{plural(clearCount, "over-matched case")} to clear</span>
+              </li>
+            )}
           </ul>
         </div>
       </Dialog>

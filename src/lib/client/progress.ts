@@ -25,7 +25,7 @@ import {
 import { currentStatus, MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { readWorkbook } from "@/lib/domain/workbook";
-import type { DefectCandidate, Draft, ExecutionResult, ExecutionStatus, ProgressAnalysis } from "@/lib/domain/types";
+import type { DefectCandidate, Draft, ExecutionResult, ExecutionStatus, ProgressAnalysis, RecordStatus } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { api, ApiError, errorMessage } from "./api";
 import { getDraft } from "./drafts";
@@ -194,13 +194,13 @@ export async function searchProgress(drafts: Draft[], description: string, onPha
 
 export interface ProgressPick {
   target: ProgressTarget;
-  status: ExecutionStatus;
+  status: RecordStatus;
   comment: string;
 }
 
 export interface PassProgressOutcome {
   results: ExecutionResult[];
-  failed: Array<{ target: ProgressTarget; message: string; status?: ExecutionStatus }>;
+  failed: Array<{ target: ProgressTarget; message: string; status?: RecordStatus }>;
   recorded: number;
 }
 
@@ -219,6 +219,13 @@ export async function recordProgress(
     try {
       const draft = getDraft(pick.target.draftId);
       const status = currentStatus(pick.target.card, draft.execution);
+      if (pick.status === "notRun") {
+        if (status === null && !options.force) {
+          failed.push({ target: pick.target, status: "notRun", message: "Already Not Run in Spira." });
+          return false;
+        }
+        return true;
+      }
       if (status === pick.status && !options.force) {
         failed.push({
           target: pick.target,
@@ -432,12 +439,17 @@ export async function mapProgressSheet(
   return out;
 }
 
-/** Builds the Spira picks from a reviewed import mapping. */
-export function picksFromImport(mapped: MappedImportRow[]): ProgressPick[] {
+/**
+ * Builds the Spira picks from a reviewed import mapping.
+ * When clearSmokeSiblings is set, high/medium matches that are not ticked are written as Not Run
+ * so a previous over-broad Fail/Blocked fan-out can be rolled back.
+ */
+export function picksFromImport(mapped: MappedImportRow[], options: { clearSmokeSiblings?: boolean } = {}): ProgressPick[] {
   const picks: ProgressPick[] = [];
   const seen = new Set<string>();
   for (const m of mapped) {
     if (!m.result) continue;
+    const smoke = !!m.row.caseId || !!m.row.uatRef;
     const comment = clip(
       [
         m.row.caseId && `[${m.row.caseId}]`,
@@ -451,11 +463,32 @@ export function picksFromImport(mapped: MappedImportRow[]): ProgressPick[] {
         .join("\n"),
       1_500,
     );
+    const clearComment = clip(
+      [
+        "Cleared over-matched smoke write — not the primary UAT case for this row.",
+        m.row.caseId && `Was linked from ${m.row.caseId}.`,
+        m.row.uatRef && `Primary UAT: ${m.row.uatRef}.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      1_500,
+    );
     for (const c of m.matches) {
       const key = `${c.target.draftId}|${c.target.card.key}`;
-      if (!m.selected.has(key) || seen.has(key)) continue;
-      seen.add(key);
-      picks.push({ target: c.target, status: m.result, comment });
+      if (seen.has(key)) continue;
+      if (m.selected.has(key)) {
+        seen.add(key);
+        picks.push({ target: c.target, status: m.result, comment });
+        continue;
+      }
+      if (
+        options.clearSmokeSiblings &&
+        smoke &&
+        (c.candidate.relevance === "high" || c.candidate.relevance === "medium")
+      ) {
+        seen.add(key);
+        picks.push({ target: c.target, status: "notRun", comment: clearComment });
+      }
     }
   }
   return picks;

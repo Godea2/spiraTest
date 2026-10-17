@@ -19,7 +19,7 @@ import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { MAX_RUN_DETAILS } from "@/lib/domain/mirror";
 import { MAX_REPORT_LINKS, MAX_REPORT_SETS } from "@/lib/domain/report";
-import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
+import { COLUMNS, EXECUTION_STATUSES, PLATFORMS, RECORD_STATUSES, SIGN_OFF_STATUSES, STEP_STATUSES } from "@/lib/domain/types";
 
 const id = z.number().int().positive();
 const column = z.enum(COLUMNS);
@@ -205,7 +205,7 @@ export const executionRecordRequestSchema = z.object({
         z.object({
           testCaseId: id,
           testSetTestCaseId: id,
-          status: z.enum(EXECUTION_STATUSES),
+          status: z.enum(RECORD_STATUSES),
           comment: z.string().max(4_000),
           steps: z.array(executedStepSchema).max(300),
         }),
@@ -438,7 +438,7 @@ export const weekRecordRequestSchema = z.object({
             z.object({
               testCaseId: id,
               testSetTestCaseId: id,
-              status: z.enum(EXECUTION_STATUSES),
+              status: z.enum(RECORD_STATUSES),
               comment: z.string().max(4_000),
               steps: z.array(executedStepSchema).max(300),
             }),

@@ -110,7 +110,7 @@ export async function recordResults(
     type: count("failed") ? "execution.recordedWithErrors" : "execution.recorded",
     message:
       recorded.length === 1 && all.length === 1
-        ? `Executed TC${recorded[0].testCaseId}: ${STATUS_LABEL[recorded[0].status]}${tester ? ` (${tester})` : ""}.`
+        ? `Executed TC${recorded[0].testCaseId}: ${recorded[0].status === "notRun" ? "Not Run" : STATUS_LABEL[recorded[0].status]}${tester ? ` (${tester})` : ""}.`
         : `Recorded ${recorded.length} execution result(s) in test set ${testSetId}${count("skipped") ? `, ${count("skipped")} skipped` : ""}${count("failed") ? `, ${count("failed")} failed` : ""}.`,
     draftId,
     module: draft.module,

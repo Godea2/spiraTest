@@ -14,9 +14,13 @@ export const COLUMN_LABELS: Record<Column, string> = {
 export const SIGN_OFF_STATUSES = ["blocked", "passed"] as const;
 export type SignOffStatus = (typeof SIGN_OFF_STATUSES)[number];
 
-/** Results a tester can record for a whole test case. */
+/** Results a tester can mark in Execute (Passed / Failed / Blocked / Caution). */
 export const EXECUTION_STATUSES = ["passed", "failed", "blocked", "caution"] as const;
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
+
+/** Statuses the app can write to Spira, including Not Run when clearing over-matched smoke cases. */
+export const RECORD_STATUSES = ["passed", "failed", "blocked", "caution", "notRun"] as const;
+export type RecordStatus = (typeof RECORD_STATUSES)[number];
 
 /** Results for one step; a step that does not apply can be marked N/A. */
 export const STEP_STATUSES = ["passed", "failed", "blocked", "caution", "notApplicable"] as const;
@@ -472,7 +476,7 @@ export interface TestSetStatusState {
 export interface ExecutionCaseInput {
   testCaseId: number;
   testSetTestCaseId: number;
-  status: ExecutionStatus;
+  status: RecordStatus;
   comment: string;
   steps: ExecutedStep[];
 }
@@ -481,7 +485,7 @@ export interface ExecutionResult {
   testSetId: number;
   testCaseId: number;
   testSetTestCaseId: number;
-  status: ExecutionStatus;
+  status: RecordStatus;
   result: "recorded" | "skipped" | "failed";
   testRunId: number | null;
   message: string | null;

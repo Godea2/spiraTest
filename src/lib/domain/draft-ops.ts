@@ -242,18 +242,24 @@ export function recordExecutionResults(
   for (const r of results) {
     if (r.result !== "recorded" || r.testRunId === null) continue;
     const key = cardKey(r.testSetId, r.testSetTestCaseId);
-    execution.runs.push({
-      testSetId: r.testSetId,
-      testCaseId: r.testCaseId,
-      testSetTestCaseId: r.testSetTestCaseId,
-      status: r.status,
-      testRunId: r.testRunId,
-      at,
-      tester,
-      comment: sent.find((s) => s.testSetTestCaseId === r.testSetTestCaseId)?.comment ?? "",
-    });
+    // Not Run clears are written to Spira but are not kept as Execute history rows.
+    if (r.status !== "notRun") {
+      execution.runs.push({
+        testSetId: r.testSetId,
+        testCaseId: r.testCaseId,
+        testSetTestCaseId: r.testSetTestCaseId,
+        status: r.status,
+        testRunId: r.testRunId,
+        at,
+        tester,
+        comment: sent.find((s) => s.testSetTestCaseId === r.testSetTestCaseId)?.comment ?? "",
+      });
+    }
     const statusId = r.spiraStatusId !== undefined ? r.spiraStatusId : EXECUTION_STATUS[r.status];
-    execution.spira[key] = { statusId, status: statusId === null ? "Not Run" : (EXECUTION_STATUS_NAMES[statusId] ?? STATUS_LABEL[r.status]) };
+    execution.spira[key] = {
+      statusId,
+      status: statusId === null || r.status === "notRun" ? "Not Run" : (EXECUTION_STATUS_NAMES[statusId] ?? STATUS_LABEL[r.status]),
+    };
     delete execution.progress[key];
   }
   draft.execution = execution;

@@ -485,25 +485,55 @@ export async function recordExecutions(input: {
     else eligible.push(c);
   }
 
+  // Not Run clears an over-matched smoke write without filling steps (manual shells reject that path).
+  const clearing = eligible.filter((c) => c.status === "notRun");
+  const running = eligible.filter((c) => c.status !== "notRun");
+  for (const c of clearing) {
+    const report = runReport({
+      runner: RUNNER_NAME,
+      tester: input.tester,
+      module: ctx.module,
+      draftName: input.draftName,
+      status: "notRun",
+      comment: c.comment,
+      steps: [],
+    });
+    try {
+      const testRunId = await recordTestRun(ctx.projectId, {
+        testCaseId: c.testCaseId,
+        testSetId: batch.testSetId,
+        testSetTestCaseId: c.testSetTestCaseId,
+        releaseId,
+        executionStatusId: EXECUTION_STATUS.notRun,
+        testName: cases.get(c.testSetTestCaseId)?.name ?? `TC${c.testCaseId}`,
+        message: report.message,
+        details: report.details,
+      });
+      settle(c, "recorded", null, testRunId);
+    } catch (error) {
+      settle(c, "failed", failure(error).message);
+    }
+  }
+
   // One call prepares the runs of the whole batch, with Spira's own steps; nothing is saved yet.
   const shells = new Map<number, ManualRunShell[]>();
   const takeShell = async (testCaseId: number): Promise<ManualRunShell | undefined> =>
     shells.get(testCaseId)?.shift() ?? (await createManualRunShells(ctx.projectId, [testCaseId], releaseId)).find((s) => s.raw.TestCaseId === testCaseId);
-  if (eligible.length > 0) {
+  if (running.length > 0) {
     try {
-      for (const shell of await createManualRunShells(ctx.projectId, eligible.map((c) => c.testCaseId), releaseId)) {
+      for (const shell of await createManualRunShells(ctx.projectId, running.map((c) => c.testCaseId), releaseId)) {
         shells.set(shell.raw.TestCaseId, [...(shells.get(shell.raw.TestCaseId) ?? []), shell]);
       }
     } catch (error) {
       const message = failure(error).message;
-      for (const c of eligible) settle(c, "failed", message);
-      eligible.length = 0;
+      for (const c of running) settle(c, "failed", message);
+      running.length = 0;
     }
   }
 
   const manual: Array<{ c: ExecutionCaseInput; run: ManualRunInput }> = [];
   const automated: ExecutionCaseInput[] = [];
-  for (const c of eligible) {
+  for (const c of running) {
     let shell: ManualRunShell | undefined;
     try {
       shell = await takeShell(c.testCaseId);
@@ -519,7 +549,9 @@ export async function recordExecutions(input: {
       automated.push(c);
       continue;
     }
-    const filled = fillRunSteps(shell.steps, c.status, c.steps, runNote({ runner: RUNNER_NAME, tester: input.tester, comment: c.comment }));
+    // `running` excludes notRun; narrow for fillRunSteps which only accepts Pass/Fail/Blocked/Caution.
+    const mark = c.status === "notRun" ? "passed" : c.status;
+    const filled = fillRunSteps(shell.steps, mark, c.steps, runNote({ runner: RUNNER_NAME, tester: input.tester, comment: c.comment }));
     if (!filled) {
       settle(c, "failed", "The steps of this test case changed in Spira. Open it with Run and mark the steps again.");
       continue;
