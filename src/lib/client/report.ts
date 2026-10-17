@@ -2,11 +2,8 @@ import {
   addSnapshot,
   defaultReportOptions,
   formatPct,
-  LEVELS,
-  MODULE_STATUS_LABEL,
   OUTCOME_LABEL,
   OUTCOMES,
-  RETEST_LABEL,
   snapshotOf,
   type Report,
   type ReportInput,
@@ -93,173 +90,80 @@ export async function createShareLink(input: {
   return { url: `${window.location.origin}${path}`, expiresAt };
 }
 
-function safeFileName(name: string): string {
-  return name.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 100) || "report";
+const when = (iso: string) =>
+  new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+type SheetLike = {
+  "!cols"?: Array<{ wch: number }>;
+};
+
+/** Column widths from content so sheets open looking like a proper table, not cramped defaults. */
+export function fitSheetColumns(sheet: SheetLike, sampleRows: Array<Record<string, unknown>>, min = 8, max = 48): void {
+  if (sampleRows.length === 0) return;
+  const keys = Object.keys(sampleRows[0]);
+  sheet["!cols"] = keys.map((key) => {
+    let w = Math.min(max, Math.max(min, key.length + 2));
+    for (const row of sampleRows.slice(0, 80)) {
+      const text = row[key] == null ? "" : String(row[key]);
+      w = Math.max(w, Math.min(max, text.length + 2));
+    }
+    return { wch: w };
+  });
 }
 
-const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "");
-
-/** The report as a workbook: one sheet per section, every figure as read from Spira. */
-export async function exportReportWorkbook(report: Report, siteUrl: string | null): Promise<void> {
-  const XLSX = await import("xlsx");
-  const wb = XLSX.utils.book_new();
-  const link = (path: string) => (siteUrl ? `${siteUrl}/${report.projectId}/${path}` : "");
-  const add = (name: string, rows: object[]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ "": "Nothing to show" }]), name);
+/** Cover-style Summary grid matching the on-screen executive report sections. */
+export function buildReportSummaryGrid(report: Report): (string | number)[][] {
   const k = report.kpis;
+  const blank: (string | number)[] = [];
+  const row = (label: string, value: string | number = ""): (string | number)[] => [label, value];
+  const section = (title: string): (string | number)[] => [title, ""];
+  return [
+    row("Report", report.title),
+    row("Overall status", report.status.toUpperCase()),
+    row("Status reason", report.statusReason),
+    row("Project", `${report.projectName} (${report.projectId})`),
+    row("Cycle", report.environment),
+    row("In scope", report.scopedLabel),
+    row("Baseline", report.baselineLabel),
+    row("Prepared by", report.preparedBy),
+    row("Go-live", report.goLive ?? ""),
+    row("Read from Spira", when(report.generatedAt)),
+    row("Executions", report.window.text ?? ""),
+    row("Counted as", "Test runs: each case once per platform it is planned on"),
+    blank,
+    section("Key figures"),
+    row("Total test plan (runs)", k.plan),
+    row(`${report.labels.build} (runs)`, k.inScope),
+    row("Later builds (runs)", k.laterBuilds),
+    row("Executed", k.executed),
+    row("Executed %", formatPct(k.execPct)),
+    ...OUTCOMES.map((o) => row(OUTCOME_LABEL[o], k.outcomes[o])),
+    row("Still to run", k.stillToRun),
+    row("Pass rate", formatPct(k.passPct)),
+    row("Open defects", report.defects.open),
+    row("Added in testing (runs)", k.added),
+    row(`${report.baselineName} pass rate`, formatPct(k.baseline.passPct)),
+    row("API cases (not counted above)", k.api.inScope),
+    blank,
+    section("By platform"),
+    ...report.streams.map((s) =>
+      row(
+        s,
+        `${k.split.inScope[s] ?? 0} in scope · ${k.split.executed[s] ?? 0} executed · ${k.split.passed[s] ?? 0} passed · ${k.split.failed[s] ?? 0} failed`,
+      ),
+    ),
+    blank,
+    section("Narrative"),
+    row("Headline", report.narrative.headline),
+    row("Why each module has its status", report.narrative.why.join(" ")),
+    row("Scope note", report.narrative.scopeNote),
+    row("Data note", report.narrative.dataNote),
+    row("QA notes", report.notes),
+  ];
+}
 
-  add("Summary", [
-    { Item: "Report", Value: report.title },
-    { Item: "Project", Value: `${report.projectName} (${report.projectId})` },
-    { Item: "Cycle", Value: report.environment },
-    { Item: "In scope", Value: report.scopedLabel },
-    { Item: "Baseline", Value: report.baselineLabel },
-    { Item: "Read from Spira", Value: report.generatedAt },
-    { Item: "Prepared by", Value: report.preparedBy },
-    { Item: "Go-live", Value: report.goLive ?? "" },
-    { Item: "Overall status", Value: report.status.toUpperCase() },
-    { Item: "Status reason", Value: report.statusReason },
-    { Item: "Executions", Value: report.window.text ?? "" },
-    { Item: "Counted as", Value: "Test runs: each case once per platform it is planned on" },
-    { Item: "Total test plan (runs)", Value: k.plan },
-    { Item: `${report.labels.build} (runs)`, Value: k.inScope },
-    { Item: "Later builds (runs)", Value: k.laterBuilds },
-    { Item: "Executed", Value: k.executed },
-    { Item: "Executed %", Value: formatPct(k.execPct) },
-    ...OUTCOMES.map((o) => ({ Item: OUTCOME_LABEL[o], Value: k.outcomes[o] })),
-    { Item: "Still to run", Value: k.stillToRun },
-    { Item: "Pass rate", Value: formatPct(k.passPct) },
-    ...report.streams.map((s) => ({
-      Item: s,
-      Value: `${k.split.inScope[s] ?? 0} in scope, ${k.split.executed[s] ?? 0} executed, ${k.split.passed[s] ?? 0} passed, ${k.split.failed[s] ?? 0} failed`,
-    })),
-    { Item: "Added in testing (runs)", Value: k.added },
-    { Item: `${report.baselineName} pass rate`, Value: formatPct(k.baseline.passPct) },
-    { Item: "API cases (not counted above)", Value: k.api.inScope },
-    { Item: "Open defects", Value: report.defects.open },
-    { Item: "Summary", Value: report.narrative.headline },
-    { Item: "Why each module has its status", Value: report.narrative.why.join(" ") },
-    { Item: "Scope note", Value: report.narrative.scopeNote },
-    { Item: "Data note", Value: report.narrative.dataNote },
-    { Item: "QA notes", Value: report.notes },
-  ]);
-  add(
-    "Modules",
-    [...report.modules, ...report.laterModules].map((m) => ({
-      Module: m.name,
-      [report.labels.inBuild]: m.inBuild ? "Yes" : "No",
-      Platforms: m.streams.join(", "),
-      "Total plan": m.plan,
-      [report.labels.build]: m.inScope,
-      "Later builds": m.laterBuilds,
-      "Added": m.added,
-      Executed: m.executed,
-      "Exec %": formatPct(m.execPct),
-      ...Object.fromEntries(OUTCOMES.map((o) => [OUTCOME_LABEL[o], m.outcomes[o]])),
-      "Still to run": m.stillToRun,
-      "Pass %": formatPct(m.passPct),
-      "Failed cases": m.failedCases,
-      "Open defects": m.openDefects,
-      Status: m.inBuild ? MODULE_STATUS_LABEL[m.status] : "Later build",
-      ...Object.fromEntries(report.streams.map((s) => [`${s} run`, m.byStream[s] ? `${m.byStream[s]!.executed} / ${m.byStream[s]!.total}` : ""])),
-      "Last run": day(m.lastRun),
-    })),
-  );
-  add("Exit criteria", report.criteria.map((c, i) => ({ "#": i + 1, Criterion: c.label, Target: c.target, Actual: c.actual, Status: c.met ? "Met" : "Not met" })));
-  if (report.cycle) {
-    const cycle = report.cycle;
-    add(
-      "Cycle change",
-      cycle.rows.map((r) => ({ Module: r.name, [`${cycle.baselineName} (${cycle.stream})`]: r.before, [`${cycle.scopedName} (${cycle.stream})`]: r.now, Movement: r.movement })),
-    );
-  }
-  add("Risks and actions", report.narrative.actions.map((a) => ({ Risk: a.title, Detail: a.detail, Action: a.action })));
-  add(
-    "Scope",
-    report.scope.rows.map((r) => ({
-      Module: r.name,
-      Baseline: r.baseline,
-      "In scope": r.inScope,
-      "In both": r.both,
-      "Baseline only": r.deferred,
-      "Added": r.added,
-      "Baseline covered": formatPct(r.coveragePct),
-      ...Object.fromEntries(report.scope.streams.flatMap((s) => [[`${s} baseline`, r.baselineStreams[s] ?? 0], [`${s} in scope`, r.scopedStreams[s] ?? 0]])),
-    })),
-  );
-  add(
-    "Defects",
-    report.defects.rows.map((d) => ({
-      ID: `IN:${d.incident.incidentId}`,
-      Defect: d.incident.name,
-      Status: d.incident.status ?? "",
-      Open: d.incident.open ? "Yes" : "No",
-      Severity: d.severity,
-      Priority: d.priority,
-      Retest: RETEST_LABEL[d.retest],
-      "Age (days)": d.ageDays ?? "",
-      Feature: d.feature,
-      Scope: d.phase === "in" ? report.labels.inBuild : d.phase === "out" ? report.labels.outside : d.phase === "tbc" ? "To confirm" : "",
-      Rationale: d.rationale,
-      Modules: d.modules.join(", "),
-      "Test cases": d.testCaseIds.map((id) => `TC:${id}`).join(", "),
-      "Failed runs": d.failedRuns,
-      Release: d.incident.detectedRelease ?? "",
-      Raised: day(d.incident.createdAt),
-      Owner: d.incident.owner ?? "",
-      Link: link(`Incident/${d.incident.incidentId}.aspx`),
-    })),
-  );
-  add(
-    "Defects by severity",
-    LEVELS.map((l) => ({
-      Level: l,
-      "0–2 days": report.defects.severityAge[l][0],
-      "3–5": report.defects.severityAge[l][1],
-      "6–10": report.defects.severityAge[l][2],
-      "> 10": report.defects.severityAge[l][3],
-      "Open by priority": report.defects.byPriority[l],
-      [`Open by priority, ${report.labels.inBuild.toLowerCase()}`]: report.defects.byPriorityInBuild[l],
-    })),
-  );
-  add(
-    "Failed cases",
-    report.failedCases.map((c) => ({
-      "Test case": `TC:${c.testCaseId}`,
-      Name: c.name,
-      Module: c.module,
-      "Failed on": c.streams.join(", "),
-      Defects: c.checked ? c.incidentIds.map((id) => `IN:${id}`).join(", ") || "None linked" : "Not checked",
-      Link: link(`TestCase/${c.testCaseId}.aspx`),
-    })),
-  );
-  add("Data checks", report.findings.map((f) => ({ Severity: f.severity, Check: f.check, "Applies to": f.appliesTo, Detail: f.detail })));
-  const setRow = (scope: string) => (r: Report["testSets"][number]) => ({
-    Scope: scope,
-    "Test set": r.set.name,
-    ID: `TX:${r.set.testSetId}`,
-    Module: r.module,
-    Platform: r.stream,
-    Folder: r.folder,
-    Release: r.set.releaseVersion ?? "",
-    Status: r.set.status ?? "",
-    Owner: r.set.owner ?? "",
-    Planned: day(r.set.plannedDate),
-    "Last executed": day(r.set.executionDate),
-    Passed: r.set.counts.passed,
-    Failed: r.set.counts.failed,
-    Blocked: r.set.counts.blocked,
-    Caution: r.set.counts.caution,
-    "Not run": r.set.counts.notRun,
-    "N/A": r.set.counts.notApplicable,
-    "Spira total": r.spiraTotal,
-    "Cases read": r.read ?? "",
-    Overdue: r.overdue ? "Yes" : "",
-    Link: link(`TestSet/${r.set.testSetId}.aspx`),
-  });
-  add("Test sets", [...report.testSets.map(setRow("In scope")), ...report.baselineSets.map(setRow("Baseline"))]);
-  add("Added cases", report.scope.added.map((c) => ({ "Test case": `TC:${c.testCaseId}`, Name: c.name, Module: c.module })));
-  add("Baseline only", report.scope.deferred.map((c) => ({ "Test case": `TC:${c.testCaseId}`, Name: c.name, Module: c.module })));
-  add("Trend", report.trend.days.map((d) => ({ Day: d.day, "Runs last executed": d.executed, "Of which failed": d.failed, "Executed so far": d.cumulative })));
-
-  XLSX.writeFile(wb, `${safeFileName(`${report.title} ${day(report.generatedAt)}`)}.xlsx`);
+/** Styled Excel workbook (cover Summary + section tables) matching the on-screen report. */
+export async function exportReportWorkbook(report: Report, siteUrl: string | null): Promise<void> {
+  const { exportReportWorkbookStyled } = await import("./report-excel");
+  await exportReportWorkbookStyled(report, siteUrl);
 }

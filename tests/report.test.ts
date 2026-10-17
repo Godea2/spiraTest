@@ -428,3 +428,22 @@ describe("report snapshots", () => {
     expect(rows.find((r) => r.name === "Profile")).toMatchObject({ movement: "No change" });
   });
 });
+
+describe("report Excel shaping", () => {
+  it("builds a cover-style Summary grid with key sections", async () => {
+    const { buildReportSummaryGrid, fitSheetColumns } = await import("@/lib/client/report");
+    const grid = buildReportSummaryGrid(buildReport(input()));
+    expect(grid[0]).toEqual(["Report", expect.any(String)]);
+    expect(grid.some((r) => r[0] === "Key figures")).toBe(true);
+    expect(grid.some((r) => r[0] === "Narrative")).toBe(true);
+    expect(grid.some((r) => r[0] === "Pass rate")).toBe(true);
+
+    const sheet: { "!cols"?: Array<{ wch: number }> } = {};
+    fitSheetColumns(sheet, [
+      { Module: "Payments", "Pass %": "80%" },
+      { Module: "Customer Onboarding & Home Screen", "Pass %": "100%" },
+    ]);
+    expect(sheet["!cols"]?.[0].wch).toBeGreaterThan(10);
+    expect(sheet["!cols"]?.[1].wch).toBeGreaterThanOrEqual(8);
+  });
+});
