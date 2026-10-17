@@ -15,6 +15,7 @@ import {
   MAX_VERIFY_STEPS,
 } from "@/lib/domain/defects";
 import { MAX_PROGRESS_TEXT } from "@/lib/domain/progress";
+import { MAX_NOTES_TEXT } from "@/lib/domain/notes";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { MAX_RUN_DETAILS } from "@/lib/domain/mirror";
@@ -269,6 +270,11 @@ export const progressUnderstandRequestSchema = z.object({
   modules: z
     .array(z.object({ module: moduleName, testSets: z.array(z.string().max(200)).max(12) }))
     .max(60, "Search at most 60 modules at a time."),
+});
+
+export const notesParseRequestSchema = z.object({
+  notes: z.string().trim().min(20, "Paste a few lines of tester notes.").max(MAX_NOTES_TEXT),
+  modules: z.array(moduleName).max(60),
 });
 
 export const progressSearchRequestSchema = z.object({
