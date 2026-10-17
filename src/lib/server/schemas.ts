@@ -14,6 +14,7 @@ import {
   MAX_STEP_TEXT,
   MAX_VERIFY_STEPS,
 } from "@/lib/domain/defects";
+import { MAX_PROGRESS_TEXT } from "@/lib/domain/progress";
 import { MAX_EXECUTION_BATCH } from "@/lib/domain/execution";
 import { keywordListSchema, MAX_AI_REVIEW_BATCH, MAX_SCENARIO_TEXT } from "@/lib/domain/keywords";
 import { MAX_RUN_DETAILS } from "@/lib/domain/mirror";
@@ -247,21 +248,38 @@ const analysisSchema = z.object({
   related: z.array(z.string().max(80)).max(MAX_RELATED_TERMS).default([]),
 });
 
+const searchCaseSchema = z.object({
+  key: z.string().max(64),
+  module: moduleName,
+  testSetName: z.string().max(200),
+  scenario: z.string().max(MAX_SCENARIO_TEXT),
+  workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
+});
+
 export const defectSearchRequestSchema = z.object({
   description: defectText,
   analysis: analysisSchema,
-  cases: z
-    .array(
-      z.object({
-        key: z.string().max(64),
-        module: moduleName,
-        testSetName: z.string().max(200),
-        scenario: z.string().max(MAX_SCENARIO_TEXT),
-        workbookScenario: z.string().max(MAX_SCENARIO_TEXT).optional(),
-      }),
-    )
-    .min(1)
-    .max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per request.`),
+  cases: z.array(searchCaseSchema).min(1).max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per request.`),
+});
+
+const progressText = z.string().trim().min(10, "Describe what you tested in a sentence or two.").max(MAX_PROGRESS_TEXT);
+
+export const progressUnderstandRequestSchema = z.object({
+  description: progressText,
+  modules: z
+    .array(z.object({ module: moduleName, testSets: z.array(z.string().max(200)).max(12) }))
+    .max(60, "Search at most 60 modules at a time."),
+});
+
+export const progressSearchRequestSchema = z.object({
+  description: progressText,
+  analysis: z.object({
+    feature: z.string().max(200),
+    related: z.array(z.string().max(80)).max(MAX_RELATED_TERMS),
+    area: z.string().max(200),
+    summary: z.string().max(300),
+  }),
+  cases: z.array(searchCaseSchema).min(1).max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per request.`),
 });
 
 export const defectNewCaseRequestSchema = z.object({

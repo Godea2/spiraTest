@@ -294,6 +294,19 @@ export interface DraftExecution {
 export const DEFECT_SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type DefectSeverity = (typeof DEFECT_SEVERITIES)[number];
 
+/** How Gemini reads a description of work that was tested, for recording Passed runs. */
+export interface ProgressAnalysis {
+  /** The feature or journey covered, as a tester would name it ("Airtime purchase"). */
+  feature: string;
+  /** Other names for that feature and what is part of it ("top-up", "recharge", "network provider"). */
+  related: string[];
+  area: string;
+  /** One short sentence of what was covered, for the run comment and the page. */
+  summary: string;
+  /** One question when the description is too vague to tell which feature was tested; null otherwise. */
+  question: string | null;
+}
+
 /** How Gemini reads a defect description. */
 export interface DefectAnalysis {
   /** A bug title: "<screen or feature>: <what goes wrong>". */
