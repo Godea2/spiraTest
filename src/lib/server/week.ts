@@ -1,6 +1,6 @@
 import "server-only";
 import { cardKey } from "@/lib/domain/board";
-import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, type CycleId } from "@/lib/domain/settings";
+import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, isMobileWeekSet, type CycleId } from "@/lib/domain/settings";
 import type { Card, ExecutionCaseInput, ExecutionResult, SpiraTestSetSummary, TestSetComparison, WorkflowContext } from "@/lib/domain/types";
 import { inPool, recordExecutions } from "./workflow";
 import { sealComparison } from "./seal";
@@ -18,8 +18,10 @@ export interface WeekCatalog {
   projectId: number;
   releaseId: number;
   releaseLabel: string;
-  /** Spira folder used, when Week loaded by folder (e.g. UAT - Phase 1). */
+  /** Spira folder used only when falling back from the release plan (e.g. UAT - Phase 1). */
   folderName: string | null;
+  /** How the catalog was chosen: release plan (same basis as Reports this-build) or folder fallback. */
+  source: "release" | "folder";
   modules: WeekModule[];
   testSetCount: number;
   caseCount: number;
@@ -44,22 +46,25 @@ async function listWeekTestSets(
   projectId: number,
   releaseId: number,
   cycleId: CycleId | null,
-): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null }> {
+): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
+  // Same cut as Reports “this build”: sets planned on the working release, iOS/Android only.
+  const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
+  if (onRelease.length) return { sets: onRelease, folderName: null, source: "release" };
+
   if (cycleId) {
     const folderName = CYCLE_PRESETS[cycleId].folderName;
     const folders = await listTestSetFolders(projectId);
     const folder = findCycleFolder(folders, folderName);
     if (folder) {
-      // Folder first (what you see in Spira). No release_id filter — the UI lists the whole folder.
-      const inFolder = await listTestSetsInFolder(projectId, folder.folderId, null);
-      if (inFolder.length) return { sets: inFolder, folderName: folder.name };
+      const inFolder = (await listTestSetsInFolder(projectId, folder.folderId, null)).filter((t) => isMobileWeekSet(t.name));
+      if (inFolder.length) return { sets: inFolder, folderName: folder.name, source: "folder" };
     }
   }
-  return { sets: await listTestSets(projectId, releaseId), folderName: null };
+  return { sets: [], folderName: null, source: "release" };
 }
 
 /**
- * Reads Spira test sets for the working cycle (UAT - Phase 1 folder when on UAT; else the release),
+ * Reads Spira iOS/Android test sets planned for the working release (same basis as Reports this-build),
  * groups them by module, and seals boards so weekly Excel can be recorded without Compare.
  */
 export async function loadWeekCatalog(input: {
@@ -75,14 +80,11 @@ export async function loadWeekCatalog(input: {
         ? "sit"
         : detectCycle(input.releaseId, []);
 
-  const { sets: listed, folderName } = await listWeekTestSets(input.projectId, input.releaseId, cycleId);
-  const mobile = listed.filter((t) => !/\bapi\b/i.test(t.name));
+  const { sets: mobile, folderName, source } = await listWeekTestSets(input.projectId, input.releaseId, cycleId);
   if (mobile.length === 0) {
     throw new HttpError(
       400,
-      folderName
-        ? `No mobile test sets in Spira folder "${folderName}".`
-        : `No mobile test sets are planned for release ${input.releaseLabel || input.releaseId} in Spira.`,
+      `No iOS/Android test sets are planned for release ${input.releaseLabel || input.releaseId} in Spira.`,
     );
   }
 
@@ -122,6 +124,7 @@ export async function loadWeekCatalog(input: {
     releaseId: input.releaseId,
     releaseLabel: input.releaseLabel,
     folderName,
+    source,
     modules,
     testSetCount: mobile.length,
     caseCount: modules.reduce((n, m) => n + m.caseCount, 0),

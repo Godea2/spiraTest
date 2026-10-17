@@ -140,6 +140,11 @@ describe("smoke pack headers and outcomes", () => {
     ]);
     expect(rowOutcomes(sheet.rows[1], "smoke").map((o) => o.result)).toEqual(["failed", "failed"]);
     expect(rowOutcomes(sheet.rows[2], "smoke")).toEqual([]);
+    expect(sheet.rows[0].query).toContain("Module: Customer Onboarding & Home Screen");
+    expect(sheet.rows[0].query).toContain("Feature / Journey:");
+    expect(sheet.rows[0].query).toContain("Smoke test case:");
+    expect(sheet.rows[0].query).toContain("UAT TC: UAT-ONB-001");
+    expect(sheet.rows[0].query).not.toContain("Expected:");
   });
 
   it("skips a Summary-only matrix", () => {

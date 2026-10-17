@@ -16,6 +16,8 @@ export interface WeekCatalog {
   releaseId: number;
   releaseLabel: string;
   folderName: string | null;
+  /** Release plan (Reports this-build) or folder fallback. */
+  source: "release" | "folder";
   modules: WeekModule[];
   testSetCount: number;
   caseCount: number;

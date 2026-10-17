@@ -7,6 +7,7 @@ import {
   detectCycle,
   findCycleFolder,
   guessMapping,
+  isMobileWeekSet,
   resolveCycleRelease,
   TEAM_DEFAULTS,
   type SettingsUpdate,
@@ -87,6 +88,14 @@ describe("module and platform suggested from a Spira test set name", () => {
     ["Android", "Android", "Other"],
   ])("%s → %s / %s", (name, module, platform) => {
     expect(guessMapping(name)).toEqual({ module, platform });
+  });
+
+  it("keeps only iOS/Android sets for the Week / Reports plan cut", () => {
+    expect(isMobileWeekSet("Transfers - iOS")).toBe(true);
+    expect(isMobileWeekSet("Transfers - Android")).toBe(true);
+    expect(isMobileWeekSet("API UAT - Payments")).toBe(false);
+    expect(isMobileWeekSet("Regression pack")).toBe(false);
+    expect(isMobileWeekSet("Payments (Web)")).toBe(false);
   });
 });
 

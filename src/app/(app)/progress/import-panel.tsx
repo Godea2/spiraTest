@@ -139,7 +139,7 @@ export function ImportPanel({
     <Section
       icon={FileSpreadsheet}
       title="Upload a progress sheet"
-      description="Drop an issue / retest log or a UAT smoke pack (.xlsx / .csv). Columns are detected automatically — Summary tabs are skipped. Gemini maps each row to the right Spira cases in the background; you confirm before anything is written. A Tester column sets who appears on Spira runs."
+      description="Drop the UAT smoke pack (.xlsx / .csv). Uses Module, Feature / Journey, Smoke Test Case, and iOS / Android status (Overall / Not Run / N/A skipped). Gemini matches in the background; you confirm before Record. A Tester column sets who appears on Spira runs."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && (
@@ -159,7 +159,7 @@ export function ImportPanel({
         >
           <Upload className="size-6 text-slate-400" aria-hidden />
           <span className="font-medium">Drop a .xlsx or .csv here, or click to choose</span>
-          <span className="text-xs text-slate-500">Best tab is chosen (not Summary). Issue log or ST ID / Smoke Test Case / iOS–Android / Overall Status.</span>
+          <span className="text-xs text-slate-500">Best tab is chosen (not Summary). Smoke: ST ID · Module · Feature / Journey · Smoke Test Case · iOS / Android status.</span>
           <input
             ref={input}
             type="file"

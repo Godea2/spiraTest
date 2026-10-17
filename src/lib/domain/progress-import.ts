@@ -216,15 +216,14 @@ function valueOf(values: Record<string, string>, map: ImportColumnMap, field: Im
 
 function buildQuery(row: Omit<ImportSheetRow, "query">, kind: ImportKind): string {
   if (kind === "smoke") {
+    // Match on the columns testers care about for this pack — not the long step text.
     const parts = [
-      row.caseId && `Case: ${row.caseId}`,
-      row.caseName && `Name: ${row.caseName}`,
-      row.uatRef && `UAT: ${row.uatRef}`,
-      row.feature && `Feature: ${row.feature}`,
       row.module && `Module: ${row.module}`,
-      row.expected && `Expected: ${row.expected}`,
+      row.feature && `Feature / Journey: ${row.feature}`,
+      row.caseName && `Smoke test case: ${row.caseName}`,
+      row.uatRef && `UAT TC: ${row.uatRef}`,
+      row.caseId && `ST ID: ${row.caseId}`,
       row.testerComment && `Comment: ${row.testerComment}`,
-      row.issue && `Notes: ${row.issue}`,
     ].filter(Boolean);
     return parts.join("\n").slice(0, MAX_IMPORT_CELL);
   }

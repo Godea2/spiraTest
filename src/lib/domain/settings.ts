@@ -131,6 +131,16 @@ export function guessMapping(testSetName: string): { module: string; platform: P
   return { module: match[1].trim(), platform };
 }
 
+/**
+ * Sets Week (and the Reports “this build” mobile total) should use: iOS or Android in the
+ * name. API and sets with no platform suffix are left out so the catalog matches the plan KPI.
+ */
+export function isMobileWeekSet(testSetName: string): boolean {
+  const n = testSetName.toLowerCase();
+  if (/\bapi\b/.test(n)) return false;
+  return /\bios\b|\bandroid\b/.test(n);
+}
+
 export const settingsUpdateSchema = z.object({
   projectId: z.number().int().positive().nullable(),
   releaseId: z.number().int().positive().nullable(),

@@ -422,6 +422,7 @@ export const weekRecordRequestSchema = z.object({
     releaseId: id,
     releaseLabel: z.string().trim().max(200),
     folderName: z.string().trim().max(200).nullable(),
+    source: z.enum(["release", "folder"]).default("release"),
     modules: z.array(weekModuleSchema).min(1).max(80),
     testSetCount: z.number().int().nonnegative(),
     caseCount: z.number().int().nonnegative(),

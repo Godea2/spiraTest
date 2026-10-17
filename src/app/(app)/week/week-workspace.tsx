@@ -98,7 +98,7 @@ export function WeekWorkspace() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Week"
-        description="Bring this week's Excel results into Spira for the build in Settings — no Compare step. Gemini works in the background to match each row to the right UAT (or SIT) cases; you review, then record Pass / Fail / Blocked."
+        description="Upload the UAT smoke pack: Module, Feature / Journey, Smoke Test Case, and iOS / Android status. Cases load from the same release plan as Reports (this build). Gemini matches each row; you review, then Record."
         actions={releaseLabel && <Badge tone="brand">{releaseLabel}</Badge>}
       />
 
@@ -119,7 +119,7 @@ export function WeekWorkspace() {
           <Section
             icon={CalendarDays}
             title="Spira cases for this build"
-            description="Reads the Spira folder for this cycle (UAT - Phase 1 when on UAT), same tree you see in Spira. API sets are left out."
+            description="Loads iOS/Android test sets planned on this release — same basis as Reports “this build” (~631 runs for UAT). API sets are left out."
             actions={
               <Button icon={RefreshCw} variant="primary" busy={loading} onClick={() => void load()}>
                 {catalog ? "Reload from Spira" : "Load cases from Spira"}
@@ -133,19 +133,22 @@ export function WeekWorkspace() {
             )}
             {loading && (
               <p className="flex items-center gap-2 text-sm text-slate-500">
-                <Spinner /> Reading test sets and cases from Spira…
+                <Spinner /> Reading planned iOS/Android cases from Spira…
               </p>
             )}
             {catalog && !loading && (
               <div className="flex flex-col gap-2">
                 <p className="text-sm text-slate-600 dark:text-zinc-400">
-                  {catalog.folderName ? (
+                  {catalog.source === "release" ? (
+                    <>Release plan · </>
+                  ) : catalog.folderName ? (
                     <>
                       Folder <span className="font-medium">{catalog.folderName}</span>
                       {" · "}
                     </>
                   ) : null}
                   {plural(catalog.caseCount, "case")} in {plural(catalog.modules.length, "module")} · {plural(catalog.testSetCount, "test set")}
+                  {catalog.source === "release" ? " (aligned with Reports this build)" : ""}
                 </p>
                 <ul className="flex flex-wrap gap-2">
                   {catalog.modules.map((m) => (
@@ -160,7 +163,7 @@ export function WeekWorkspace() {
             )}
             {!catalog && !loading && !loadError && (
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                Click <strong>Load cases from Spira</strong> once. Then upload the week&apos;s Excel — Gemini maps each issue or smoke case to the matching Spira tests before anything is written.
+                Click <strong>Load cases from Spira</strong> once. Then upload the smoke pack — Gemini maps Module / Feature / Smoke Test Case to Spira; iOS and Android statuses become separate results. Nothing is written until you Record.
               </p>
             )}
           </Section>
@@ -195,7 +198,7 @@ export function WeekWorkspace() {
             />
           ) : (
             <Notice tone="info" title="Load Spira cases before uploading">
-              Week maps your Excel to the cases on this build.{" "}
+              Week maps your smoke pack to the planned iOS/Android cases on this release (same plan Reports uses).{" "}
               <Link href="/settings" className="font-medium underline">
                 Settings → Testing cycle
               </Link>{" "}
