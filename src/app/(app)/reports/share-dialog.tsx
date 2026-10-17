@@ -101,7 +101,7 @@ export function ShareDialog({ request, onClose }: { request: ShareRequest; onClo
               </Button>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-zinc-400">
-              <span>Short link copied. Works until {dateText(link.expiresAt)} — fine to paste in WhatsApp.</span>
+              <span>Dated short link copied (e.g. /r/2026-10-17-k3m2). Works until {dateText(link.expiresAt)}.</span>
               <a href={link.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-brand-600 hover:underline dark:text-brand-400">
                 Open <ExternalLink className="size-3.5" aria-hidden />
               </a>

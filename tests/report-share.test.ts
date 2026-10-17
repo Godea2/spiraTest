@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultReportOptions, type ReportOptions } from "@/lib/domain/report";
 import { collectReportData } from "@/lib/domain/report-read";
 import type { ReportCatalog, ReportCase, TestSetMapping } from "@/lib/domain/types";
-import { createPublicShare, createShareToken, isShortShareCode, readShareToken, resolveShare } from "@/lib/server/report-share";
+import { createPublicShare, createShareToken, formatShareCode, isShortShareCode, readShareToken, resolveShare } from "@/lib/server/report-share";
 
 const NOW = Date.parse("2026-10-12T20:00:00Z");
 const options: ReportOptions = {
@@ -45,18 +45,18 @@ describe("public report links", () => {
     }
   });
 
-  it("treats short codes and legacy tokens differently", () => {
+  it("uses dated short codes, not the long signed token", () => {
     const { token } = createShareToken({ projectId: 24, options, mappings, days: 7, now: NOW });
+    expect(formatShareCode(NOW, "k3m2")).toBe("2026-10-12-k3m2");
+    expect(isShortShareCode("2026-10-17-k3m2")).toBe(true);
     expect(isShortShareCode("xY7k2m9pQz")).toBe(true);
     expect(isShortShareCode(token)).toBe(false);
   });
 
-  it("falls back to the long token when shared storage is not configured", async () => {
-    const { path, expiresAt } = await createPublicShare({ projectId: 24, options, mappings, days: 7, now: NOW });
-    expect(path.startsWith("/r/")).toBe(true);
-    expect(path.length).toBeGreaterThan(40);
-    expect(isShortShareCode(path.slice(3))).toBe(false);
-    await expect(resolveShare(path.slice(3), NOW)).resolves.toMatchObject({ ok: true, projectId: 24, expiresAt });
+  it("requires shared storage so the URL stays short", async () => {
+    await expect(createPublicShare({ projectId: 24, options, mappings, days: 7, now: NOW })).rejects.toThrow(/Supabase|shared storage/i);
+    const { token, expiresAt } = createShareToken({ projectId: 24, options, mappings, days: 7, now: NOW });
+    await expect(resolveShare(token, NOW)).resolves.toMatchObject({ ok: true, projectId: 24, expiresAt });
   });
 });
 

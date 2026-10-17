@@ -7,24 +7,22 @@ import { PLATFORMS, type TestSetMapping } from "@/lib/domain/types";
 import { readItems, storeConfigured, writeItems } from "@/lib/server/store";
 
 /**
- * Public report links. New links use a short code (`/r/xY7k2m9pQz`) stored in Supabase that points at a
- * signed token. Older long tokens still work. The signed payload holds the report's setup and expiry so
- * the link can only open that one report. Changing SESSION_SECRET revokes every signed token.
+ * Public report links. New links are short and dated (`/r/2026-10-17-k3m2`), with the report setup
+ * stored in Supabase. Older long signed tokens still open. Changing SESSION_SECRET revokes signed tokens.
  */
 
 export const SHARE_DAYS = [7, 30, 90] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TOKEN = 12_000;
 const MAX_JSON = 200_000;
-/** Short public codes: URL-safe, no ambiguous 0/O/1/l. */
+/** Short public suffix: URL-safe, no ambiguous 0/O/1/l. */
 const SHORT_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-const SHORT_LEN = 10;
 const SHORT_KEY = (code: string) => `report-share:${code}`;
 
 const storedShareSchema = z.object({
   v: z.literal(1),
   token: z.string().min(20).max(MAX_TOKEN),
-  expiresAt: z.string().datetime(),
+  expiresAt: z.string().min(10),
 });
 
 export const shareMappingSchema = z.object({
@@ -72,19 +70,29 @@ export function createShareToken(input: {
 
 /** True when the path segment is a short code, not a legacy signed token. */
 export function isShortShareCode(id: string): boolean {
-  return id.length >= 6 && id.length <= 32 && !id.includes(".") && /^[A-Za-z0-9_-]+$/.test(id);
+  if (id.includes(".")) return false;
+  // Dated links: /r/2026-10-17-k3m2
+  if (/^\d{4}-\d{2}-\d{2}-[A-Za-z0-9]{4,8}$/.test(id)) return true;
+  // Earlier random short codes (no date prefix)
+  return id.length >= 6 && id.length <= 32 && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
-function shortCode(length = SHORT_LEN): string {
+function randomSuffix(length: number): string {
   const bytes = randomBytes(length);
   let out = "";
   for (let i = 0; i < length; i += 1) out += SHORT_ALPHABET[bytes[i]! % SHORT_ALPHABET.length];
   return out;
 }
 
-async function allocateShareCode(): Promise<string> {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const code = shortCode();
+/** Readable share path segment: report date + short suffix. */
+export function formatShareCode(now = Date.now(), suffix = randomSuffix(4)): string {
+  const day = new Date(now).toISOString().slice(0, 10);
+  return `${day}-${suffix}`;
+}
+
+async function allocateShareCode(now: number): Promise<string> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = formatShareCode(now);
     const existing = await readItems([SHORT_KEY(code)]);
     const row = existing[0];
     if (!row || row.deleted || row.value == null) return code;
@@ -93,8 +101,8 @@ async function allocateShareCode(): Promise<string> {
 }
 
 /**
- * Creates a public link. Prefers a short `/r/{code}` stored in Supabase; falls back to the long signed
- * token when shared storage is not configured.
+ * Creates a short dated public link (`/r/2026-10-17-k3m2`). Requires Supabase shared storage — never
+ * returns the long signed token in the URL.
  */
 export async function createPublicShare(input: {
   projectId: number;
@@ -103,17 +111,21 @@ export async function createPublicShare(input: {
   days: number;
   now?: number;
 }): Promise<{ path: string; expiresAt: string }> {
-  const { token, expiresAt } = createShareToken(input);
   if (!storeConfigured()) {
-    return { path: `/r/${token}`, expiresAt };
+    throw new ShareError(
+      "Short report links need Supabase. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the server, then try again.",
+    );
   }
+  const now = input.now ?? Date.now();
+  const { token, expiresAt } = createShareToken({ ...input, now });
   try {
-    const code = await allocateShareCode();
+    const code = await allocateShareCode(now);
     await writeItems([{ key: SHORT_KEY(code), value: { v: 1, token, expiresAt } }]);
     return { path: `/r/${code}`, expiresAt };
   } catch (error) {
-    console.error("Short report link could not be stored; using the long token.", error);
-    return { path: `/r/${token}`, expiresAt };
+    if (error instanceof ShareError) throw error;
+    console.error("Short report link could not be stored", error);
+    throw new ShareError("Could not save the short link in shared storage. Check Supabase, then try again.");
   }
 }
 
@@ -148,7 +160,7 @@ export function readShareToken(token: string, now = Date.now()): ShareRead {
   };
 }
 
-/** Resolves a short code or a legacy long token into the report setup. */
+/** Resolves a short dated code or a legacy long token into the report setup. */
 export async function resolveShare(id: string, now = Date.now()): Promise<ShareRead> {
   const decoded = decodeURIComponent(id);
   if (isShortShareCode(decoded)) {
