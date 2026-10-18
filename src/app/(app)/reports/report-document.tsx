@@ -374,7 +374,7 @@ function SummaryPage({ report }: { report: Report }) {
         </Panel>
         <Panel
           title="Modules ready for UAT"
-          foot="Ready = every run executed, pass rate at target, nothing blocked, no open in-scope defects. Mid-run work stays In progress until those gates are met."
+          foot="Ready = every run executed (same as modules fully executed). Unfinished modules with blocked tests or in-scope open defects stay At risk."
         >
           <div className="flex items-center gap-3">
             <Donut
@@ -654,7 +654,7 @@ function ModulesPage({ report, changes }: { report: Report; changes: ReportChang
   return (
     <>
       <div>
-        <Heading note="A module is ready for UAT only when every run is executed on every platform, the pass rate is at target, nothing is blocked and no in-scope defect is open. Defects marked out of scope do not block readiness. Modules still running stay In progress unless they are blocked or carry an in-scope open defect.">
+        <Heading note="Ready means every planned run on every platform has been executed — the same count as modules fully executed above. Pass rate, blocked tests and open defects stay in the columns; unfinished modules with blocked tests or in-scope open defects are At risk.">
           3b. Module readiness for UAT
         </Heading>
         <Table

@@ -212,7 +212,7 @@ describe("buildReport", () => {
     expect(report.kpis.api).toMatchObject({ inScope: 1, executed: 1, passed: 1 });
     expect(report.kpis.spiraRollup).toMatchObject({ passed: 5, failed: 1 });
     const payments = report.modules.find((m) => m.name === "Payments")!;
-    expect(payments).toMatchObject({ plan: 7, inScope: 6, laterBuilds: 1, added: 2, executed: 6, failedCases: 1, samePerPlatform: false, streams: ["iOS", "Android"], openDefects: 1, status: "atRisk" });
+    expect(payments).toMatchObject({ plan: 7, inScope: 6, laterBuilds: 1, added: 2, executed: 6, failedCases: 1, samePerPlatform: false, streams: ["iOS", "Android"], openDefects: 1, status: "ready" });
     expect(payments.byStream.iOS).toMatchObject({ total: 3, executed: 3 });
     expect(payments.baselineByStream.iOS).toMatchObject({ total: 4, executed: 0 });
     expect(report.modules.find((m) => m.name === "Profile")!.status).toBe("notStarted");
@@ -307,9 +307,10 @@ describe("buildReport", () => {
     expect(report.narrative.headline).toContain("The only failure is in Payments.");
     expect(report.narrative.actions.map((a) => a.title)).toEqual(["Payments quality", "Remaining scope", "Overdue test sets"]);
     expect(report.narrative.why).toEqual([
-      "Payments: 5 of 6 runs passed (83.3%); 1 case failed (1 failed run), traced to 1 open defect, pass rate below the 95% target.",
+      "Payments: fully executed (6 runs · pass 83.3% (below 95%) · 1 failed run · 1 open defect).",
       "Profile: 2 cases on iOS not yet started.",
     ]);
+    expect(report.readiness).toMatchObject({ ready: 1, atRisk: 0, inProgress: 0, notStarted: 1 });
     expect(report.statusReason).toBe(
       "Three of seven criteria are met (blocked tests, no Critical or High severity defects and defect ageing); execution, pass rate, defect closure and module coverage are not yet met.",
     );
@@ -320,9 +321,8 @@ describe("buildReport", () => {
 
   it("says when the same cases failed on both platforms", () => {
     const both = buildReport(input({ results: { ...input().results, 21: [tc(100, PASSED, "2026-10-10T12:00:00Z"), tc(101, FAILED, "2026-10-11T12:00:00Z"), tc(103, PASSED)] } }));
-    expect(both.narrative.why[0]).toBe(
-      "Payments: 4 of 6 runs passed (66.7%); the same 1 case failed on both platforms (2 failed runs), traced to 1 open defect, pass rate below the 95% target.",
-    );
+    expect(both.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "ready", samePerPlatform: true, failedCases: 1 });
+    expect(both.narrative.why[0]).toBe("Payments: fully executed (6 runs · pass 66.7% (below 95%) · 2 failed runs · 1 open defect).");
     expect(both.defects.rows[0].failedRuns).toBe(2);
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
   });

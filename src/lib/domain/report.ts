@@ -1012,17 +1012,11 @@ export function buildReport(input: ReportInput): Report {
     const fullyRun = t.executable > 0 && t.executed === t.executable;
     const passOk = t.executed > 0 ? (passPct ?? 0) >= targets.passRatePct : null;
     const noBlocked = t.outcomes.blocked === 0;
-    // Ready only when the module is finished and clean. Mid-run failures or a pass rate still
-    // climbing toward the target stay In progress so the summary moves as testing advances;
-    // blocked runs, in-scope open defects, or a finished module under the pass target are At risk.
+    // Ready = fully executed (matches "modules fully executed" on the exit bars). Quality issues
+    // stay visible on the module table; unfinished modules with blocks or in-scope open defects
+    // are At risk, otherwise In progress.
     const status: ModuleStatus =
-      t.executed === 0
-        ? "notStarted"
-        : fullyRun && passOk && noBlocked && openInBuild === 0
-          ? "ready"
-          : !noBlocked || openInBuild > 0 || (fullyRun && passOk === false)
-            ? "atRisk"
-            : "inProgress";
+      t.executed === 0 ? "notStarted" : fullyRun ? "ready" : !noBlocked || openInBuild > 0 ? "atRisk" : "inProgress";
     const byCase = groupBy(mine, (r) => String(r.testCaseId));
     const samePerPlatform = [...byCase.values()].every((list) => new Set(list.filter((r) => isExecuted(r.outcome)).map((r) => r.outcome)).size <= 1);
     let lastRun: string | null = null;
@@ -1289,6 +1283,7 @@ export function buildReport(input: ReportInput): Report {
       progress: (kpis.execPct ?? 0) / 100,
       mark: targets.executedPct / 100,
       met: criteria[0].met,
+      soft: true,
     },
     {
       label: "Pass rate of executed",
@@ -1304,6 +1299,7 @@ export function buildReport(input: ReportInput): Report {
       progress: modules.length ? modulesComplete / modules.length : 0,
       mark: 1,
       met: criteria[6].met,
+      soft: true,
     },
     {
       label: "Blocked tests cleared",
@@ -1603,13 +1599,14 @@ export function buildReport(input: ReportInput): Report {
   const by = (s: ModuleStatus) => modules.filter((m) => m.status === s);
   const ready = by("ready");
   const why: string[] = [];
-  if (ready.length) {
-    const executed = ready.reduce((n, m) => n + m.executed, 0);
-    const split = splitOf(runs.filter((r) => ready.some((m) => m.id === r.moduleId)));
-    const platforms = STREAMS.filter((s) => (split[s] ?? 0) > 0);
-    why.push(
-      `${list(ready.map((m) => m.name))}: ${executed.toLocaleString()} of ${executed.toLocaleString()} test runs passed${platforms.length > 1 ? ` (${perPlatform(split, platforms, "cases on each platform")})` : ""}, with no defects.`,
-    );
+  for (const m of by("ready")) {
+    const quality = [
+      m.checks.passOk === false ? `pass ${formatPct(m.passPct)} (below ${targets.passRatePct}%)` : `${formatPct(m.passPct)} pass`,
+      m.outcomes.failed ? plural(m.outcomes.failed, "failed run") : "",
+      m.outcomes.blocked ? plural(m.outcomes.blocked, "blocked run") : "",
+      m.openDefects ? plural(m.openDefects, "open defect") : "",
+    ].filter(Boolean);
+    why.push(`${m.name}: fully executed (${plural(m.executed, "run")}${quality.length ? ` · ${quality.join(" · ")}` : ""}).`);
   }
   for (const m of by("atRisk")) {
     const failedRuns = m.outcomes.failed;
@@ -1621,10 +1618,9 @@ export function buildReport(input: ReportInput): Report {
       : "";
     const blocked = m.outcomes.blocked ? `, ${plural(m.outcomes.blocked, "blocked run")}` : "";
     const traced = m.openDefects ? `, traced to ${plural(m.openDefects, "open defect")}` : failedRuns ? ", with no defect linked" : "";
-    const passShort = m.checks.fullyRun && m.checks.passOk === false ? `, pass rate below the ${targets.passRatePct}% target` : "";
     const left = m.stillToRun ? `; ${plural(m.stillToRun, "run")} still to go` : "";
     why.push(
-      `${m.name}: ${m.outcomes.passed.toLocaleString()} of ${plural(m.executed, "run")} passed (${formatPct(m.passPct)})${failures}${blocked}${traced}${passShort}${left}.`,
+      `${m.name}: ${m.outcomes.passed.toLocaleString()} of ${plural(m.executed, "run")} passed (${formatPct(m.passPct)})${failures}${blocked}${traced}${left}.`,
     );
   }
   for (const m of by("inProgress")) {
