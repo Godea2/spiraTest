@@ -1,8 +1,6 @@
-import type { Metadata } from "next";
-import { WeekWorkspace } from "./week-workspace";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Week" };
-
-export default function WeekPage() {
-  return <WeekWorkspace />;
+/** Week was renamed to UAT build. */
+export default function WeekRedirectPage() {
+  redirect("/uat-build");
 }

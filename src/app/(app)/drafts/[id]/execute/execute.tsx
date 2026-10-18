@@ -66,7 +66,18 @@ interface BulkReport {
   seconds: number;
 }
 
-export function Execute({ id }: { id: string }) {
+export function Execute({
+  id,
+  backHref,
+  backLabel,
+  hideBoard,
+}: {
+  id: string;
+  /** Override the Completed / Drafts back link (e.g. UAT build). */
+  backHref?: string;
+  backLabel?: string;
+  hideBoard?: boolean;
+}) {
   const { draft, setDraft, error: loadError } = useDraft(id);
   const { spira } = useSettings();
   const [tester, setTester] = useState("");
@@ -140,7 +151,19 @@ export function Execute({ id }: { id: string }) {
   const visible = scoped.filter((card) => inBucket(card, filter));
 
   if (loadError && !draft) {
-    return <Notice tone="danger" title="This draft could not be opened" action={<ButtonLink href="/completed" size="sm">Back to Completed</ButtonLink>}>{loadError}</Notice>;
+    return (
+      <Notice
+        tone="danger"
+        title="This draft could not be opened"
+        action={
+          <ButtonLink href={backHref ?? "/completed"} size="sm">
+            {backLabel ? `Back to ${backLabel}` : "Back to Completed"}
+          </ButtonLink>
+        }
+      >
+        {loadError}
+      </Notice>
+    );
   }
   if (!draft) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> Loading…</div>;
 
@@ -365,8 +388,12 @@ export function Execute({ id }: { id: string }) {
       <PageHeader
         eyebrow={
           <span className="flex flex-wrap items-center gap-2">
-            <Link href={isCompleted(draft.status) ? "/completed" : "/drafts"} className="inline-flex items-center gap-1 transition hover:text-slate-900 dark:hover:text-white">
-              <ChevronLeft className="size-4" aria-hidden /> {isCompleted(draft.status) ? "Completed" : "Drafts"}
+            <Link
+              href={backHref ?? (isCompleted(draft.status) ? "/completed" : "/drafts")}
+              className="inline-flex items-center gap-1 transition hover:text-slate-900 dark:hover:text-white"
+            >
+              <ChevronLeft className="size-4" aria-hidden />{" "}
+              {backLabel ?? (isCompleted(draft.status) ? "Completed" : "Drafts")}
             </Link>
             <span className="text-slate-300 dark:text-zinc-700">/</span>
             {draft.module}
@@ -377,8 +404,10 @@ export function Execute({ id }: { id: string }) {
         description="Run the In Scope cases, including those in Defects. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
         actions={
           <>
-            <ButtonLink href={`/drafts/${draft.id}`} variant="ghost">Board</ButtonLink>
-            <ButtonLink href={`/defects?draft=${encodeURIComponent(draft.id)}`} icon={Bug}>Find defects</ButtonLink>
+            {!hideBoard && <ButtonLink href={`/drafts/${draft.id}`} variant="ghost">Board</ButtonLink>}
+            <ButtonLink href={backHref ? `${backHref}?tab=defects` : `/defects?draft=${encodeURIComponent(draft.id)}`} icon={Bug}>
+              Find defects
+            </ButtonLink>
             <Button icon={Download} onClick={() => void exportExecution(draft, spira?.siteUrl ?? null)}>Report</Button>
             <Button icon={RefreshCw} onClick={() => void checkSpira()} busy={sync.checking}>Check Spira again</Button>
           </>

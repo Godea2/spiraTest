@@ -149,3 +149,12 @@ export function deleteDraft(id: string): void {
   removeItem(keyFor(id));
   logActivity({ type: "draft.deleted", message: `Deleted draft "${draft.name}".`, draftId: id, module: draft.module });
 }
+
+/** Writes a draft with a caller-chosen id (e.g. UAT build modules). Overwrites if present. */
+export function putDraft(draft: Draft): Draft {
+  keyFor(draft.id); // validate id pattern
+  const now = new Date().toISOString();
+  const next = { ...draft, updatedAt: now > draft.updatedAt ? now : new Date(Date.parse(draft.updatedAt) + 1).toISOString() };
+  writeItem(keyFor(next.id), next);
+  return next;
+}

@@ -46,7 +46,7 @@ Account
 - A click on the button takes user to the modal to upgrade tier`;
 
 /**
- * Paste informal tester notes; Gemini splits done vs left, maps Spira cases on the Week plan,
+ * Paste informal tester notes; Gemini splits done vs left, maps Spira cases on the UAT build plan,
  * and records Passed for reviewed done items only.
  */
 export function NotesWorkspace() {
@@ -218,7 +218,7 @@ export function NotesWorkspace() {
           <Section
             icon={NotebookPen}
             title="Spira cases for this build"
-            description="Same release plan as Week / Reports this build (iOS/Android). Load once before mapping notes."
+            description="Same release plan as UAT build / Reports this build (iOS/Android). Load once before mapping notes."
             actions={
               <Button icon={RefreshCw} variant="primary" busy={loading} onClick={() => void load()}>
                 {catalog ? "Reload from Spira" : "Load cases from Spira"}

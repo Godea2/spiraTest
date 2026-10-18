@@ -65,6 +65,7 @@ import { effectiveColumn, isCompleted } from "@/lib/domain/board";
 import { MAX_ATTACHMENTS, MAX_ENVIRONMENT } from "@/lib/domain/defect-report";
 import { defectTargets, failedForDefect, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity, similarDefects } from "@/lib/domain/defects";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
+import { isUatDraftId } from "@/lib/domain/uat-build";
 import {
   COLUMN_LABELS,
   type BlockedConfidence,
@@ -134,26 +135,47 @@ function moveNote(column: Column, completed: boolean): string | null {
   return "Moves from In Scope to Defects.";
 }
 
-export function DefectWorkspace({ from }: { from: string | null }) {
+export function DefectWorkspace({
+  from,
+  scopedDrafts,
+  embedded,
+}: {
+  from: string | null;
+  /** When set, only these drafts are searched (UAT build). */
+  scopedDrafts?: Draft[] | null;
+  /** Hide page chrome when embedded in UAT build. */
+  embedded?: boolean;
+}) {
   const { settings, ai, spira } = useSettings();
   const aiOn = !!ai?.configured;
-  const [drafts, setDrafts] = useState<Draft[] | null>(null);
+  const [drafts, setDrafts] = useState<Draft[] | null>(scopedDrafts ?? null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [records, setRecords] = useState<DefectRecord[]>([]);
   const [pickedProject, setProject] = useState<number | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [tester, setTester] = useState("");
+  const scopedMode = scopedDrafts !== undefined;
 
   const refresh = useCallback(() => {
     try {
-      setDrafts(allDrafts());
+      if (scopedMode) {
+        setDrafts(scopedDrafts ?? []);
+      } else {
+        setDrafts(allDrafts().filter((d) => !isUatDraftId(d.id)));
+      }
       setLoadError(null);
     } catch (err) {
       setLoadError(errorMessage(err));
     }
-  }, []);
+  }, [scopedMode, scopedDrafts]);
 
   useEffect(() => {
+    if (scopedMode) {
+      setDrafts(scopedDrafts ?? []);
+      setTester(getTester());
+      setExcluded(new Set());
+      return;
+    }
     let active = true;
     Promise.resolve()
       .then(() => {
@@ -162,7 +184,7 @@ export function DefectWorkspace({ from }: { from: string | null }) {
         } catch {
           // Older defects stay in their drafts and are moved on the next visit.
         }
-        return allDrafts();
+        return allDrafts().filter((d) => !isUatDraftId(d.id));
       })
       .then(
         (all) => {
@@ -177,7 +199,7 @@ export function DefectWorkspace({ from }: { from: string | null }) {
     return () => {
       active = false;
     };
-  }, [from]);
+  }, [from, scopedMode, scopedDrafts]);
 
   const projects = useMemo(() => [...new Set((drafts ?? []).filter((d) => d.testSets.length > 0).map((d) => d.projectId))], [drafts]);
   const settingsProject = settings?.projectId ?? null;
@@ -217,18 +239,31 @@ export function DefectWorkspace({ from }: { from: string | null }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Defects"
-        description="Describe a defect once. Gemini looks for the cases it breaks in every module you compared, Draft or Completed, including Out of Scope cases that have not been removed yet. The cases you choose move to their board's Defects column, are failed in Spira and linked to one incident."
-        actions={ai && <Badge tone={aiOn ? "brand" : "neutral"}>{aiOn ? <><Sparkles aria-hidden /> {ai.model}</> : "Gemini not configured"}</Badge>}
-      />
+      {!embedded && (
+        <PageHeader
+          title="Defects"
+          description="Describe a defect once. Gemini looks for the cases it breaks in every module you compared, Draft or Completed, including Out of Scope cases that have not been removed yet. The cases you choose move to their board's Defects column, are failed in Spira and linked to one incident."
+          actions={ai && <Badge tone={aiOn ? "brand" : "neutral"}>{aiOn ? <><Sparkles aria-hidden /> {ai.model}</> : "Gemini not configured"}</Badge>}
+        />
+      )}
 
       {inProject.length === 0 ? (
-        <EmptyState icon={Bug} title="Nothing to search yet" action={<ButtonLink href="/" variant="primary">Start a comparison</ButtonLink>}>
-          Compare a module with its Spira test sets first. Its cases can then be searched for defects here, before or after the live apply.
+        <EmptyState
+          icon={Bug}
+          title="Nothing to search yet"
+          action={
+            <ButtonLink href={scopedMode ? "/uat-build" : "/"} variant="primary">
+              {scopedMode ? "Open UAT build" : "Start a comparison"}
+            </ButtonLink>
+          }
+        >
+          {scopedMode
+            ? "Load cases from Spira on UAT build first, then search for defects against this build."
+            : "Compare a module with its Spira test sets first. Its cases can then be searched for defects here, before or after the live apply."}
         </EmptyState>
       ) : (
         <>
+          {!scopedMode && (
           <Section
             icon={Layers}
             title="Where to look"
@@ -303,6 +338,27 @@ export function DefectWorkspace({ from }: { from: string | null }) {
               </div>
             </div>
           </Section>
+          )}
+
+          {scopedMode && (
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <p className="text-sm text-slate-600 dark:text-zinc-400">
+                Searching this build: {plural(inProject.length, "module")}, {plural(scopedCases, "case")}.
+              </p>
+              <label className="flex min-w-[16rem] flex-col gap-1 text-sm">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <UserRound className="size-4 text-slate-400" aria-hidden /> Tester
+                </span>
+                <input
+                  className="input"
+                  placeholder="Your name, written on each run"
+                  value={tester}
+                  maxLength={100}
+                  onChange={(e) => changeTester(e.target.value)}
+                />
+              </label>
+            </div>
+          )}
 
           {projectId !== null && (
             <Finder

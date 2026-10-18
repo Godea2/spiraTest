@@ -13,6 +13,7 @@ import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
 import { completeWithoutChanges } from "@/lib/client/workflow";
 import { isCompleted } from "@/lib/domain/board";
 import { pushTarget } from "@/lib/domain/mirror";
+import { isUatDraftId } from "@/lib/domain/uat-build";
 import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
 
 type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
@@ -183,11 +184,12 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
   const inBucket = useMemo(
     () =>
       drafts
-        ?.filter((d) => isCompleted(d.status) === (bucket === "completed"))
+        ?.filter((d) => !isUatDraftId(d.id) && isCompleted(d.status) === (bucket === "completed"))
         .sort((a, b) => (bucket === "completed" ? (b.completedAt ?? "").localeCompare(a.completedAt ?? "") : 0)) ?? null,
     [drafts, bucket],
   );
-  const otherCount = drafts && inBucket ? drafts.length - inBucket.length : 0;
+  const otherCount =
+    drafts && inBucket ? drafts.filter((d) => !isUatDraftId(d.id)).length - inBucket.length : 0;
   /** The newest draft copying each draft to the other platform. */
   const copies = useMemo(
     () => new Map((drafts ?? []).filter((d) => d.mirror).reverse().map((d) => [d.mirror!.sourceDraftId, d])),

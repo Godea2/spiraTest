@@ -4,8 +4,8 @@ import clsx from "clsx";
 import {
   Activity,
   Bug,
-  CalendarDays,
   CircleCheckBig,
+  ClipboardList,
   Database,
   FileChartColumn,
   GitCompareArrows,
@@ -39,7 +39,7 @@ const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: str
   { href: "/", label: "Compare", icon: GitCompareArrows, match: (p) => p === "/" },
   { href: "/drafts", label: "Drafts", icon: KanbanSquare, match: (p) => p.startsWith("/drafts") },
   { href: "/completed", label: "Completed", icon: CircleCheckBig, match: (p) => p.startsWith("/completed") },
-  { href: "/week", label: "Week", icon: CalendarDays, match: (p) => p.startsWith("/week") },
+  { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week") },
   { href: "/notes", label: "Notes", icon: NotebookPen, match: (p) => p.startsWith("/notes") },
   { href: "/progress", label: "Progress", icon: ListChecks, match: (p) => p.startsWith("/progress") },
   { href: "/defects", label: "Defects", icon: Bug, match: (p) => p.startsWith("/defects") },

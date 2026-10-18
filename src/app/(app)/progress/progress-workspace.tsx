@@ -23,6 +23,7 @@ import {
   type ProgressSearch,
 } from "@/lib/client/progress";
 import { isCompleted } from "@/lib/domain/board";
+import { isUatDraftId } from "@/lib/domain/uat-build";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
 import type { BlockedConfidence, Draft, ExecutionStatus } from "@/lib/domain/types";
 import { StatusChip } from "../drafts/[id]/execute/runner";
@@ -103,7 +104,10 @@ export function ProgressWorkspace() {
     return projects[0] ?? null;
   }, [pickedProject, projects, settingsProject]);
 
-  const inProject = useMemo(() => (drafts ?? []).filter((d) => d.projectId === projectId && d.testSets.length > 0), [drafts, projectId]);
+  const inProject = useMemo(
+    () => (drafts ?? []).filter((d) => d.projectId === projectId && d.testSets.length > 0 && !isUatDraftId(d.id)),
+    [drafts, projectId],
+  );
   const inRelease = useMemo(() => {
     if (!releaseOnly || settingsReleaseId === null) return inProject;
     const matched = inProject.filter((d) => d.releaseId === settingsReleaseId);
