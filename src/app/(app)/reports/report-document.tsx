@@ -589,7 +589,7 @@ function ReadinessPage({ report }: { report: Report }) {
         </Heading>
         <div className="report-keep mb-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
           {report.bars.map((b) => {
-            const good = b.met || b.soft;
+            const good = b.met || Boolean(b.soft);
             return (
               <div key={b.label}>
                 <div className="flex justify-between gap-2 text-[11.5px]">
