@@ -547,6 +547,8 @@ export interface ReadinessBar {
   progress: number;
   mark: number;
   met: boolean;
+  /** Paint the bar green even when the target is not met (pass rate is progress, not a failure). */
+  soft?: boolean;
 }
 
 export interface ScopeRow {
@@ -987,11 +989,16 @@ export function buildReport(input: ReportInput): Report {
     );
 
   const openDefectsByModule = new Map<string, number>();
+  const openInBuildByModule = new Map<string, number>();
   const defectsByModule = new Map<string, number>();
   for (const row of defectRows) {
     for (const id of new Set(row.testCaseIds.flatMap((caseId) => [...(modulesOfCase.get(caseId) ?? [])]))) {
       defectsByModule.set(id, (defectsByModule.get(id) ?? 0) + 1);
-      if (row.incident.open) openDefectsByModule.set(id, (openDefectsByModule.get(id) ?? 0) + 1);
+      if (row.incident.open) {
+        openDefectsByModule.set(id, (openDefectsByModule.get(id) ?? 0) + 1);
+        // Out-of-scope notes do not block module readiness; they are tracked as scope drift instead.
+        if (row.phase !== "out") openInBuildByModule.set(id, (openInBuildByModule.get(id) ?? 0) + 1);
+      }
     }
   }
 
@@ -1001,15 +1008,19 @@ export function buildReport(input: ReportInput): Report {
     const execPct = pct(t.executed, t.executable);
     const passPct = pct(t.outcomes.passed, t.executed);
     const openDefects = openDefectsByModule.get(id) ?? 0;
+    const openInBuild = openInBuildByModule.get(id) ?? 0;
     const fullyRun = t.executable > 0 && t.executed === t.executable;
     const passOk = t.executed > 0 ? (passPct ?? 0) >= targets.passRatePct : null;
     const noBlocked = t.outcomes.blocked === 0;
+    // Ready only when the module is finished and clean. Mid-run failures or a pass rate still
+    // climbing toward the target stay In progress so the summary moves as testing advances;
+    // blocked runs, in-scope open defects, or a finished module under the pass target are At risk.
     const status: ModuleStatus =
       t.executed === 0
         ? "notStarted"
-        : fullyRun && passOk && noBlocked && openDefects === 0
+        : fullyRun && passOk && noBlocked && openInBuild === 0
           ? "ready"
-          : t.outcomes.failed > 0 || !noBlocked || openDefects > 0 || passOk === false
+          : !noBlocked || openInBuild > 0 || (fullyRun && passOk === false)
             ? "atRisk"
             : "inProgress";
     const byCase = groupBy(mine, (r) => String(r.testCaseId));
@@ -1285,6 +1296,7 @@ export function buildReport(input: ReportInput): Report {
       progress: (kpis.passPct ?? 0) / 100,
       mark: targets.passRatePct / 100,
       met: criteria[1].met,
+      soft: true,
     },
     {
       label: "Modules fully executed",
@@ -1609,12 +1621,17 @@ export function buildReport(input: ReportInput): Report {
       : "";
     const blocked = m.outcomes.blocked ? `, ${plural(m.outcomes.blocked, "blocked run")}` : "";
     const traced = m.openDefects ? `, traced to ${plural(m.openDefects, "open defect")}` : failedRuns ? ", with no defect linked" : "";
+    const passShort = m.checks.fullyRun && m.checks.passOk === false ? `, pass rate below the ${targets.passRatePct}% target` : "";
     const left = m.stillToRun ? `; ${plural(m.stillToRun, "run")} still to go` : "";
     why.push(
-      `${m.name}: ${m.outcomes.passed.toLocaleString()} of ${plural(m.executed, "run")} passed (${formatPct(m.passPct)})${failures}${blocked}${traced}${left}.`,
+      `${m.name}: ${m.outcomes.passed.toLocaleString()} of ${plural(m.executed, "run")} passed (${formatPct(m.passPct)})${failures}${blocked}${traced}${passShort}${left}.`,
     );
   }
-  for (const m of by("inProgress")) why.push(`${m.name}: ${m.executed.toLocaleString()} of ${plural(m.executable, "run")} so far, with no failures.`);
+  for (const m of by("inProgress")) {
+    const failedRuns = m.outcomes.failed;
+    const failures = failedRuns ? `, ${plural(m.failedCases, "case")} failed so far` : ", with no failures yet";
+    why.push(`${m.name}: ${m.executed.toLocaleString()} of ${plural(m.executable, "run")} so far (${formatPct(m.passPct)} pass)${failures}.`);
+  }
   if (notStarted.length) {
     why.push(`${list(notStarted.map((m) => m.name))}: ${runsText(splitOf(runs.filter((r) => notStarted.some((m) => m.id === r.moduleId))))} not yet started.`);
   }

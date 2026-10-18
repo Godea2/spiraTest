@@ -307,7 +307,7 @@ describe("buildReport", () => {
     expect(report.narrative.headline).toContain("The only failure is in Payments.");
     expect(report.narrative.actions.map((a) => a.title)).toEqual(["Payments quality", "Remaining scope", "Overdue test sets"]);
     expect(report.narrative.why).toEqual([
-      "Payments: 5 of 6 runs passed (83.3%); 1 case failed (1 failed run), traced to 1 open defect.",
+      "Payments: 5 of 6 runs passed (83.3%); 1 case failed (1 failed run), traced to 1 open defect, pass rate below the 95% target.",
       "Profile: 2 cases on iOS not yet started.",
     ]);
     expect(report.statusReason).toBe(
@@ -320,9 +320,43 @@ describe("buildReport", () => {
 
   it("says when the same cases failed on both platforms", () => {
     const both = buildReport(input({ results: { ...input().results, 21: [tc(100, PASSED, "2026-10-10T12:00:00Z"), tc(101, FAILED, "2026-10-11T12:00:00Z"), tc(103, PASSED)] } }));
-    expect(both.narrative.why[0]).toBe("Payments: 4 of 6 runs passed (66.7%); the same 1 case failed on both platforms (2 failed runs), traced to 1 open defect.");
+    expect(both.narrative.why[0]).toBe(
+      "Payments: 4 of 6 runs passed (66.7%); the same 1 case failed on both platforms (2 failed runs), traced to 1 open defect, pass rate below the 95% target.",
+    );
     expect(both.defects.rows[0].failedRuns).toBe(2);
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
+  });
+
+  it("marks a finished clean module ready, and mid-run work in progress until gates fail", () => {
+    const allPassed = {
+      ...input().results,
+      20: [tc(100, PASSED, "2026-10-10T10:00:00Z"), tc(101, PASSED, "2026-10-11T10:00:00Z"), tc(103, PASSED, "2026-10-11T11:00:00Z")],
+      21: [tc(100, PASSED, "2026-10-10T12:00:00Z"), tc(101, PASSED, "2026-10-11T12:00:00Z"), tc(103, PASSED, "2026-10-11T12:30:00Z")],
+    };
+    const ready = buildReport(input({ results: allPassed, incidents: [], links: {} }));
+    expect(ready.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "ready", openDefects: 0, checks: { fullyRun: true, passOk: true, noBlocked: true } });
+    expect(ready.readiness).toMatchObject({ ready: 1, atRisk: 0, inProgress: 0, notStarted: 1 });
+
+    const outOfScope = buildReport(
+      input({
+        results: allPassed,
+        options: options({ defectNotes: { "258": { feature: "Bill payments", phase: "out", rationale: "Not in Phase 1" } } }),
+      }),
+    );
+    expect(outOfScope.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "ready", openDefects: 1 });
+
+    const midRun = buildReport(
+      input({
+        results: {
+          ...allPassed,
+          20: [tc(100, PASSED, "2026-10-10T10:00:00Z"), tc(101, FAILED, "2026-10-11T10:00:00Z"), tc(103, null)],
+        },
+        incidents: [],
+        links: { 101: [] },
+      }),
+    );
+    expect(midRun.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "inProgress", stillToRun: 1, outcomes: { failed: 1 } });
+    expect(midRun.readiness.inProgress).toBe(1);
   });
 
   it("takes this build from the release's test sets, and modules only in the baseline as later builds", () => {

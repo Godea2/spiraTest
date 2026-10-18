@@ -372,7 +372,10 @@ function SummaryPage({ report }: { report: Report }) {
             </div>
           </div>
         </Panel>
-        <Panel title="Modules ready for UAT" foot="Ready = every run executed, pass rate at target, nothing blocked, no open defects">
+        <Panel
+          title="Modules ready for UAT"
+          foot="Ready = every run executed, pass rate at target, nothing blocked, no open in-scope defects. Mid-run work stays In progress until those gates are met."
+        >
           <div className="flex items-center gap-3">
             <Donut
               segments={(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[]).map((s) => ({
@@ -585,17 +588,20 @@ function ReadinessPage({ report }: { report: Report }) {
           2. Readiness against {exit ? `${exit} ` : ""}exit criteria
         </Heading>
         <div className="report-keep mb-4 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-          {report.bars.map((b) => (
-            <div key={b.label}>
-              <div className="flex justify-between gap-2 text-[11.5px]">
-                <span className="font-medium">{b.label}</span>
-                <span className={clsx("tabular-nums", b.met ? "text-emerald-700" : "text-red-700")}>{b.text}</span>
+          {report.bars.map((b) => {
+            const good = b.met || b.soft;
+            return (
+              <div key={b.label}>
+                <div className="flex justify-between gap-2 text-[11.5px]">
+                  <span className="font-medium">{b.label}</span>
+                  <span className={clsx("tabular-nums", good ? "text-emerald-700" : "text-red-700")}>{b.text}</span>
+                </div>
+                <div className="mt-1">
+                  <TargetBar progress={b.progress} mark={b.mark} met={good} />
+                </div>
               </div>
-              <div className="mt-1">
-                <TargetBar progress={b.progress} mark={b.mark} met={b.met} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <Table head={["#", "Exit criterion", "Target", `Actual (${asOf})`, "Status"]}>
           {report.criteria.map((c, i) => (
@@ -648,7 +654,7 @@ function ModulesPage({ report, changes }: { report: Report; changes: ReportChang
   return (
     <>
       <div>
-        <Heading note="A module is ready for UAT only when every run is executed on every platform, the pass rate is at target, nothing is blocked and no defect is open.">
+        <Heading note="A module is ready for UAT only when every run is executed on every platform, the pass rate is at target, nothing is blocked and no in-scope defect is open. Defects marked out of scope do not block readiness. Modules still running stay In progress unless they are blocked or carry an in-scope open defect.">
           3b. Module readiness for UAT
         </Heading>
         <Table
