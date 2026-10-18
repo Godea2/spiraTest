@@ -2,8 +2,34 @@ const A4 = { width: 297, height: 210 };
 const MARGIN = 8;
 /** Capture width matching the on-screen report (desktop layout, full tables). */
 const EXPORT_WIDTH_PX = 1180;
+/** Last slice shorter than this share of a sheet is merged into fewer taller slices. */
+const ORPHAN_RATIO = 0.45;
 
 type JsPdf = import("jspdf").jsPDF;
+
+/**
+ * Split a tall capture into slice heights. A short leftover (one row + footer) is absorbed
+ * so the PDF does not get a nearly blank sheet.
+ */
+export function planPdfSlices(heightPx: number, maxSlicePx: number, orphanRatio = ORPHAN_RATIO): number[] {
+  const height = Math.max(1, Math.ceil(heightPx));
+  const maxSlice = Math.max(1, Math.floor(maxSlicePx));
+  if (height <= maxSlice) return [height];
+
+  let pages = Math.ceil(height / maxSlice);
+  const remainder = height - (pages - 1) * maxSlice;
+  if (pages > 1 && remainder / maxSlice < orphanRatio) pages -= 1;
+
+  const slice = Math.ceil(height / pages);
+  const out: number[] = [];
+  let y = 0;
+  for (let i = 0; i < pages; i++) {
+    const h = i === pages - 1 ? height - y : Math.min(slice, height - y);
+    if (h > 0) out.push(h);
+    y += h;
+  }
+  return out.length ? out : [height];
+}
 
 /**
  * Saves the report as a PDF: each on-screen report page is captured at desktop width
@@ -60,12 +86,12 @@ export async function downloadReportPdf(root: HTMLElement, fileName: string): Pr
       });
 
       // Fit to page width (landscape); slice vertically when the page is taller than one sheet.
-      const scale = usableW / canvas.width;
-      const pageSlicePx = Math.max(1, Math.floor(usableH / scale));
+      const widthScale = usableW / canvas.width;
+      const pageSlicePx = Math.max(1, Math.floor(usableH / widthScale));
+      const slices = planPdfSlices(canvas.height, pageSlicePx);
       let offsetY = 0;
-      let slices = 0;
-      while (offsetY < canvas.height) {
-        const slicePx = Math.min(pageSlicePx, canvas.height - offsetY);
+
+      for (const slicePx of slices) {
         const slice = document.createElement("canvas");
         slice.width = canvas.width;
         slice.height = Math.max(1, Math.ceil(slicePx));
@@ -78,11 +104,13 @@ export async function downloadReportPdf(root: HTMLElement, fileName: string): Pr
         if (pdf) pdf.addPage("a4", "landscape");
         else pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
 
-        const hMm = slicePx * scale;
-        pdf.addImage(slice.toDataURL("image/jpeg", 0.95), "JPEG", MARGIN, MARGIN, usableW, hMm, undefined, "MEDIUM");
+        // Taller absorbed slices scale down slightly so they still fit the sheet.
+        const fit = Math.min(widthScale, usableH / slicePx);
+        const wMm = canvas.width * fit;
+        const hMm = slicePx * fit;
+        const xMm = MARGIN + (usableW - wMm) / 2;
+        pdf.addImage(slice.toDataURL("image/jpeg", 0.95), "JPEG", xMm, MARGIN, wMm, hMm, undefined, "MEDIUM");
         offsetY += slicePx;
-        slices += 1;
-        if (slices > 40) break;
       }
     } finally {
       page.style.width = prevWidth;
