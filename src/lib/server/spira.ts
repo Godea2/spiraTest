@@ -522,18 +522,18 @@ export async function deleteRecordedTestRun(projectId: number, testRunId: number
 const projectSchema = z.object({ ProjectId: id, ProjectTemplateId: z.number().int().nullish() });
 const optionListSchema = z.array(z.record(z.string(), z.unknown()));
 
-/** The project's incident types, priorities and severities, for the defect form. Read-only. */
+/** The project's incident types, priorities, severities and statuses. Read-only. */
 export async function getIncidentOptions(projectId: number): Promise<IncidentOptions> {
   const project = parse(projectSchema, await call("GET", `projects/${projectId}`, "reading the project"), "reading the project");
   const template = project.ProjectTemplateId;
-  if (!template) return { types: [], priorities: [], severities: [], defaultTypeId: null, testCaseStatuses: [] };
+  if (!template) return { types: [], priorities: [], severities: [], defaultTypeId: null, testCaseStatuses: [], statuses: [] };
   const read = async (path: string, key: string, what: string) => {
     const rows = parse(optionListSchema, await call("GET", `project-templates/${template}/${path}`, what), what);
     return rows
       .filter((r) => typeof r[key] === "number" && r.Active !== false && r.IsActive !== false)
       .map((r) => ({ id: r[key] as number, name: (typeof r.Name === "string" && r.Name.trim()) || `#${r[key]}`, isDefault: r.IsDefault === true }));
   };
-  const [types, priorities, severities, testCaseStatuses] = await Promise.all([
+  const [types, priorities, severities, testCaseStatuses, statusRows] = await Promise.all([
     read("incidents/types", "IncidentTypeId", "reading the incident types"),
     read("incidents/priorities", "PriorityId", "reading the incident priorities"),
     read("incidents/severities", "SeverityId", "reading the incident severities"),
@@ -542,14 +542,28 @@ export async function getIncidentOptions(projectId: number): Promise<IncidentOpt
       if (error instanceof SpiraError) return [];
       throw error;
     }),
+    call("GET", `project-templates/${template}/incidents/statuses`, "reading the incident statuses")
+      .then((raw) => parse(optionListSchema, raw, "reading the incident statuses"))
+      .catch((error) => {
+        if (error instanceof SpiraError) return [] as Array<Record<string, unknown>>;
+        throw error;
+      }),
   ]);
   const strip = (list: Array<{ id: number; name: string }>) => list.map(({ id: optionId, name }) => ({ id: optionId, name }));
+  const statuses = statusRows
+    .filter((r) => typeof r.IncidentStatusId === "number" && r.Active !== false)
+    .map((r) => ({
+      id: r.IncidentStatusId as number,
+      name: (typeof r.Name === "string" && r.Name.trim()) || `#${r.IncidentStatusId}`,
+      open: r.Open !== false,
+    }));
   return {
     types: strip(types),
     priorities: strip(priorities),
     severities: strip(severities),
     defaultTypeId: types.find((t) => t.isDefault)?.id ?? null,
     testCaseStatuses: strip(testCaseStatuses),
+    statuses,
   };
 }
 
@@ -1063,6 +1077,7 @@ export async function getTestSetResults(projectId: number, testSetId: number): P
 const incidentSchema = z.object({
   IncidentId: id,
   Name: z.string().nullish(),
+  IncidentStatusId: z.number().int().nullish(),
   IncidentStatusName: z.string().nullish(),
   IncidentStatusOpenStatus: z.boolean().nullish(),
   SeverityName: z.string().nullish(),
@@ -1086,6 +1101,7 @@ function toIncident(raw: z.infer<typeof incidentSchema>): ReportIncident {
   return {
     incidentId: raw.IncidentId,
     name: raw.Name?.trim() || `Incident ${raw.IncidentId}`,
+    statusId: raw.IncidentStatusId && raw.IncidentStatusId > 0 ? raw.IncidentStatusId : null,
     status,
     open: raw.IncidentStatusOpenStatus ?? !(closedAt || (status && CLOSED_STATUS.test(status))),
     severity: raw.SeverityName?.trim() || null,
@@ -1098,6 +1114,19 @@ function toIncident(raw: z.infer<typeof incidentSchema>): ReportIncident {
     owner: raw.OwnerName?.trim() || null,
     opener: raw.OpenerName?.trim() || null,
   };
+}
+
+/**
+ * Sets an incident's status in Spira. Reads the incident first so concurrency fields stay intact,
+ * then writes IncidentStatusId. Returns the refreshed incident.
+ */
+export async function updateIncidentStatus(projectId: number, incidentId: number, statusId: number): Promise<ReportIncident> {
+  const readWhat = `reading incident ${incidentId}`;
+  const raw = parse(z.record(z.string(), z.unknown()), await call("GET", `projects/${projectId}/incidents/${incidentId}`, readWhat), readWhat);
+  const what = `updating status of incident ${incidentId}`;
+  await call("PUT", `projects/${projectId}/incidents/${incidentId}`, what, { ...raw, IncidentId: incidentId, IncidentStatusId: statusId });
+  const updated = parse(incidentSchema.passthrough(), await call("GET", `projects/${projectId}/incidents/${incidentId}`, readWhat), readWhat);
+  return toIncident(updated);
 }
 
 const INCIDENT_PAGE = 500;

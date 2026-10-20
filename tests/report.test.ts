@@ -67,6 +67,7 @@ const tc = (testCaseId: number, statusId: number | null, executionDate: string |
 const incident = (incidentId: number, extra: Partial<ReportIncident> = {}): ReportIncident => ({
   incidentId,
   name: `Defect ${incidentId}`,
+  statusId: null,
   status: "New",
   open: true,
   severity: "3 - Medium",

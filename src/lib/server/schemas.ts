@@ -401,6 +401,12 @@ export const defectFileUndoRequestSchema = z.object({ projectId: id, documentId:
 
 export const projectLookupSchema = z.object({ projectId: id });
 
+export const incidentStatusUpdateSchema = z.object({
+  projectId: id,
+  incidentId: id,
+  statusId: id,
+});
+
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });
 
 export const testCaseLookupSchema = z.object({ projectId: id, testCaseId: id });

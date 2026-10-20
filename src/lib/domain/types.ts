@@ -449,7 +449,15 @@ export interface IncidentOption {
   name: string;
 }
 
-/** The project's incident lists, for the defect form. */
+/** An incident workflow status from the project template. */
+export interface IncidentStatusOption {
+  id: number;
+  name: string;
+  /** True when Spira treats this status as open. */
+  open: boolean;
+}
+
+/** The project's incident lists, for the defect form and the register. */
 export interface IncidentOptions {
   types: IncidentOption[];
   priorities: IncidentOption[];
@@ -457,6 +465,8 @@ export interface IncidentOptions {
   defaultTypeId: number | null;
   /** The project's test case statuses, for a test case created for a defect; empty when they could not be read. */
   testCaseStatuses: IncidentOption[];
+  /** Incident statuses (open/closed and named steps); empty when they could not be read. */
+  statuses: IncidentStatusOption[];
 }
 
 export interface DefectLogResult {
@@ -677,6 +687,8 @@ export interface ReportCase {
 export interface ReportIncident {
   incidentId: number;
   name: string;
+  /** Spira status id when the list or detail returned one; null on older payloads. */
+  statusId: number | null;
   status: string | null;
   open: boolean;
   severity: string | null;
