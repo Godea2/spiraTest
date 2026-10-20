@@ -429,14 +429,12 @@ describe("report document", () => {
       "3c. Change since Cycle 1 (iOS test sets)",
       "4. Defects and retesting",
       "4d. Defect register: severity and priority",
-      "4e. Open defects",
       "All-time defects",
       "Key risks and actions",
       "Page 4 / 4",
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
-    expect(html).toContain("all-time");
-    expect(html).toContain("Pick a Defects Review bucket");
+    expect(html).not.toContain("4e. Open defects");
     expect(buildReport(input()).defects).toMatchObject({
       everOpened: 0,
       stillOpen: 0,

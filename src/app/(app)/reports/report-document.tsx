@@ -298,28 +298,7 @@ function SummaryPage({ report }: { report: Report }) {
       split={<PlatformLine report={report} split={k.split.failed} />}
       color="#b91c1c"
     />,
-    <Kpi
-      key="open-defects"
-      label="All-time defects"
-      value={n(report.defects.everOpened)}
-      hint={
-        report.defects.everOpened === 0
-          ? report.defects.registerName
-            ? `Bucket “${report.defects.registerName}” is empty`
-            : "Pick a Defects Review bucket in report setup"
-          : [
-              report.defects.registerName ? `Bucket “${report.defects.registerName}”` : "",
-              `${report.defects.stillOpen} still open`,
-              report.defects.openStatus.open ? `Open ${report.defects.openStatus.open}` : "",
-              report.defects.openStatus.toDo ? `To Do ${report.defects.openStatus.toDo}` : "",
-              report.defects.openStatus.inDev ? `In Dev ${report.defects.openStatus.inDev}` : "",
-              report.defects.openStatus.other ? `Other ${report.defects.openStatus.other}` : "",
-            ]
-              .filter(Boolean)
-              .join(" · ")
-      }
-      color="#b91c1c"
-    />,
+    <Kpi key="open-defects" label="All-time defects" value={n(report.defects.everOpened)} color="#b91c1c" />,
     <Kpi
       key="left"
       label="Still to run"
@@ -836,34 +815,12 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
     tbc: "To confirm",
   };
   const shown = d.rows.slice(0, 60);
-  const openRows = d.registerOpen.length || d.registerName ? d.registerOpen : d.rows.filter((r) => r.incident.open);
-  const openShown = openRows.slice(0, 80);
-  const openEmpty =
-    d.registerName || d.everOpened > 0
-      ? `No open defects in Review bucket${d.registerName ? ` “${d.registerName}”` : ""}.`
-      : "No open defects in this build's register. Pick a Defects Review bucket in report setup for the all-time KPI.";
   const actions = report.narrative.actions;
   return (
     <>
       <div>
         <Heading>4. Defects and retesting</Heading>
-        <p className="text-[12.5px] leading-relaxed text-slate-700">
-          {d.registerName ? (
-            <>
-              Review bucket <span className="font-semibold text-slate-900">“{d.registerName}”</span>
-              {": "}
-            </>
-          ) : null}
-          <span className="font-semibold text-slate-900">{d.everOpened} all-time</span>
-          {" · "}
-          <span className="font-semibold text-slate-900">{d.stillOpen} still open</span>
-          {d.openStatus.toDo || d.openStatus.inDev || d.openStatus.open
-            ? ` (Open ${d.openStatus.open} · To Do ${d.openStatus.toDo} · In Dev ${d.openStatus.inDev}${d.openStatus.other ? ` · Other ${d.openStatus.other}` : ""})`
-            : ""}
-          {d.openCriticalHigh ? ` · ${d.openCriticalHigh} Critical/High in this build` : ""}
-          {". "}
-          {d.summary}
-        </p>
+        <p className="text-[12.5px] leading-relaxed text-slate-700">{d.summary}</p>
       </div>
       <div className="report-keep grid gap-5 lg:grid-cols-3">
         <div>
@@ -929,18 +886,7 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
                 <td className={`${td} whitespace-nowrap`}>
                   <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
                 </td>
-                <td className={td}>
-                  {r.incident.name}
-                  <span className="block text-[10.5px] text-slate-500">
-                    {[
-                      r.incident.status,
-                      r.ageDays !== null ? `${r.ageDays} d old` : null,
-                      r.failedRuns ? `${r.failedRuns} failed run${r.failedRuns === 1 ? "" : "s"}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                </td>
+                <td className={td}>{r.incident.name}</td>
                 <td className={td}>{r.feature || "—"}</td>
                 <td className={td}>
                   {r.phase ? <Chip className={PHASE_CHIP[r.phase]}>{phaseText[r.phase]}</Chip> : <span className="text-slate-400">—</span>}
@@ -958,38 +904,6 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
           {d.rows.length > shown.length && <p className="mt-2 text-[11.5px] text-slate-500">{d.rows.length - shown.length} more in the Excel export.</p>}
         </div>
       )}
-
-      <div className="report-keep">
-        <SubHeading>4e. Open defects</SubHeading>
-        {openRows.length === 0 ? (
-          <p className="text-[12.5px] text-emerald-700">{openEmpty}</p>
-        ) : (
-          <>
-            <Table head={["ID", "Defect", "Status", "Severity", "Priority", "Detected", "Age"]}>
-              {openShown.map((r) => (
-                <tr key={r.incident.incidentId}>
-                  <td className={`${td} whitespace-nowrap`}>
-                    <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
-                  </td>
-                  <td className={td}>{r.incident.name}</td>
-                  <td className={td}>{r.incident.status ?? "Open"}</td>
-                  <td className={td}>
-                    <Chip className={LEVEL_CHIP[r.severity]}>{r.severity}</Chip>
-                  </td>
-                  <td className={td}>
-                    <Chip className={LEVEL_CHIP[r.priority]}>{r.priority}</Chip>
-                  </td>
-                  <td className={td}>{r.incident.detectedRelease ?? "—"}</td>
-                  <td className={num}>{r.ageDays !== null ? `${r.ageDays} d` : "—"}</td>
-                </tr>
-              ))}
-            </Table>
-            {openRows.length > openShown.length && (
-              <p className="mt-2 text-[11.5px] text-slate-500">{openRows.length - openShown.length} more open defects in the Excel export.</p>
-            )}
-          </>
-        )}
-      </div>
 
       <div className="report-keep">
         <Heading>Key risks and actions</Heading>
