@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Bookmark, CheckCircle2, FolderPlus, LockOpen, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, Bookmark, CheckCircle2, ExternalLink, FolderPlus, LockOpen, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
@@ -42,10 +42,37 @@ const SORTS: { id: IncidentSort; label: string }[] = [
   { id: "name", label: "Name" },
 ];
 
+function SpiraIncidentLink({
+  href,
+  incidentId,
+  className,
+}: {
+  href: string | null;
+  incidentId: number;
+  className?: string;
+}) {
+  const label = `IN:${incidentId}`;
+  if (!href) return <span className={className}>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className={`inline-flex items-center gap-1 font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300 ${className ?? ""}`}
+      title={`Open ${label} in Spira`}
+    >
+      {label}
+      <ExternalLink className="size-3 shrink-0" aria-hidden />
+    </a>
+  );
+}
+
 export function DefectRegister() {
   const { settings, spira } = useSettings();
   const projectId = settings?.projectId ?? null;
   const configured = spira?.configured === true;
+  const siteUrl = spira?.siteUrl ?? null;
+  const incidentUrl = (incidentId: number) => (siteUrl && projectId !== null ? `${siteUrl}/${projectId}/Incident/${incidentId}.aspx` : null);
 
   const [incidents, setIncidents] = useState<ReportIncident[] | null>(null);
   const [complete, setComplete] = useState(true);
@@ -302,7 +329,8 @@ export function DefectRegister() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-medium">
-                        IN:{row.incidentId} · {row.name}
+                        <SpiraIncidentLink href={incidentUrl(row.incidentId)} incidentId={row.incidentId} />
+                        <span className="text-slate-700 dark:text-zinc-200"> · {row.name}</span>
                       </p>
                       <p className="mt-1 text-xs text-slate-500">
                         {row.severity ?? "—"} · {row.priority ?? "—"} · {row.detectedRelease ?? "no release"}
@@ -581,7 +609,9 @@ export function DefectRegister() {
                         aria-label={`Select IN:${row.incidentId}`}
                       />
                     </td>
-                    <td className="px-3 py-2 font-medium tabular-nums whitespace-nowrap">IN:{row.incidentId}</td>
+                    <td className="px-3 py-2 tabular-nums whitespace-nowrap">
+                      <SpiraIncidentLink href={incidentUrl(row.incidentId)} incidentId={row.incidentId} />
+                    </td>
                     <td className="max-w-[18rem] px-3 py-2">
                       <span className="line-clamp-2">{row.name}</span>
                     </td>
