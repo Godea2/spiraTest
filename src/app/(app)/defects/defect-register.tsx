@@ -1,12 +1,13 @@
 "use client";
 
-import { ArrowLeft, CheckCircle2, FolderPlus, LockOpen, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Bookmark, CheckCircle2, FolderPlus, LockOpen, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, EmptyState, Notice, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { addBucket, listBuckets, removeBucket, updateBucket } from "@/lib/client/defect-buckets";
+import { forLaterIds, setForLater } from "@/lib/client/defect-local-review";
 import { formatDateTime } from "@/lib/client/format";
 import {
   listProjectIncidents,
@@ -17,6 +18,7 @@ import {
 import { readIncidentOptions } from "@/lib/client/defects";
 import {
   filterIncidents,
+  FOR_LATER_SELECT,
   incidentsInBucket,
   MAX_BUCKET_NAME,
   pickStatusForOpen,
@@ -31,6 +33,7 @@ const FILTERS: { id: IncidentOpenFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "open", label: "Open" },
   { id: "closed", label: "Closed" },
+  { id: "forLater", label: "For later" },
 ];
 
 const SORTS: { id: IncidentSort; label: string }[] = [
@@ -48,6 +51,7 @@ export function DefectRegister() {
   const [complete, setComplete] = useState(true);
   const [statuses, setStatuses] = useState<IncidentStatusOption[]>([]);
   const [buckets, setBuckets] = useState<DefectBucket[]>([]);
+  const [later, setLater] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<IncidentOpenFilter>("open");
@@ -59,11 +63,18 @@ export function DefectRegister() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [descDrafts, setDescDrafts] = useState<Record<number, string>>({});
-  const [descLoading, setDescLoading] = useState<number | null>(null);
+  const [descSaved, setDescSaved] = useState<Record<number, string>>({});
+  const [descLoadingIds, setDescLoadingIds] = useState<Set<number>>(new Set());
+  const descStarted = useRef<Set<number>>(new Set());
 
   const reloadBuckets = useCallback(() => {
     if (projectId === null) return;
     setBuckets(listBuckets(projectId));
+  }, [projectId]);
+
+  const reloadLater = useCallback(() => {
+    if (projectId === null) return;
+    setLater(forLaterIds(projectId));
   }, [projectId]);
 
   const load = useCallback(async () => {
@@ -76,6 +87,7 @@ export function DefectRegister() {
       setComplete(list.complete);
       setStatuses(options.statuses);
       setBuckets(listBuckets(projectId));
+      setLater(forLaterIds(projectId));
     } catch (err) {
       setError(errorMessage(err));
       setIncidents(null);
@@ -90,8 +102,15 @@ export function DefectRegister() {
 
   const rows = useMemo(() => {
     if (!incidents) return [];
-    return sortIncidents(filterIncidents(incidents, filter, query), sort);
-  }, [incidents, filter, query, sort]);
+    return sortIncidents(filterIncidents(incidents, filter, query, later), sort);
+  }, [incidents, filter, query, sort, later]);
+
+  const markForLater = (incidentId: number, on: boolean) => {
+    if (projectId === null) return;
+    setForLater(projectId, incidentId, on);
+    reloadLater();
+    toast.success(on ? `IN:${incidentId} marked For later (app only).` : `IN:${incidentId} removed from For later.`);
+  };
 
   const openStatus = useMemo(() => pickStatusForOpen(statuses, true), [statuses]);
   const closedStatus = useMemo(() => pickStatusForOpen(statuses, false), [statuses]);
@@ -164,18 +183,39 @@ export function DefectRegister() {
     }
   };
 
-  const loadDescription = async (incidentId: number) => {
-    if (projectId === null || descDrafts[incidentId] !== undefined) return;
-    setDescLoading(incidentId);
-    try {
-      const { description } = await readIncidentDescription(projectId, incidentId);
-      setDescDrafts((d) => ({ ...d, [incidentId]: description }));
-    } catch (err) {
-      toast.error(errorMessage(err));
-    } finally {
-      setDescLoading(null);
+  const loadDescription = useCallback(
+    async (incidentId: number, force = false) => {
+      if (projectId === null) return;
+      if (!force && descStarted.current.has(incidentId)) return;
+      descStarted.current.add(incidentId);
+      setDescLoadingIds((prev) => new Set(prev).add(incidentId));
+      try {
+        const { description } = await readIncidentDescription(projectId, incidentId);
+        setDescDrafts((d) => ({ ...d, [incidentId]: description }));
+        setDescSaved((d) => ({ ...d, [incidentId]: description }));
+      } catch (err) {
+        toast.error(`IN:${incidentId}: ${errorMessage(err)}`);
+        setDescDrafts((d) => (d[incidentId] === undefined ? { ...d, [incidentId]: "" } : d));
+      } finally {
+        setDescLoadingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(incidentId);
+          return next;
+        });
+      }
+    },
+    [projectId],
+  );
+
+  const bucketIncidentKey = useMemo(() => bucketRows.map((r) => r.incidentId).join(","), [bucketRows]);
+
+  // Prefetch Spira descriptions so each card opens with an editable text box.
+  useEffect(() => {
+    if (!activeBucket || projectId === null || !bucketIncidentKey) return;
+    for (const id of bucketIncidentKey.split(",").map(Number).filter((n) => n > 0)) {
+      void loadDescription(id);
     }
-  };
+  }, [activeBucket?.id, bucketIncidentKey, projectId, loadDescription]);
 
   const saveDescription = async (incidentId: number) => {
     if (projectId === null) return;
@@ -185,6 +225,7 @@ export function DefectRegister() {
     try {
       const updated = await writeIncidentDescription(projectId, incidentId, text);
       patchIncident(updated);
+      setDescSaved((d) => ({ ...d, [incidentId]: text }));
       toast.success(`Saved description for IN:${incidentId} in Spira.`);
     } catch (err) {
       toast.error(errorMessage(err));
@@ -267,7 +308,10 @@ export function DefectRegister() {
                         {row.severity ?? "—"} · {row.priority ?? "—"} · {row.detectedRelease ?? "no release"}
                       </p>
                     </div>
-                    <Badge tone={row.open ? "warning" : "success"}>{row.status ?? (row.open ? "Open" : "Closed")}</Badge>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge tone={row.open ? "warning" : "success"}>{row.status ?? (row.open ? "Open" : "Closed")}</Badge>
+                      {later.has(row.incidentId) && <Badge tone="brand">For later</Badge>}
+                    </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <select
@@ -276,7 +320,12 @@ export function DefectRegister() {
                       disabled={busy || statuses.length === 0}
                       value={row.statusId && statuses.some((s) => s.id === row.statusId) ? String(row.statusId) : ""}
                       onChange={(e) => {
-                        const id = Number(e.target.value);
+                        const value = e.target.value;
+                        if (value === FOR_LATER_SELECT) {
+                          markForLater(row.incidentId, true);
+                          return;
+                        }
+                        const id = Number(value);
                         const status = statuses.find((s) => s.id === id);
                         if (status) void applyStatus(row, status.id, status.name);
                       }}
@@ -284,6 +333,7 @@ export function DefectRegister() {
                       <option value="" disabled>
                         Choose status…
                       </option>
+                      <option value={FOR_LATER_SELECT}>For Later (app only)</option>
                       {statuses.map((s) => (
                         <option key={s.id} value={s.id}>
                           {s.name}
@@ -291,6 +341,14 @@ export function DefectRegister() {
                         </option>
                       ))}
                     </select>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={Bookmark}
+                      onClick={() => markForLater(row.incidentId, !later.has(row.incidentId))}
+                    >
+                      {later.has(row.incidentId) ? "Clear For later" : "For later"}
+                    </Button>
                     {row.open && closedStatus && (
                       <Button size="sm" variant="ghost" icon={CheckCircle2} busy={busy} disabled={busy} onClick={() => void applyStatus(row, closedStatus.id, closedStatus.name)}>
                         Mark closed
@@ -314,27 +372,54 @@ export function DefectRegister() {
                       Remove from bucket
                     </Button>
                   </div>
-                  <div className="mt-3">
-                    {draft === undefined ? (
-                      <Button size="sm" busy={descLoading === row.incidentId} onClick={() => void loadDescription(row.incidentId)}>
-                        Load Spira description
-                      </Button>
+                  <div className="mt-3 flex flex-col gap-2">
+                    <label className="text-sm font-medium text-slate-700 dark:text-zinc-300" htmlFor={`desc-${row.incidentId}`}>
+                      Edit description (Spira)
+                    </label>
+                    {draft === undefined || descLoadingIds.has(row.incidentId) ? (
+                      <div className="flex items-center gap-2 text-sm text-slate-500">
+                        <Spinner /> Loading description from Spira…
+                      </div>
                     ) : (
-                      <div className="flex flex-col gap-2">
-                        <label className="text-sm font-medium text-slate-700 dark:text-zinc-300" htmlFor={`desc-${row.incidentId}`}>
-                          Description in Spira
-                        </label>
+                      <>
                         <textarea
                           id={`desc-${row.incidentId}`}
-                          className="input min-h-28 font-mono text-xs"
+                          className="input min-h-36 text-sm leading-relaxed"
                           value={draft}
                           onChange={(e) => setDescDrafts((d) => ({ ...d, [row.incidentId]: e.target.value }))}
                           disabled={busy}
+                          placeholder="Write or edit the defect description…"
                         />
-                        <Button size="sm" busy={busy} disabled={busy} onClick={() => void saveDescription(row.incidentId)}>
-                          Save description to Spira
-                        </Button>
-                      </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            busy={busy}
+                            disabled={busy || draft === descSaved[row.incidentId]}
+                            onClick={() => void saveDescription(row.incidentId)}
+                          >
+                            Save description to Spira
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy || draft === descSaved[row.incidentId]}
+                            onClick={() => setDescDrafts((d) => ({ ...d, [row.incidentId]: descSaved[row.incidentId] ?? "" }))}
+                          >
+                            Discard edits
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy || descLoadingIds.has(row.incidentId)}
+                            onClick={() => {
+                              descStarted.current.delete(row.incidentId);
+                              void loadDescription(row.incidentId, true);
+                            }}
+                          >
+                            Reload from Spira
+                          </Button>
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
@@ -441,8 +526,14 @@ export function DefectRegister() {
       )}
 
       {incidents && rows.length === 0 && !loading && (
-        <EmptyState icon={Search} title={filter === "open" ? "No open defects" : "No matching defects"}>
-          {query.trim() ? "Try a different search." : filter === "open" ? "Everything in Spira for this project is closed, or there are no incidents yet." : "Nothing matched these filters."}
+        <EmptyState icon={Search} title={filter === "forLater" ? "Nothing marked For later" : filter === "open" ? "No open defects" : "No matching defects"}>
+          {query.trim()
+            ? "Try a different search."
+            : filter === "forLater"
+              ? "Pick For Later on a defect to park it here (app only — Spira is unchanged)."
+              : filter === "open"
+                ? "Everything in Spira for this project is closed, or there are no incidents yet."
+                : "Nothing matched these filters."}
         </EmptyState>
       )}
 
@@ -495,7 +586,10 @@ export function DefectRegister() {
                       <span className="line-clamp-2">{row.name}</span>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <Badge tone={row.open ? "warning" : "success"}>{row.status ?? (row.open ? "Open" : "Closed")}</Badge>
+                      <div className="flex flex-col gap-1">
+                        <Badge tone={row.open ? "warning" : "success"}>{row.status ?? (row.open ? "Open" : "Closed")}</Badge>
+                        {later.has(row.incidentId) && <Badge tone="brand">For later</Badge>}
+                      </div>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{row.severity ?? "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{row.priority ?? "—"}</td>
@@ -509,7 +603,12 @@ export function DefectRegister() {
                           disabled={busy || statuses.length === 0}
                           value={row.statusId && statuses.some((s) => s.id === row.statusId) ? String(row.statusId) : ""}
                           onChange={(e) => {
-                            const id = Number(e.target.value);
+                            const value = e.target.value;
+                            if (value === FOR_LATER_SELECT) {
+                              markForLater(row.incidentId, true);
+                              return;
+                            }
+                            const id = Number(value);
                             const status = statuses.find((s) => s.id === id);
                             if (status) void applyStatus(row, status.id, status.name);
                           }}
@@ -517,6 +616,7 @@ export function DefectRegister() {
                           <option value="" disabled>
                             {statuses.length ? "Choose status…" : "No statuses"}
                           </option>
+                          <option value={FOR_LATER_SELECT}>For Later (app only)</option>
                           {statuses.map((s) => (
                             <option key={s.id} value={s.id}>
                               {s.name}
@@ -524,6 +624,9 @@ export function DefectRegister() {
                             </option>
                           ))}
                         </select>
+                        <Button size="sm" variant="ghost" icon={Bookmark} onClick={() => markForLater(row.incidentId, !later.has(row.incidentId))}>
+                          {later.has(row.incidentId) ? "Clear For later" : "For later"}
+                        </Button>
                         {row.open && closedStatus && (
                           <Button size="sm" variant="ghost" icon={CheckCircle2} busy={busy} disabled={busy} onClick={() => void applyStatus(row, closedStatus.id, closedStatus.name)}>
                             Mark closed

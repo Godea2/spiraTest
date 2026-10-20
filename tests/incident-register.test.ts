@@ -48,9 +48,10 @@ describe("filterIncidents and sortIncidents", () => {
     row(15, { name: "Profile photo", open: true, createdAt: "2026-10-11T10:00:00.000Z" }),
   ];
 
-  it("filters by open and search", () => {
+  it("filters by open, for-later, and search", () => {
     expect(filterIncidents(incidents, "open", "").map((i) => i.incidentId)).toEqual([10, 15]);
     expect(filterIncidents(incidents, "closed", "").map((i) => i.incidentId)).toEqual([20]);
+    expect(filterIncidents(incidents, "forLater", "", new Set([15, 99])).map((i) => i.incidentId)).toEqual([15]);
     expect(filterIncidents(incidents, "all", "pay").map((i) => i.incidentId)).toEqual([20]);
     expect(filterIncidents(incidents, "all", "15").map((i) => i.incidentId)).toEqual([15]);
   });

@@ -1,7 +1,10 @@
 import type { IncidentStatusOption, ReportIncident } from "./types";
 
-export type IncidentOpenFilter = "all" | "open" | "closed";
+export type IncidentOpenFilter = "all" | "open" | "closed" | "forLater";
 export type IncidentSort = "id" | "created" | "name";
+
+/** Value used in the status select for the app-only "For Later" flag (never sent to Spira). */
+export const FOR_LATER_SELECT = "local:for-later";
 
 export const MAX_BUCKET_NAME = 120;
 export const MAX_INCIDENT_DESCRIPTION = 50_000;
@@ -29,11 +32,13 @@ export function filterIncidents(
   incidents: ReportIncident[],
   filter: IncidentOpenFilter,
   query: string,
+  forLater: ReadonlySet<number> = new Set(),
 ): ReportIncident[] {
   const q = query.trim().toLowerCase();
   return incidents.filter((i) => {
     if (filter === "open" && !i.open) return false;
     if (filter === "closed" && i.open) return false;
+    if (filter === "forLater" && !forLater.has(i.incidentId)) return false;
     if (!q) return true;
     return String(i.incidentId).includes(q) || i.name.toLowerCase().includes(q) || (i.status?.toLowerCase().includes(q) ?? false);
   });
