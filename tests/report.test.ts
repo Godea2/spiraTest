@@ -436,13 +436,37 @@ describe("report document", () => {
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
     expect(html).toContain("all-time");
-    expect(html).toContain("still open");
+    expect(html).toContain("Pick a Defects Review bucket");
     expect(buildReport(input()).defects).toMatchObject({
-      everOpened: 3,
-      stillOpen: 2,
+      everOpened: 0,
+      stillOpen: 0,
       open: 1,
       closed: 1,
-      openStatus: { open: 0, toDo: 0, inDev: 0, other: 2 },
+      openStatus: { open: 0, toDo: 0, inDev: 0, other: 0 },
+      registerName: null,
+      registerOpen: [],
+    });
+    expect(
+      buildReport(
+        input({
+          options: options({
+            defectBucketId: "bucket-24-test",
+            defectBucketName: "Sprint review",
+            defectRegisterIds: [258, 259, 300],
+          }),
+          incidents: [
+            incident(258, { status: "Open" }),
+            incident(259, { open: false, status: "Closed", detectedReleaseId: 2 }),
+            incident(300, { detectedReleaseId: 4, status: "To Do" }),
+            incident(400, { status: "In Dev" }),
+          ],
+        }),
+      ).defects,
+    ).toMatchObject({
+      everOpened: 3,
+      stillOpen: 2,
+      registerName: "Sprint review",
+      openStatus: { open: 1, toDo: 1, inDev: 0, other: 0 },
     });
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
   });

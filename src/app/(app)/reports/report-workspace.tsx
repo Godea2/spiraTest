@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
+import { listBuckets } from "@/lib/client/defect-buckets";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
 import {
   buildReport,
@@ -27,7 +28,22 @@ import {
   type ReportKind,
   type ReportOptions,
 } from "@/lib/domain/report";
+import type { DefectBucket } from "@/lib/domain/incident-register";
 import type { ReportCatalog } from "@/lib/domain/types";
+
+/** Snapshot the chosen Review bucket onto report options so generate/share use the same IDs. */
+function withDefectBucket(options: ReportOptions, buckets: DefectBucket[], bucketId: string | null): ReportOptions {
+  const bucket = (bucketId && buckets.find((b) => b.id === bucketId)) || buckets[0] || null;
+  if (!bucket) {
+    return { ...options, defectBucketId: null, defectBucketName: "", defectRegisterIds: [] };
+  }
+  return {
+    ...options,
+    defectBucketId: bucket.id,
+    defectBucketName: bucket.name,
+    defectRegisterIds: [...bucket.incidentIds],
+  };
+}
 import { type ReportChanges } from "./report-document";
 import { ReportViewer } from "./report-viewer";
 import { ShareDialog, type ShareRequest } from "./share-dialog";
@@ -147,7 +163,16 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const [notesOpen, setNotesOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [buckets, setBuckets] = useState<DefectBucket[]>([]);
   const abort = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (projectId === null) {
+      setBuckets([]);
+      return;
+    }
+    setBuckets(listBuckets(projectId));
+  }, [projectId, reload, viewerOpen]);
 
   useEffect(() => {
     if (!configured || projectId === null) return;
@@ -182,10 +207,14 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     const saved = stored.options;
     if (stored.fromLink && saved) return saved;
     const auto = { ...initialReportOptions(catalog.releases, settingsRelease, planRelease), phase: PHASE };
-    if (!saved) return auto;
-    const { kind, title, preparedBy, goLive, defectNotes } = saved;
-    return { ...auto, kind, title, preparedBy, goLive, defectNotes };
-  }, [catalog, stored, projectId, settingsRelease, planRelease]);
+    if (!saved) return withDefectBucket(auto, buckets, null);
+    const { kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds } = saved;
+    return withDefectBucket(
+      { ...auto, kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds },
+      buckets,
+      defectBucketId ?? null,
+    );
+  }, [catalog, stored, projectId, settingsRelease, planRelease, buckets]);
 
   const update = (patch: Partial<ReportOptions>) => {
     if (!options || projectId === null || !stored) return;
@@ -227,7 +256,16 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     try {
       const fresh = await loadCatalog(projectId, controller.signal);
       setCatalogState({ projectId, catalog: fresh, error: null });
-      const input = await readReportData({ catalog: fresh, options: resolved, mappings: settings?.mappings ?? [], onProgress: setProgress, signal: controller.signal });
+      const freshBuckets = listBuckets(projectId);
+      setBuckets(freshBuckets);
+      const withBucket = withDefectBucket(resolved, freshBuckets, options.defectBucketId);
+      setStored({ projectId, options: withBucket, fromLink: stored?.fromLink ?? false });
+      try {
+        saveReportOptions(projectId, withBucket);
+      } catch {
+        // storage full: generate still uses withBucket for this run
+      }
+      const input = await readReportData({ catalog: fresh, options: withBucket, mappings: settings?.mappings ?? [], onProgress: setProgress, signal: controller.signal });
       const built = buildReport(input);
       const before = recordSnapshot(built, resolved);
       const previous = previousSnapshot(before, built);
@@ -324,7 +362,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
           >
             <KindPicker value={options.kind} onChange={(kind) => update({ kind })} />
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Report title" hint="Empty uses the project name.">
                 {(props) => <input {...props} className="input" value={options.title} placeholder={`${catalog.projectName} — Test Report`} onChange={(e) => update({ title: e.target.value })} />}
               </Field>
@@ -333,6 +371,27 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               </Field>
               <Field label="Go-live date">
                 {(props) => <input {...props} type="date" className="input" value={options.goLive ?? ""} onChange={(e) => update({ goLive: e.target.value || null })} />}
+              </Field>
+              <Field
+                label="Defects Review bucket"
+                hint={buckets.length === 0 ? "Create a bucket on the Defects page first." : "All-time defects KPI uses this bucket."}
+              >
+                {(props) => (
+                  <select
+                    {...props}
+                    className="input"
+                    value={options.defectBucketId ?? ""}
+                    disabled={buckets.length === 0}
+                    onChange={(e) => update(withDefectBucket(options, buckets, e.target.value || null))}
+                  >
+                    {buckets.length === 0 ? <option value="">No buckets yet</option> : null}
+                    {buckets.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} ({b.incidentIds.length})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </Field>
             </div>
 

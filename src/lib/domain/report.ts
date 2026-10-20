@@ -78,6 +78,12 @@ export interface ReportOptions {
   appendix: boolean;
   /** QA's reading of each defect, keyed by incident ID. */
   defectNotes: Record<string, DefectNote>;
+  /** Review bucket (Defects page) whose members feed the All-time defects KPI. */
+  defectBucketId: string | null;
+  /** Display name of that bucket when the report was last generated. */
+  defectBucketName: string;
+  /** Incident IDs in the chosen Review bucket (snapshot for generate/share). */
+  defectRegisterIds: number[];
 }
 
 export type DefectPhase = "in" | "out" | "tbc";
@@ -106,6 +112,9 @@ export function defaultReportOptions(): ReportOptions {
     windowText: "",
     appendix: false,
     defectNotes: {},
+    defectBucketId: null,
+    defectBucketName: "",
+    defectRegisterIds: [],
   };
 }
 
@@ -130,6 +139,9 @@ export const reportOptionsSchema = z.object({
   defectNotes: z
     .record(z.string().regex(/^\d+$/), z.object({ feature: text(200), phase: z.enum(["in", "out", "tbc", ""]).catch(""), rationale: text(500) }))
     .catch({}),
+  defectBucketId: z.string().max(80).nullable().catch(null),
+  defectBucketName: text(120),
+  defectRegisterIds: z.array(z.number().int().positive()).max(5000).catch([]),
 });
 const shareSchema = z.object({ p: z.number().int().positive(), o: reportOptionsSchema });
 
@@ -437,12 +449,16 @@ export interface DefectSummary {
   /** Currently open defects in this build's register. */
   open: number;
   closed: number;
-  /** Every incident loaded from Spira for the project (all releases) — all-time opened. */
+  /** Defects in the chosen Review bucket (all-time opened for this report). */
   everOpened: number;
-  /** Project-wide incidents that are still open (not closed). */
+  /** Bucket members that are still open (not closed) in Spira. */
   stillOpen: number;
-  /** Still-open project incidents by Spira status family. */
+  /** Still-open bucket members by Spira status family. */
   openStatus: Record<OpenStatusBucket, number>;
+  /** Name of the Review bucket used for the all-time KPI, when set. */
+  registerName: string | null;
+  /** Open defects from the Review bucket (for page 4e). */
+  registerOpen: DefectRow[];
   /** Open defects by severity (rows) and age bucket (columns). */
   severityAge: Record<Level, number[]>;
   /** Open defects by priority, all and those in the build. */
@@ -978,26 +994,28 @@ export function buildReport(input: ReportInput): Report {
   const failedRunsOfCase = new Map<number, number>();
   for (const r of runs) if (r.outcome === "failed") failedRunsOfCase.set(r.testCaseId, (failedRunsOfCase.get(r.testCaseId) ?? 0) + 1);
 
+  const rowFor = (incident: (typeof input.incidents)[number]): DefectRow => {
+    const caseIds = [...(casesByIncident.get(incident.incidentId) ?? [])].sort((a, b) => a - b);
+    const moduleNames = [...new Set(caseIds.flatMap((id) => [...(modulesOfCase.get(id) ?? [])]))].map(nameOf).sort();
+    const note = notesById[String(incident.incidentId)];
+    return {
+      incident,
+      severity: levelOf(incident.severity),
+      priority: levelOf(incident.priority),
+      retest: retestState(incident),
+      ageDays: incident.open && incident.createdAt ? Math.max(0, daysBetween(incident.createdAt, today)) : null,
+      modules: moduleNames,
+      testCaseIds: caseIds,
+      failedRuns: caseIds.reduce((n, id) => n + (failedRunsOfCase.get(id) ?? 0), 0),
+      feature: note?.feature.trim() || moduleNames.join(", "),
+      phase: note?.phase || (caseIds.length ? "in" : null),
+      rationale: note?.rationale.trim() ?? "",
+    };
+  };
+
   const defectRows: DefectRow[] = input.incidents
     .filter((i) => (i.detectedReleaseId !== null && scopedReleases.has(i.detectedReleaseId)) || casesByIncident.has(i.incidentId))
-    .map((incident) => {
-      const caseIds = [...(casesByIncident.get(incident.incidentId) ?? [])].sort((a, b) => a - b);
-      const moduleNames = [...new Set(caseIds.flatMap((id) => [...(modulesOfCase.get(id) ?? [])]))].map(nameOf).sort();
-      const note = notesById[String(incident.incidentId)];
-      return {
-        incident,
-        severity: levelOf(incident.severity),
-        priority: levelOf(incident.priority),
-        retest: retestState(incident),
-        ageDays: incident.open && incident.createdAt ? Math.max(0, daysBetween(incident.createdAt, today)) : null,
-        modules: moduleNames,
-        testCaseIds: caseIds,
-        failedRuns: caseIds.reduce((n, id) => n + (failedRunsOfCase.get(id) ?? 0), 0),
-        feature: note?.feature.trim() || moduleNames.join(", "),
-        phase: note?.phase || (caseIds.length ? "in" : null),
-        rationale: note?.rationale.trim() ?? "",
-      };
-    })
+    .map(rowFor)
     .sort(
       (a, b) =>
         Number(b.incident.open) - Number(a.incident.open) ||
@@ -1186,10 +1204,21 @@ export function buildReport(input: ReportInput): Report {
   const withinSla = open.filter((d) => (d.ageDays ?? 0) <= targets.agingDays).length;
   const failedWithoutDefect = failedChecked.filter((c) => c.incidentIds.length === 0);
 
-  const everOpened = input.incidents.length;
-  const projectStillOpen = input.incidents.filter((i) => i.open);
+  const registerIds = new Set(options.defectRegisterIds.filter((id) => id > 0));
+  const registerIncidents = registerIds.size ? input.incidents.filter((i) => registerIds.has(i.incidentId)) : [];
+  const registerName = options.defectBucketName.trim() || null;
+  const everOpened = registerIds.size;
+  const registerStillOpen = registerIncidents.filter((i) => i.open);
   const openStatus: Record<OpenStatusBucket, number> = { open: 0, toDo: 0, inDev: 0, other: 0 };
-  for (const i of projectStillOpen) openStatus[openStatusBucket(i.status)] += 1;
+  for (const i of registerStillOpen) openStatus[openStatusBucket(i.status)] += 1;
+  const registerOpen = registerStillOpen
+    .map(rowFor)
+    .sort(
+      (a, b) =>
+        LEVELS.indexOf(a.severity) - LEVELS.indexOf(b.severity) ||
+        LEVELS.indexOf(a.priority) - LEVELS.indexOf(b.priority) ||
+        b.incident.incidentId - a.incident.incidentId,
+    );
 
   const defectSummary = (() => {
     if (defectRows.length === 0) return `No defects are raised against ${scopedName} or linked to its cases.`;
@@ -1229,8 +1258,10 @@ export function buildReport(input: ReportInput): Report {
     open: open.length,
     closed: defectRows.length - open.length,
     everOpened,
-    stillOpen: projectStillOpen.length,
+    stillOpen: registerStillOpen.length,
     openStatus,
+    registerName,
+    registerOpen,
     severityAge,
     byPriority,
     byPriorityInBuild,
