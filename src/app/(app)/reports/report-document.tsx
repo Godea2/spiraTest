@@ -300,13 +300,17 @@ function SummaryPage({ report }: { report: Report }) {
     />,
     <Kpi
       key="open-defects"
-      label="Open defects"
-      value={n(report.defects.open)}
-      hint={
-        report.defects.openCriticalHigh
-          ? `${report.defects.openCriticalHigh} Critical/High · ${report.defects.closed} closed`
-          : `${report.defects.closed} closed in this build`
-      }
+      label="All-time defects"
+      value={n(report.defects.everOpened)}
+      hint={[
+        `${report.defects.stillOpen} still open`,
+        report.defects.openStatus.open ? `Open ${report.defects.openStatus.open}` : "",
+        report.defects.openStatus.toDo ? `To Do ${report.defects.openStatus.toDo}` : "",
+        report.defects.openStatus.inDev ? `In Dev ${report.defects.openStatus.inDev}` : "",
+        report.defects.openStatus.other ? `Other ${report.defects.openStatus.other}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       color="#b91c1c"
     />,
     <Kpi
@@ -833,10 +837,15 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
       <div>
         <Heading>4. Defects and retesting</Heading>
         <p className="text-[12.5px] leading-relaxed text-slate-700">
-          <span className="font-semibold text-slate-900">{d.open} open</span>
-          {d.openCriticalHigh ? ` (${d.openCriticalHigh} Critical or High)` : ""}
-          {", "}
-          {d.closed} closed. {d.summary}
+          <span className="font-semibold text-slate-900">{d.everOpened} all-time</span>
+          {" · "}
+          <span className="font-semibold text-slate-900">{d.stillOpen} still open</span>
+          {d.openStatus.toDo || d.openStatus.inDev || d.openStatus.open
+            ? ` (Open ${d.openStatus.open} · To Do ${d.openStatus.toDo} · In Dev ${d.openStatus.inDev}${d.openStatus.other ? ` · Other ${d.openStatus.other}` : ""})`
+            : ""}
+          {d.openCriticalHigh ? ` · ${d.openCriticalHigh} Critical/High in this build` : ""}
+          {". "}
+          {d.summary}
         </p>
       </div>
       <div className="report-keep grid gap-5 lg:grid-cols-3">

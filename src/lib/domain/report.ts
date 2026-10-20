@@ -421,10 +421,28 @@ export interface DefectRow {
   rationale: string;
 }
 
+/** How an open Spira status name maps for the summary tile (To Do / In Dev / Open / other). */
+export type OpenStatusBucket = "open" | "toDo" | "inDev" | "other";
+
+export function openStatusBucket(status: string | null | undefined): OpenStatusBucket {
+  const s = (status ?? "").trim();
+  if (/^to[\s_-]*do$/i.test(s)) return "toDo";
+  if (/^in[\s_-]*dev$/i.test(s)) return "inDev";
+  if (/^open$/i.test(s)) return "open";
+  return "other";
+}
+
 export interface DefectSummary {
   rows: DefectRow[];
+  /** Currently open defects in this build's register. */
   open: number;
   closed: number;
+  /** Every incident loaded from Spira for the project (all releases) — all-time opened. */
+  everOpened: number;
+  /** Project-wide incidents that are still open (not closed). */
+  stillOpen: number;
+  /** Still-open project incidents by Spira status family. */
+  openStatus: Record<OpenStatusBucket, number>;
   /** Open defects by severity (rows) and age bucket (columns). */
   severityAge: Record<Level, number[]>;
   /** Open defects by priority, all and those in the build. */
@@ -1168,6 +1186,11 @@ export function buildReport(input: ReportInput): Report {
   const withinSla = open.filter((d) => (d.ageDays ?? 0) <= targets.agingDays).length;
   const failedWithoutDefect = failedChecked.filter((c) => c.incidentIds.length === 0);
 
+  const everOpened = input.incidents.length;
+  const projectStillOpen = input.incidents.filter((i) => i.open);
+  const openStatus: Record<OpenStatusBucket, number> = { open: 0, toDo: 0, inDev: 0, other: 0 };
+  for (const i of projectStillOpen) openStatus[openStatusBucket(i.status)] += 1;
+
   const defectSummary = (() => {
     if (defectRows.length === 0) return `No defects are raised against ${scopedName} or linked to its cases.`;
     const ids = defectRows.map((d) => d.incident.incidentId).sort((a, b) => a - b);
@@ -1205,6 +1228,9 @@ export function buildReport(input: ReportInput): Report {
     rows: defectRows,
     open: open.length,
     closed: defectRows.length - open.length,
+    everOpened,
+    stillOpen: projectStillOpen.length,
+    openStatus,
     severityAge,
     byPriority,
     byPriorityInBuild,

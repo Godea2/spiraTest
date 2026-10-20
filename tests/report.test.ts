@@ -15,6 +15,7 @@ import {
   initialReportOptions,
   levelOf,
   moduleId,
+  openStatusBucket,
   previousSnapshot,
   previousVersion,
   releaseFamily,
@@ -199,6 +200,15 @@ describe("report scope", () => {
     expect(retestState(incident(1, { status: "Reopen" }))).toBe("reopened");
     expect(retestState(incident(1, { open: false }))).toBe("closed");
     expect(retestState(incident(1))).toBe("awaiting");
+  });
+
+  it("buckets open Spira statuses for the all-time defects tile", () => {
+    expect(openStatusBucket("Open")).toBe("open");
+    expect(openStatusBucket("To Do")).toBe("toDo");
+    expect(openStatusBucket("ToDo")).toBe("toDo");
+    expect(openStatusBucket("In Dev")).toBe("inDev");
+    expect(openStatusBucket("In-Dev")).toBe("inDev");
+    expect(openStatusBucket("Investigating")).toBe("other");
   });
 });
 
@@ -420,12 +430,20 @@ describe("report document", () => {
       "4. Defects and retesting",
       "4d. Defect register: severity and priority",
       "4e. Open defects",
-      "Open defects",
+      "All-time defects",
       "Key risks and actions",
       "Page 4 / 4",
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
-    expect(html).toContain("1 open");
+    expect(html).toContain("all-time");
+    expect(html).toContain("still open");
+    expect(buildReport(input()).defects).toMatchObject({
+      everOpened: 3,
+      stillOpen: 2,
+      open: 1,
+      closed: 1,
+      openStatus: { open: 0, toDo: 0, inDev: 0, other: 2 },
+    });
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
   });
 });
