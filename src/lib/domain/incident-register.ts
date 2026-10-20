@@ -3,6 +3,19 @@ import type { IncidentStatusOption, ReportIncident } from "./types";
 export type IncidentOpenFilter = "all" | "open" | "closed";
 export type IncidentSort = "id" | "created" | "name";
 
+export const MAX_BUCKET_NAME = 120;
+export const MAX_INCIDENT_DESCRIPTION = 50_000;
+
+/** A named set of incidents for review, kept in this browser per Spira project. */
+export interface DefectBucket {
+  id: string;
+  projectId: number;
+  name: string;
+  incidentIds: number[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Prefer an exact Closed / Open name, then any status with the matching open flag. */
 export function pickStatusForOpen(statuses: IncidentStatusOption[], wantOpen: boolean): IncidentStatusOption | null {
   const named = wantOpen
@@ -38,4 +51,25 @@ export function sortIncidents(incidents: ReportIncident[], sort: IncidentSort): 
     return b.incidentId - a.incidentId;
   });
   return list;
+}
+
+export function createBucket(projectId: number, name: string, incidentIds: number[], at = new Date().toISOString()): DefectBucket {
+  const trimmed = name.trim().slice(0, MAX_BUCKET_NAME);
+  const ids = [...new Set(incidentIds.filter((id) => id > 0))].sort((a, b) => b - a);
+  return {
+    id: `bucket-${projectId}-${Date.now().toString(36)}`,
+    projectId,
+    name: trimmed || `Bucket (${ids.length})`,
+    incidentIds: ids,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+export function incidentsInBucket(incidents: ReportIncident[], bucket: DefectBucket): ReportIncident[] {
+  const want = new Set(bucket.incidentIds);
+  return sortIncidents(
+    incidents.filter((i) => want.has(i.incidentId)),
+    "id",
+  );
 }

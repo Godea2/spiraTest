@@ -419,10 +419,13 @@ describe("report document", () => {
       "3c. Change since Cycle 1 (iOS test sets)",
       "4. Defects and retesting",
       "4d. Defect register: severity and priority",
+      "4e. Open defects",
+      "Open defects",
       "Key risks and actions",
       "Page 4 / 4",
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
+    expect(html).toContain("1 open");
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
   });
 });

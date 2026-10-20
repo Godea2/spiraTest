@@ -1,18 +1,27 @@
 "use client";
 
-import { CheckCircle2, LockOpen, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FolderPlus, LockOpen, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, EmptyState, Notice, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
+import { addBucket, listBuckets, removeBucket, updateBucket } from "@/lib/client/defect-buckets";
 import { formatDateTime } from "@/lib/client/format";
-import { listProjectIncidents, updateIncidentStatus } from "@/lib/client/incident-register";
+import {
+  listProjectIncidents,
+  readIncidentDescription,
+  updateIncidentStatus,
+  writeIncidentDescription,
+} from "@/lib/client/incident-register";
 import { readIncidentOptions } from "@/lib/client/defects";
 import {
   filterIncidents,
+  incidentsInBucket,
+  MAX_BUCKET_NAME,
   pickStatusForOpen,
   sortIncidents,
+  type DefectBucket,
   type IncidentOpenFilter,
   type IncidentSort,
 } from "@/lib/domain/incident-register";
@@ -38,12 +47,24 @@ export function DefectRegister() {
   const [incidents, setIncidents] = useState<ReportIncident[] | null>(null);
   const [complete, setComplete] = useState(true);
   const [statuses, setStatuses] = useState<IncidentStatusOption[]>([]);
+  const [buckets, setBuckets] = useState<DefectBucket[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<IncidentOpenFilter>("open");
   const [sort, setSort] = useState<IncidentSort>("id");
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bucketName, setBucketName] = useState("");
+  const [activeBucketId, setActiveBucketId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [descDrafts, setDescDrafts] = useState<Record<number, string>>({});
+  const [descLoading, setDescLoading] = useState<number | null>(null);
+
+  const reloadBuckets = useCallback(() => {
+    if (projectId === null) return;
+    setBuckets(listBuckets(projectId));
+  }, [projectId]);
 
   const load = useCallback(async () => {
     if (projectId === null || !configured) return;
@@ -54,6 +75,7 @@ export function DefectRegister() {
       setIncidents(list.incidents);
       setComplete(list.complete);
       setStatuses(options.statuses);
+      setBuckets(listBuckets(projectId));
     } catch (err) {
       setError(errorMessage(err));
       setIncidents(null);
@@ -73,21 +95,113 @@ export function DefectRegister() {
 
   const openStatus = useMemo(() => pickStatusForOpen(statuses, true), [statuses]);
   const closedStatus = useMemo(() => pickStatusForOpen(statuses, false), [statuses]);
+  const activeBucket = buckets.find((b) => b.id === activeBucketId) ?? null;
+  const bucketRows = useMemo(() => {
+    if (!incidents || !activeBucket) return [];
+    return incidentsInBucket(incidents, activeBucket);
+  }, [incidents, activeBucket]);
 
-  const applyStatus = async (incident: ReportIncident, statusId: number, label: string) => {
+  const patchIncident = (updated: ReportIncident) => {
+    setIncidents((list) => (list ? list.map((i) => (i.incidentId === updated.incidentId ? updated : i)) : list));
+  };
+
+  const applyStatus = async (incident: ReportIncident, statusId: number, label: string, confirm = true) => {
     if (projectId === null) return;
     if (incident.statusId === statusId) return;
-    if (!window.confirm(`Set IN:${incident.incidentId} to "${label}" in Spira?`)) return;
+    if (confirm && !window.confirm(`Set IN:${incident.incidentId} to "${label}" in Spira?`)) return;
     setBusyId(incident.incidentId);
     try {
       const updated = await updateIncidentStatus(projectId, incident.incidentId, statusId);
-      setIncidents((list) => (list ? list.map((i) => (i.incidentId === updated.incidentId ? updated : i)) : list));
+      patchIncident(updated);
       toast.success(`IN:${updated.incidentId} is now ${updated.status ?? label}.`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+      throw err;
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const bulkStatus = async (wantOpen: boolean) => {
+    if (projectId === null || !activeBucket) return;
+    const status = wantOpen ? openStatus : closedStatus;
+    if (!status) {
+      toast.error(wantOpen ? "No open status is configured in Spira." : "No closed status is configured in Spira.");
+      return;
+    }
+    const targets = bucketRows.filter((r) => r.open !== wantOpen);
+    if (targets.length === 0) {
+      toast.message(wantOpen ? "Everything in this bucket is already open." : "Everything in this bucket is already closed.");
+      return;
+    }
+    if (!window.confirm(`Set ${targets.length} defect${targets.length === 1 ? "" : "s"} to "${status.name}" in Spira?`)) return;
+    setBulkBusy(true);
+    let ok = 0;
+    try {
+      for (const row of targets) {
+        await applyStatus(row, status.id, status.name, false);
+        ok += 1;
+      }
+      toast.success(`Updated ${ok} of ${targets.length} in Spira.`);
+    } catch {
+      toast.error(`Stopped after ${ok} of ${targets.length}. Fix the Spira error and try again.`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const createFromSelection = () => {
+    if (projectId === null || selected.size === 0) return;
+    try {
+      const bucket = addBucket(projectId, bucketName || `Review (${selected.size})`, [...selected]);
+      setBucketName("");
+      setSelected(new Set());
+      reloadBuckets();
+      setActiveBucketId(bucket.id);
+      toast.success(`Bucket “${bucket.name}” saved with ${bucket.incidentIds.length} defects.`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const loadDescription = async (incidentId: number) => {
+    if (projectId === null || descDrafts[incidentId] !== undefined) return;
+    setDescLoading(incidentId);
+    try {
+      const { description } = await readIncidentDescription(projectId, incidentId);
+      setDescDrafts((d) => ({ ...d, [incidentId]: description }));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setDescLoading(null);
+    }
+  };
+
+  const saveDescription = async (incidentId: number) => {
+    if (projectId === null) return;
+    const text = descDrafts[incidentId];
+    if (text === undefined) return;
+    setBusyId(incidentId);
+    try {
+      const updated = await writeIncidentDescription(projectId, incidentId, text);
+      patchIncident(updated);
+      toast.success(`Saved description for IN:${incidentId} in Spira.`);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
       setBusyId(null);
     }
+  };
+
+  const toggleAllVisible = (on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const r of rows) {
+        if (on) next.add(r.incidentId);
+        else next.delete(r.incidentId);
+      }
+      return next;
+    });
   };
 
   if (!configured || projectId === null) {
@@ -98,18 +212,168 @@ export function DefectRegister() {
     );
   }
 
+  if (activeBucket) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="ghost" icon={ArrowLeft} onClick={() => setActiveBucketId(null)}>
+            Back to register
+          </Button>
+          <h2 className="text-lg font-semibold tracking-tight">{activeBucket.name}</h2>
+          <Badge tone="neutral">{bucketRows.length} defects</Badge>
+        </div>
+        <p className="text-sm text-slate-600 dark:text-zinc-400">
+          Edit each Spira description, then mark open or closed. Close/open writes straight to Spira.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" icon={CheckCircle2} busy={bulkBusy} disabled={bulkBusy || !closedStatus} onClick={() => void bulkStatus(false)}>
+            Mark all closed in Spira
+          </Button>
+          <Button size="sm" icon={LockOpen} busy={bulkBusy} disabled={bulkBusy || !openStatus} onClick={() => void bulkStatus(true)}>
+            Mark all open in Spira
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={Trash2}
+            onClick={() => {
+              if (!window.confirm(`Delete bucket “${activeBucket.name}”? Spira defects are not deleted.`)) return;
+              removeBucket(projectId, activeBucket.id);
+              setActiveBucketId(null);
+              reloadBuckets();
+            }}
+          >
+            Delete bucket
+          </Button>
+        </div>
+
+        {bucketRows.length === 0 ? (
+          <EmptyState icon={FolderPlus} title="No matching incidents">
+            These ids are not in the loaded list (refresh the register), or they were removed from Spira.
+          </EmptyState>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {bucketRows.map((row) => {
+              const busy = busyId === row.incidentId || bulkBusy;
+              const draft = descDrafts[row.incidentId];
+              return (
+                <div key={row.incidentId} className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium">
+                        IN:{row.incidentId} · {row.name}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {row.severity ?? "—"} · {row.priority ?? "—"} · {row.detectedRelease ?? "no release"}
+                      </p>
+                    </div>
+                    <Badge tone={row.open ? "warning" : "success"}>{row.status ?? (row.open ? "Open" : "Closed")}</Badge>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <select
+                      className="input w-auto min-w-[9rem]"
+                      aria-label={`Status for IN:${row.incidentId}`}
+                      disabled={busy || statuses.length === 0}
+                      value={row.statusId && statuses.some((s) => s.id === row.statusId) ? String(row.statusId) : ""}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        const status = statuses.find((s) => s.id === id);
+                        if (status) void applyStatus(row, status.id, status.name);
+                      }}
+                    >
+                      <option value="" disabled>
+                        Choose status…
+                      </option>
+                      {statuses.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                          {s.open ? "" : " (closed)"}
+                        </option>
+                      ))}
+                    </select>
+                    {row.open && closedStatus && (
+                      <Button size="sm" variant="ghost" icon={CheckCircle2} busy={busy} disabled={busy} onClick={() => void applyStatus(row, closedStatus.id, closedStatus.name)}>
+                        Mark closed
+                      </Button>
+                    )}
+                    {!row.open && openStatus && (
+                      <Button size="sm" variant="ghost" icon={LockOpen} busy={busy} disabled={busy} onClick={() => void applyStatus(row, openStatus.id, openStatus.name)}>
+                        Mark open
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        if (!activeBucket) return;
+                        const next = { ...activeBucket, incidentIds: activeBucket.incidentIds.filter((id) => id !== row.incidentId) };
+                        updateBucket(projectId, next);
+                        reloadBuckets();
+                      }}
+                    >
+                      Remove from bucket
+                    </Button>
+                  </div>
+                  <div className="mt-3">
+                    {draft === undefined ? (
+                      <Button size="sm" busy={descLoading === row.incidentId} onClick={() => void loadDescription(row.incidentId)}>
+                        Load Spira description
+                      </Button>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        <label className="text-sm font-medium text-slate-700 dark:text-zinc-300" htmlFor={`desc-${row.incidentId}`}>
+                          Description in Spira
+                        </label>
+                        <textarea
+                          id={`desc-${row.incidentId}`}
+                          className="input min-h-28 font-mono text-xs"
+                          value={draft}
+                          onChange={(e) => setDescDrafts((d) => ({ ...d, [row.incidentId]: e.target.value }))}
+                          disabled={busy}
+                        />
+                        <Button size="sm" busy={busy} disabled={busy} onClick={() => void saveDescription(row.incidentId)}>
+                          Save description to Spira
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const allVisibleSelected = rows.length > 0 && rows.every((r) => selected.has(r.incidentId));
+
   return (
     <div className="flex flex-col gap-4">
+      {buckets.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-medium text-slate-700 dark:text-zinc-300">Saved buckets</p>
+          <div className="flex flex-wrap gap-2">
+            {buckets.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => setActiveBucketId(b.id)}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm hover:border-brand-400 dark:border-white/10 dark:bg-white/5"
+              >
+                <FolderPlus className="size-3.5 text-slate-400" aria-hidden />
+                {b.name}
+                <span className="text-xs text-slate-500">{b.incidentIds.length}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-sm">
           <span className="font-medium text-slate-700 dark:text-zinc-300">Search</span>
-          <input
-            className="input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Id, name, or status"
-            aria-label="Search defects"
-          />
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Id, name, or status" aria-label="Search defects" />
         </label>
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium text-slate-700 dark:text-zinc-300">Show</span>
@@ -135,6 +399,28 @@ export function DefectRegister() {
           Refresh
         </Button>
       </div>
+
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-end gap-2 rounded-xl border border-brand-200 bg-brand-50/60 p-3 dark:border-brand-500/30 dark:bg-brand-500/10">
+          <p className="w-full text-sm font-medium text-slate-800 dark:text-zinc-200">{selected.size} selected</p>
+          <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-sm">
+            <span className="font-medium">Bucket name</span>
+            <input
+              className="input"
+              value={bucketName}
+              maxLength={MAX_BUCKET_NAME}
+              onChange={(e) => setBucketName(e.target.value)}
+              placeholder={`Review (${selected.size})`}
+            />
+          </label>
+          <Button icon={FolderPlus} onClick={createFromSelection}>
+            Create bucket
+          </Button>
+          <Button variant="ghost" onClick={() => setSelected(new Set())}>
+            Clear selection
+          </Button>
+        </div>
+      )}
 
       {!complete && incidents && (
         <Notice tone="warning" title="List may be incomplete">
@@ -165,6 +451,14 @@ export function DefectRegister() {
           <table className="min-w-full text-left text-sm">
             <thead className="bg-slate-50 text-xs font-semibold tracking-wide text-slate-600 uppercase dark:bg-white/5 dark:text-zinc-400">
               <tr>
+                <th className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={(e) => toggleAllVisible(e.target.checked)}
+                    aria-label="Select all visible"
+                  />
+                </th>
                 <th className="px-3 py-2">Id</th>
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Status</th>
@@ -172,15 +466,30 @@ export function DefectRegister() {
                 <th className="px-3 py-2">Priority</th>
                 <th className="px-3 py-2">Detected</th>
                 <th className="px-3 py-2">Created</th>
-                <th className="px-3 py-2">Closed</th>
                 <th className="px-3 py-2">Update in Spira</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/5">
               {rows.map((row) => {
                 const busy = busyId === row.incidentId;
+                const on = selected.has(row.incidentId);
                 return (
                   <tr key={row.incidentId} className="align-top">
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (on) next.delete(row.incidentId);
+                            else next.add(row.incidentId);
+                            return next;
+                          });
+                        }}
+                        aria-label={`Select IN:${row.incidentId}`}
+                      />
+                    </td>
                     <td className="px-3 py-2 font-medium tabular-nums whitespace-nowrap">IN:{row.incidentId}</td>
                     <td className="max-w-[18rem] px-3 py-2">
                       <span className="line-clamp-2">{row.name}</span>
@@ -192,7 +501,6 @@ export function DefectRegister() {
                     <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{row.priority ?? "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{row.detectedRelease ?? "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{formatDateTime(row.createdAt)}</td>
-                    <td className="px-3 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">{formatDateTime(row.closedAt)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <select
@@ -217,26 +525,12 @@ export function DefectRegister() {
                           ))}
                         </select>
                         {row.open && closedStatus && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            icon={CheckCircle2}
-                            busy={busy}
-                            disabled={busy}
-                            onClick={() => void applyStatus(row, closedStatus.id, closedStatus.name)}
-                          >
+                          <Button size="sm" variant="ghost" icon={CheckCircle2} busy={busy} disabled={busy} onClick={() => void applyStatus(row, closedStatus.id, closedStatus.name)}>
                             Mark closed
                           </Button>
                         )}
                         {!row.open && openStatus && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            icon={LockOpen}
-                            busy={busy}
-                            disabled={busy}
-                            onClick={() => void applyStatus(row, openStatus.id, openStatus.name)}
-                          >
+                          <Button size="sm" variant="ghost" icon={LockOpen} busy={busy} disabled={busy} onClick={() => void applyStatus(row, openStatus.id, openStatus.name)}>
                             Mark open
                           </Button>
                         )}

@@ -407,6 +407,17 @@ export const incidentStatusUpdateSchema = z.object({
   statusId: id,
 });
 
+export const incidentDescriptionLookupSchema = z.object({
+  projectId: id,
+  incidentId: id,
+});
+
+export const incidentDescriptionUpdateSchema = z.object({
+  projectId: id,
+  incidentId: id,
+  description: z.string().max(50_000),
+});
+
 export const releaseLookupSchema = z.object({ projectId: id, releaseId: id });
 
 export const testCaseLookupSchema = z.object({ projectId: id, testCaseId: id });

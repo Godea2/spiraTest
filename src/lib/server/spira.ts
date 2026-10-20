@@ -1116,17 +1116,48 @@ function toIncident(raw: z.infer<typeof incidentSchema>): ReportIncident {
   };
 }
 
+async function readIncidentRaw(projectId: number, incidentId: number): Promise<Record<string, unknown>> {
+  const what = `reading incident ${incidentId}`;
+  return parse(z.record(z.string(), z.unknown()), await call("GET", `projects/${projectId}/incidents/${incidentId}`, what), what);
+}
+
+async function refreshIncident(projectId: number, incidentId: number): Promise<ReportIncident> {
+  const what = `reading incident ${incidentId}`;
+  const updated = parse(incidentSchema.passthrough(), await call("GET", `projects/${projectId}/incidents/${incidentId}`, what), what);
+  return toIncident(updated);
+}
+
 /**
  * Sets an incident's status in Spira. Reads the incident first so concurrency fields stay intact,
  * then writes IncidentStatusId. Returns the refreshed incident.
  */
 export async function updateIncidentStatus(projectId: number, incidentId: number, statusId: number): Promise<ReportIncident> {
-  const readWhat = `reading incident ${incidentId}`;
-  const raw = parse(z.record(z.string(), z.unknown()), await call("GET", `projects/${projectId}/incidents/${incidentId}`, readWhat), readWhat);
+  const raw = await readIncidentRaw(projectId, incidentId);
   const what = `updating status of incident ${incidentId}`;
   await call("PUT", `projects/${projectId}/incidents/${incidentId}`, what, { ...raw, IncidentId: incidentId, IncidentStatusId: statusId });
-  const updated = parse(incidentSchema.passthrough(), await call("GET", `projects/${projectId}/incidents/${incidentId}`, readWhat), readWhat);
-  return toIncident(updated);
+  return refreshIncident(projectId, incidentId);
+}
+
+/** Plain-text description of an incident (Spira HTML stripped). Read-only. */
+export async function getIncidentDescription(projectId: number, incidentId: number): Promise<{ incidentId: number; description: string }> {
+  const raw = await readIncidentRaw(projectId, incidentId);
+  const description = richText(typeof raw.Description === "string" ? raw.Description : null);
+  return { incidentId, description };
+}
+
+/**
+ * Replaces an incident's description in Spira with plain text (stored as HTML line breaks).
+ * Returns the refreshed incident summary.
+ */
+export async function updateIncidentDescription(projectId: number, incidentId: number, description: string): Promise<ReportIncident> {
+  const raw = await readIncidentRaw(projectId, incidentId);
+  const what = `updating description of incident ${incidentId}`;
+  await call("PUT", `projects/${projectId}/incidents/${incidentId}`, what, {
+    ...raw,
+    IncidentId: incidentId,
+    Description: textToHtml(description),
+  });
+  return refreshIncident(projectId, incidentId);
 }
 
 const INCIDENT_PAGE = 500;

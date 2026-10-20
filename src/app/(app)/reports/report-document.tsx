@@ -294,8 +294,19 @@ function SummaryPage({ report }: { report: Report }) {
       key="failed"
       label="Failed"
       value={n(k.outcomes.failed)}
-      hint={`${report.defects.open} defect${report.defects.open === 1 ? "" : "s"} · ${n(k.outcomes.blocked)} blocked`}
+      hint={`${n(k.outcomes.blocked)} blocked`}
       split={<PlatformLine report={report} split={k.split.failed} />}
+      color="#b91c1c"
+    />,
+    <Kpi
+      key="open-defects"
+      label="Open defects"
+      value={n(report.defects.open)}
+      hint={
+        report.defects.openCriticalHigh
+          ? `${report.defects.openCriticalHigh} Critical/High · ${report.defects.closed} closed`
+          : `${report.defects.closed} closed in this build`
+      }
       color="#b91c1c"
     />,
     <Kpi
@@ -320,7 +331,14 @@ function SummaryPage({ report }: { report: Report }) {
 
   return (
     <>
-      <div className={clsx("grid grid-cols-2 gap-2.5 sm:grid-cols-3", tiles.length === 6 ? "xl:grid-cols-6" : "xl:grid-cols-5")}>{tiles}</div>
+      <div
+        className={clsx(
+          "grid grid-cols-2 gap-2.5 sm:grid-cols-3",
+          tiles.length >= 7 ? "xl:grid-cols-7" : tiles.length === 6 ? "xl:grid-cols-6" : "xl:grid-cols-5",
+        )}
+      >
+        {tiles}
+      </div>
 
       <div className="report-keep grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Panel
@@ -807,12 +825,19 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
     tbc: "To confirm",
   };
   const shown = d.rows.slice(0, 60);
+  const openRows = d.rows.filter((r) => r.incident.open);
+  const openShown = openRows.slice(0, 80);
   const actions = report.narrative.actions;
   return (
     <>
       <div>
         <Heading>4. Defects and retesting</Heading>
-        <p className="text-[12.5px] leading-relaxed text-slate-700">{d.summary}</p>
+        <p className="text-[12.5px] leading-relaxed text-slate-700">
+          <span className="font-semibold text-slate-900">{d.open} open</span>
+          {d.openCriticalHigh ? ` (${d.openCriticalHigh} Critical or High)` : ""}
+          {", "}
+          {d.closed} closed. {d.summary}
+        </p>
       </div>
       <div className="report-keep grid gap-5 lg:grid-cols-3">
         <div>
@@ -907,6 +932,38 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
           {d.rows.length > shown.length && <p className="mt-2 text-[11.5px] text-slate-500">{d.rows.length - shown.length} more in the Excel export.</p>}
         </div>
       )}
+
+      <div className="report-keep">
+        <SubHeading>4e. Open defects</SubHeading>
+        {openRows.length === 0 ? (
+          <p className="text-[12.5px] text-emerald-700">No open defects in this build&apos;s register.</p>
+        ) : (
+          <>
+            <Table head={["ID", "Defect", "Status", "Severity", "Priority", "Detected", "Age"]}>
+              {openShown.map((r) => (
+                <tr key={r.incident.incidentId}>
+                  <td className={`${td} whitespace-nowrap`}>
+                    <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
+                  </td>
+                  <td className={td}>{r.incident.name}</td>
+                  <td className={td}>{r.incident.status ?? "Open"}</td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.severity]}>{r.severity}</Chip>
+                  </td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.priority]}>{r.priority}</Chip>
+                  </td>
+                  <td className={td}>{r.incident.detectedRelease ?? "—"}</td>
+                  <td className={num}>{r.ageDays !== null ? `${r.ageDays} d` : "—"}</td>
+                </tr>
+              ))}
+            </Table>
+            {openRows.length > openShown.length && (
+              <p className="mt-2 text-[11.5px] text-slate-500">{openRows.length - openShown.length} more open defects in the Excel export.</p>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="report-keep">
         <Heading>Key risks and actions</Heading>
