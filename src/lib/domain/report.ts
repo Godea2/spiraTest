@@ -431,6 +431,18 @@ export interface DefectRow {
   /** In the build being tested, outside it, or awaiting confirmation; null when unknown. */
   phase: DefectPhase | null;
   rationale: string;
+  /** True when linked only to the API stream (or an obvious API/HTTP failure with no platform link). */
+  apiRelated: boolean;
+}
+
+const API_DEFECT_NAME = /\b(api|504|502|503|400\b|bad request|gateway timeout|endpoint)\b/i;
+
+/** Platform register and 4d omit API-only defects; the open list at the end keeps every still-open bucket member. */
+export function isApiRelatedDefect(testCaseIds: number[], streamsByCase: Map<number, ReadonlySet<Stream>>, name: string): boolean {
+  const streams = new Set<Stream>();
+  for (const id of testCaseIds) for (const s of streamsByCase.get(id) ?? []) streams.add(s);
+  if (streams.size > 0) return [...streams].every((s) => s === "API");
+  return API_DEFECT_NAME.test(name);
 }
 
 /** How an open Spira status name maps for the summary tile (To Do / In Dev / Open / other). */
@@ -466,7 +478,9 @@ export interface DefectSummary {
   openStatus: Record<OpenStatusBucket, number>;
   /** Name of the Review bucket used for the all-time KPI, when set. */
   registerName: string | null;
-  /** Open defects from the Review bucket (for page 4e). */
+  /** Review-bucket defects for 4d (Done and API-related omitted). */
+  registerRows: DefectRow[];
+  /** Still-open Review-bucket defects (for the list at the end of the report). */
   registerOpen: DefectRow[];
   /** Open defects by severity (rows) and age bucket (columns). */
   severityAge: Record<Level, number[]>;
@@ -999,7 +1013,13 @@ export function buildReport(input: ReportInput): Report {
     for (const incidentId of incidentIds) casesByIncident.set(incidentId, (casesByIncident.get(incidentId) ?? new Set()).add(Number(caseId)));
   }
   const modulesOfCase = new Map<number, Set<string>>();
-  for (const c of scoped.cases.values()) modulesOfCase.set(c.testCaseId, (modulesOfCase.get(c.testCaseId) ?? new Set()).add(c.moduleId));
+  const streamsByCase = new Map<number, Set<Stream>>();
+  for (const c of scoped.cases.values()) {
+    modulesOfCase.set(c.testCaseId, (modulesOfCase.get(c.testCaseId) ?? new Set()).add(c.moduleId));
+    const streams = streamsByCase.get(c.testCaseId) ?? new Set<Stream>();
+    for (const p of c.placements) streams.add(p.stream);
+    streamsByCase.set(c.testCaseId, streams);
+  }
   const failedRunsOfCase = new Map<number, number>();
   for (const r of runs) if (r.outcome === "failed") failedRunsOfCase.set(r.testCaseId, (failedRunsOfCase.get(r.testCaseId) ?? 0) + 1);
 
@@ -1019,6 +1039,7 @@ export function buildReport(input: ReportInput): Report {
       feature: note?.feature.trim() || moduleNames.join(", "),
       phase: note?.phase || (caseIds.length ? "in" : null),
       rationale: note?.rationale.trim() ?? "",
+      apiRelated: isApiRelatedDefect(caseIds, streamsByCase, incident.name),
     };
   };
 
@@ -1226,14 +1247,17 @@ export function buildReport(input: ReportInput): Report {
   const registerStillOpen = registerIncidents.filter((i) => countsOnDefectReport(i));
   const openStatus: Record<OpenStatusBucket, number> = { open: 0, toDo: 0, inDev: 0, other: 0 };
   for (const i of registerStillOpen) openStatus[openStatusBucket(i.status)] += 1;
-  const registerOpen = registerStillOpen
-    .map(rowFor)
-    .sort(
+  const sortDefectRows = (list: DefectRow[]) =>
+    [...list].sort(
       (a, b) =>
+        Number(countsOnDefectReport(b.incident)) - Number(countsOnDefectReport(a.incident)) ||
         LEVELS.indexOf(a.severity) - LEVELS.indexOf(b.severity) ||
         LEVELS.indexOf(a.priority) - LEVELS.indexOf(b.priority) ||
         b.incident.incidentId - a.incident.incidentId,
     );
+  const registerMapped = sortDefectRows(registerIncidents.map(rowFor));
+  const registerRows = registerMapped.filter((r) => !r.apiRelated);
+  const registerOpen = sortDefectRows(registerStillOpen.map(rowFor));
 
   const defectSummary = (() => {
     if (defectRows.length === 0) return `No defects are raised against ${scopedName} or linked to its cases.`;
@@ -1276,6 +1300,7 @@ export function buildReport(input: ReportInput): Report {
     stillOpen: registerStillOpen.length,
     openStatus,
     registerName,
+    registerRows,
     registerOpen,
     severityAge,
     byPriority,

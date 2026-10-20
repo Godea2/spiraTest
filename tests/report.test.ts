@@ -15,6 +15,7 @@ import {
   initialReportOptions,
   levelOf,
   moduleId,
+  isApiRelatedDefect,
   isDoneStatus,
   openStatusBucket,
   previousSnapshot,
@@ -217,6 +218,15 @@ describe("report scope", () => {
     expect(isDoneStatus("done")).toBe(true);
     expect(isDoneStatus("Open")).toBe(false);
     expect(isDoneStatus("Closed")).toBe(false);
+  });
+
+  it("flags API-only linked defects and obvious API failure titles", () => {
+    const apiOnly = new Map([[10, new Set(["API" as const])]]);
+    const mixed = new Map([[10, new Set(["API" as const, "iOS" as const])]]);
+    expect(isApiRelatedDefect([10], apiOnly, "Anything")).toBe(true);
+    expect(isApiRelatedDefect([10], mixed, "Anything")).toBe(false);
+    expect(isApiRelatedDefect([], new Map(), "request returned 504 Gateway Timeout")).toBe(true);
+    expect(isApiRelatedDefect([], new Map(), "Blank white screen after account creation")).toBe(false);
   });
 });
 
@@ -439,10 +449,10 @@ describe("report document", () => {
       "4d. Defect register: severity and priority",
       "All-time defects",
       "Key risks and actions",
+      "Open defects",
       "Page 4 / 4",
     ])
       expect(html).toContain(text.replace("&", "&amp;"));
-    expect(html).not.toContain("4e. Open defects");
     expect(buildReport(input()).defects).toMatchObject({
       everOpened: 0,
       stillOpen: 0,
@@ -450,31 +460,35 @@ describe("report document", () => {
       closed: 1,
       openStatus: { open: 0, toDo: 0, inDev: 0, other: 0 },
       registerName: null,
+      registerRows: [],
       registerOpen: [],
     });
-    expect(
-      buildReport(
-        input({
-          options: options({
-            defectBucketId: "bucket-24-test",
-            defectBucketName: "Sprint review",
-            defectRegisterIds: [258, 259, 300, 401],
-          }),
-          incidents: [
-            incident(258, { status: "Open" }),
-            incident(259, { open: false, status: "Closed", detectedReleaseId: 2 }),
-            incident(300, { detectedReleaseId: 4, status: "To Do" }),
-            incident(400, { status: "In Dev" }),
-            incident(401, { status: "Done", open: true, detectedReleaseId: 2 }),
-          ],
+    const bucketed = buildReport(
+      input({
+        options: options({
+          defectBucketId: "bucket-24-test",
+          defectBucketName: "Sprint review",
+          defectRegisterIds: [258, 259, 300, 401, 402],
         }),
-      ).defects,
-    ).toMatchObject({
-      everOpened: 3,
-      stillOpen: 2,
+        incidents: [
+          incident(258, { status: "Open" }),
+          incident(259, { open: false, status: "Closed", detectedReleaseId: 2 }),
+          incident(300, { detectedReleaseId: 4, status: "To Do" }),
+          incident(400, { status: "In Dev" }),
+          incident(401, { status: "Done", open: true, detectedReleaseId: 2 }),
+          incident(402, { status: "Open", name: "Payments API returned 504 Gateway Timeout", detectedReleaseId: 2 }),
+        ],
+        links: { 101: [258], 400: [402] },
+      }),
+    ).defects;
+    expect(bucketed).toMatchObject({
+      everOpened: 4,
+      stillOpen: 3,
       registerName: "Sprint review",
-      openStatus: { open: 1, toDo: 1, inDev: 0, other: 0 },
+      openStatus: { open: 2, toDo: 1, inDev: 0, other: 0 },
     });
+    expect(bucketed.registerRows.map((r) => r.incident.incidentId)).toEqual([300, 258, 259]);
+    expect(bucketed.registerOpen.map((r) => r.incident.incidentId)).toEqual([402, 300, 258]);
     expect(
       buildReport(
         input({

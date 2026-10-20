@@ -814,7 +814,10 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
     out: labels.outside,
     tbc: "To confirm",
   };
-  const shown = d.rows.slice(0, 60);
+  const registerRows = d.registerRows;
+  const shown = registerRows.slice(0, 60);
+  const openRows = d.registerOpen;
+  const openShown = openRows.slice(0, 120);
   const actions = report.narrative.actions;
   return (
     <>
@@ -877,33 +880,46 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
           </Table>
         </div>
       </div>
-      {d.rows.length > 0 && (
-        <div>
-          <SubHeading>4d. Defect register: severity and priority</SubHeading>
-          <Table head={["ID", "Defect", "Feature", `${labels.short} scope`, "Severity", "Priority", "Rationale"]}>
-            {shown.map((r) => (
-              <tr key={r.incident.incidentId} className={r.incident.open ? undefined : "text-slate-500"}>
-                <td className={`${td} whitespace-nowrap`}>
-                  <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
-                </td>
-                <td className={td}>{r.incident.name}</td>
-                <td className={td}>{r.feature || "—"}</td>
-                <td className={td}>
-                  {r.phase ? <Chip className={PHASE_CHIP[r.phase]}>{phaseText[r.phase]}</Chip> : <span className="text-slate-400">—</span>}
-                </td>
-                <td className={td}>
-                  <Chip className={LEVEL_CHIP[r.severity]}>{r.severity}</Chip>
-                </td>
-                <td className={td}>
-                  <Chip className={LEVEL_CHIP[r.priority]}>{r.priority}</Chip>
-                </td>
-                <td className={clsx(td, "text-[11.5px]")}>{r.rationale || <span className="text-slate-400">—</span>}</td>
-              </tr>
-            ))}
-          </Table>
-          {d.rows.length > shown.length && <p className="mt-2 text-[11.5px] text-slate-500">{d.rows.length - shown.length} more in the Excel export.</p>}
-        </div>
-      )}
+      <div>
+        <SubHeading>4d. Defect register: severity and priority</SubHeading>
+        <p className="mb-2 text-[11.5px] text-slate-500">
+          {d.registerName
+            ? `From Review bucket “${d.registerName}” (API-linked defects omitted).`
+            : "Pick a Defects Review bucket in report setup to fill this register."}
+        </p>
+        {registerRows.length === 0 ? (
+          <p className="text-[12.5px] text-slate-500">
+            {d.registerName ? "No non-API defects in this bucket." : "No Review bucket selected."}
+          </p>
+        ) : (
+          <>
+            <Table head={["ID", "Defect", "Feature", `${labels.short} scope`, "Severity", "Priority", "Rationale"]}>
+              {shown.map((r) => (
+                <tr key={r.incident.incidentId} className={r.incident.open ? undefined : "text-slate-500"}>
+                  <td className={`${td} whitespace-nowrap`}>
+                    <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
+                  </td>
+                  <td className={td}>{r.incident.name}</td>
+                  <td className={td}>{r.feature || "—"}</td>
+                  <td className={td}>
+                    {r.phase ? <Chip className={PHASE_CHIP[r.phase]}>{phaseText[r.phase]}</Chip> : <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.severity]}>{r.severity}</Chip>
+                  </td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.priority]}>{r.priority}</Chip>
+                  </td>
+                  <td className={clsx(td, "text-[11.5px]")}>{r.rationale || <span className="text-slate-400">—</span>}</td>
+                </tr>
+              ))}
+            </Table>
+            {registerRows.length > shown.length && (
+              <p className="mt-2 text-[11.5px] text-slate-500">{registerRows.length - shown.length} more in the Excel export.</p>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="report-keep">
         <Heading>Key risks and actions</Heading>
@@ -919,6 +935,46 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
           </div>
         ) : (
           <p className="text-[12.5px] text-emerald-700">No open risks found in the Spira data: every run is executed and passed, and no defect is open.</p>
+        )}
+      </div>
+
+      <div className="report-keep">
+        <Heading>
+          Open defects
+          {openRows.length ? ` (${n(openRows.length)})` : ""}
+        </Heading>
+        <p className="mb-2 text-[11.5px] text-slate-500">
+          {d.registerName
+            ? `Still open in Review bucket “${d.registerName}”.`
+            : "Pick a Defects Review bucket in report setup to list open defects here."}
+        </p>
+        {openRows.length === 0 ? (
+          <p className="text-[12.5px] text-emerald-700">No open defects in the Review bucket.</p>
+        ) : (
+          <>
+            <Table head={["ID", "Defect", "Status", "Severity", "Priority", "Detected", "Age"]}>
+              {openShown.map((r) => (
+                <tr key={r.incident.incidentId}>
+                  <td className={`${td} whitespace-nowrap`}>
+                    <SpiraLink href={incidentUrl(r.incident.incidentId)}>IN:{r.incident.incidentId}</SpiraLink>
+                  </td>
+                  <td className={td}>{r.incident.name}</td>
+                  <td className={td}>{r.incident.status ?? "Open"}</td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.severity]}>{r.severity}</Chip>
+                  </td>
+                  <td className={td}>
+                    <Chip className={LEVEL_CHIP[r.priority]}>{r.priority}</Chip>
+                  </td>
+                  <td className={td}>{r.incident.detectedRelease ?? "—"}</td>
+                  <td className={num}>{r.ageDays !== null ? `${r.ageDays} d` : "—"}</td>
+                </tr>
+              ))}
+            </Table>
+            {openRows.length > openShown.length && (
+              <p className="mt-2 text-[11.5px] text-slate-500">{openRows.length - openShown.length} more open defects in the Excel export.</p>
+            )}
+          </>
         )}
       </div>
     </>
