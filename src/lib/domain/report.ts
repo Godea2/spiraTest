@@ -444,6 +444,15 @@ export function openStatusBucket(status: string | null | undefined): OpenStatusB
   return "other";
 }
 
+/** Spira "Done" stays off the executive report even when Spira still flags the incident open. */
+export function isDoneStatus(status: string | null | undefined): boolean {
+  return /^done$/i.test((status ?? "").trim());
+}
+
+export function countsOnDefectReport(incident: { open: boolean; status: string | null | undefined }): boolean {
+  return incident.open && !isDoneStatus(incident.status);
+}
+
 export interface DefectSummary {
   rows: DefectRow[];
   /** Currently open defects in this build's register. */
@@ -1014,7 +1023,11 @@ export function buildReport(input: ReportInput): Report {
   };
 
   const defectRows: DefectRow[] = input.incidents
-    .filter((i) => (i.detectedReleaseId !== null && scopedReleases.has(i.detectedReleaseId)) || casesByIncident.has(i.incidentId))
+    .filter(
+      (i) =>
+        !isDoneStatus(i.status) &&
+        ((i.detectedReleaseId !== null && scopedReleases.has(i.detectedReleaseId)) || casesByIncident.has(i.incidentId)),
+    )
     .map(rowFor)
     .sort(
       (a, b) =>
@@ -1030,7 +1043,7 @@ export function buildReport(input: ReportInput): Report {
   for (const row of defectRows) {
     for (const id of new Set(row.testCaseIds.flatMap((caseId) => [...(modulesOfCase.get(caseId) ?? [])]))) {
       defectsByModule.set(id, (defectsByModule.get(id) ?? 0) + 1);
-      if (row.incident.open) {
+      if (countsOnDefectReport(row.incident)) {
         openDefectsByModule.set(id, (openDefectsByModule.get(id) ?? 0) + 1);
         // Out-of-scope notes do not block module readiness; they are tracked as scope drift instead.
         if (row.phase !== "out") openInBuildByModule.set(id, (openInBuildByModule.get(id) ?? 0) + 1);
@@ -1183,7 +1196,7 @@ export function buildReport(input: ReportInput): Report {
     .sort((a, b) => a.module.localeCompare(b.module) || a.testCaseId - b.testCaseId);
   const failedChecked = failedCases.filter((c) => c.checked);
 
-  const open = defectRows.filter((d) => d.incident.open);
+  const open = defectRows.filter((d) => countsOnDefectReport(d.incident));
   const severityAge = Object.fromEntries(LEVELS.map((l) => [l, [0, 0, 0, 0]])) as Record<Level, number[]>;
   const byPriority = Object.fromEntries(LEVELS.map((l) => [l, 0])) as Record<Level, number>;
   const byPriorityInBuild = Object.fromEntries(LEVELS.map((l) => [l, 0])) as Record<Level, number>;
@@ -1205,10 +1218,12 @@ export function buildReport(input: ReportInput): Report {
   const failedWithoutDefect = failedChecked.filter((c) => c.incidentIds.length === 0);
 
   const registerIds = new Set(options.defectRegisterIds.filter((id) => id > 0));
-  const registerIncidents = registerIds.size ? input.incidents.filter((i) => registerIds.has(i.incidentId)) : [];
+  const registerIncidents = registerIds.size
+    ? input.incidents.filter((i) => registerIds.has(i.incidentId) && !isDoneStatus(i.status))
+    : [];
   const registerName = options.defectBucketName.trim() || null;
-  const everOpened = registerIds.size;
-  const registerStillOpen = registerIncidents.filter((i) => i.open);
+  const everOpened = registerIncidents.length;
+  const registerStillOpen = registerIncidents.filter((i) => countsOnDefectReport(i));
   const openStatus: Record<OpenStatusBucket, number> = { open: 0, toDo: 0, inDev: 0, other: 0 };
   for (const i of registerStillOpen) openStatus[openStatusBucket(i.status)] += 1;
   const registerOpen = registerStillOpen

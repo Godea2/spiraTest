@@ -15,6 +15,7 @@ import {
   initialReportOptions,
   levelOf,
   moduleId,
+  isDoneStatus,
   openStatusBucket,
   previousSnapshot,
   previousVersion,
@@ -209,6 +210,13 @@ describe("report scope", () => {
     expect(openStatusBucket("In Dev")).toBe("inDev");
     expect(openStatusBucket("In-Dev")).toBe("inDev");
     expect(openStatusBucket("Investigating")).toBe("other");
+  });
+
+  it("treats Done as excluded from the report", () => {
+    expect(isDoneStatus("Done")).toBe(true);
+    expect(isDoneStatus("done")).toBe(true);
+    expect(isDoneStatus("Open")).toBe(false);
+    expect(isDoneStatus("Closed")).toBe(false);
   });
 });
 
@@ -450,13 +458,14 @@ describe("report document", () => {
           options: options({
             defectBucketId: "bucket-24-test",
             defectBucketName: "Sprint review",
-            defectRegisterIds: [258, 259, 300],
+            defectRegisterIds: [258, 259, 300, 401],
           }),
           incidents: [
             incident(258, { status: "Open" }),
             incident(259, { open: false, status: "Closed", detectedReleaseId: 2 }),
             incident(300, { detectedReleaseId: 4, status: "To Do" }),
             incident(400, { status: "In Dev" }),
+            incident(401, { status: "Done", open: true, detectedReleaseId: 2 }),
           ],
         }),
       ).defects,
@@ -466,6 +475,16 @@ describe("report document", () => {
       registerName: "Sprint review",
       openStatus: { open: 1, toDo: 1, inDev: 0, other: 0 },
     });
+    expect(
+      buildReport(
+        input({
+          incidents: [
+            incident(258, { status: "Open" }),
+            incident(401, { status: "Done", open: true, detectedReleaseId: 2 }),
+          ],
+        }),
+      ).defects.rows.map((r) => r.incident.incidentId),
+    ).toEqual([258]);
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
   });
 });
