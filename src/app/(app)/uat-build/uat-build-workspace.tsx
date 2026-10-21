@@ -1,6 +1,6 @@
 "use client";
 
-import { Bug, ChevronDown, ClipboardList, Play, RefreshCw, Upload, UserRound } from "lucide-react";
+import { Bug, ChevronDown, ClipboardList, Eraser, Play, RefreshCw, Upload, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -10,7 +10,7 @@ import { errorMessage } from "@/lib/client/api";
 import { logActivity } from "@/lib/client/activity";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import type { PassProgressOutcome, ProgressPick } from "@/lib/client/progress";
-import { listUatDrafts, materializeUatCatalog } from "@/lib/client/uat-build";
+import { listUatDrafts, materializeUatCatalog, resetUatProgress } from "@/lib/client/uat-build";
 import { loadWeekCatalog, recordWeekPicks, weekCatalogAsDrafts, type WeekCatalog } from "@/lib/client/week";
 import { executionCards, executionCounts } from "@/lib/domain/execution";
 import type { Draft } from "@/lib/domain/types";
@@ -86,6 +86,25 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     storeTester(name);
   };
 
+  const resetProgress = () => {
+    if (releaseId === null) return;
+    if (
+      !window.confirm(
+        "Clear local UAT Execute / Progress marks for this build so regression can start fresh in this app?\n\nSpira runs and the Reports figures read from Spira are not changed.",
+      )
+    ) {
+      return;
+    }
+    const { cleared } = resetUatProgress(releaseId);
+    setUatDrafts(listUatDrafts(releaseId));
+    logActivity({
+      type: "week.loaded",
+      message: `UAT build: cleared local progress on ${cleared} module draft(s) for release ${releaseId}.`,
+      details: { releaseId, cleared, source: "uat-build-reset" },
+    });
+    toast.success(cleared ? `Cleared progress on ${plural(cleared, "module")}` : "UAT progress was already clear");
+  };
+
   const recordPicks = async (
     picks: ProgressPick[],
     name: string,
@@ -148,9 +167,16 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
             title="Spira cases for this build"
             description="Same release plan as Reports “this build”. Load once, then run modules or search defects."
             actions={
-              <Button icon={RefreshCw} variant="primary" busy={loading} onClick={() => void load()}>
-                {hasCases ? "Reload from Spira" : "Load cases from Spira"}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                {hasCases && (
+                  <Button icon={Eraser} variant="ghost" disabled={loading} onClick={resetProgress}>
+                    Reset progress
+                  </Button>
+                )}
+                <Button icon={RefreshCw} variant="primary" busy={loading} onClick={() => void load()}>
+                  {hasCases ? "Reload from Spira" : "Load cases from Spira"}
+                </Button>
+              </div>
             }
           >
             {loadError && (

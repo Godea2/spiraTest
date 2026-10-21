@@ -252,6 +252,7 @@ function PlatformLine({ report, split }: { report: Report; split: PlatformSplit 
 function SummaryPage({ report }: { report: Report }) {
   const k = report.kpis;
   const { labels, hasBaseline } = report;
+  const planned = report.kind === "planned";
   const exit = exitWord(report);
   const notStarted = report.modules.filter((m) => m.status === "notStarted").length;
   const blockedOrCaution = (["blocked", "caution"] as const).filter((o) => k.outcomes[o] > 0);
@@ -312,7 +313,7 @@ function SummaryPage({ report }: { report: Report }) {
   const buildShare = hasBaseline && k.plan ? Math.min(1, k.inScope / k.plan) : 1;
   const executedShare = k.plan ? Math.min(1, k.executed / k.plan) : 0;
   const cycleRows: Array<[string, string, string]> =
-    hasBaseline && k.baseline.executed > 0
+    !planned && hasBaseline && k.baseline.executed > 0
       ? [
           ["Pass rate", formatPct(k.baseline.passPct), formatPct(k.passPct)],
           ["Blocked tests", n(k.baseline.outcomes.blocked), n(k.outcomes.blocked)],
@@ -321,6 +322,11 @@ function SummaryPage({ report }: { report: Report }) {
 
   return (
     <>
+      {planned && (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-[12.5px] leading-relaxed text-slate-700">
+          Planned test cases for {labels.name}: execution has not started. Executed, passed, failed, and defects are shown as zero.
+        </p>
+      )}
       <div
         className={clsx(
           "grid grid-cols-2 gap-2.5 sm:grid-cols-3",
@@ -330,94 +336,98 @@ function SummaryPage({ report }: { report: Report }) {
         {tiles}
       </div>
 
-      <div className="report-keep grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Panel
-          title="Execution status"
-          foot={
-            <>
-              {n(k.executed)} of {n(k.executable)} test runs in {labels.name}
-              <br />
-              Target at {exit ? `${exit} ` : ""}exit: {report.targets.executedPct}%
-            </>
-          }
-        >
-          <div className="flex items-center gap-3">
-            <Donut
-              segments={(["passed", "failed", "blocked", "caution", "notRun"] as const).map((o) => ({ value: k.outcomes[o], color: OUTCOME_COLOR[o] }))}
-              center={
-                <span>
-                  <span className="block text-lg font-bold tabular-nums">{formatPct(k.execPct)}</span>
-                  <span className="block px-3 text-[9.5px] leading-tight text-slate-500">of {labels.name} executed</span>
-                </span>
+      <div className={clsx("report-keep grid gap-3", planned ? "sm:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-4")}>
+        {!planned && (
+          <>
+            <Panel
+              title="Execution status"
+              foot={
+                <>
+                  {n(k.executed)} of {n(k.executable)} test runs in {labels.name}
+                  <br />
+                  Target at {exit ? `${exit} ` : ""}exit: {report.targets.executedPct}%
+                </>
               }
-            />
-            <div className="flex flex-col gap-1 text-[11px] text-slate-600">
-              <Swatch color={OUTCOME_COLOR.passed} label="Passed" value={k.outcomes.passed} />
-              <Swatch color={OUTCOME_COLOR.failed} label="Failed" value={k.outcomes.failed} />
-              {blockedOrCaution.map((o) => (
-                <Swatch key={o} color={OUTCOME_COLOR[o]} label={o === "blocked" ? "Blocked" : "Caution"} value={k.outcomes[o]} />
-              ))}
-              <Swatch color={OUTCOME_COLOR.notRun} label="Still to run" value={k.stillToRun} />
-            </div>
-          </div>
-        </Panel>
-        <Panel title="Outcome of executed tests" foot={`Target at ${exit ? `${exit} ` : ""}exit: ${report.targets.passRatePct}% pass`}>
-          <div className="flex items-center gap-3">
-            <Donut
-              segments={(["passed", "failed", "blocked", "caution"] as const).map((o) => ({ value: k.outcomes[o], color: OUTCOME_COLOR[o] }))}
-              center={
-                <span>
-                  <span className="block text-lg font-bold tabular-nums">{formatPct(k.passPct, 0)}</span>
-                  <span className="text-[10px] text-slate-500">pass rate</span>
-                </span>
-              }
-            />
-            <div className="flex flex-col gap-1 text-[11px] text-slate-600">
-              <Swatch color={OUTCOME_COLOR.passed} label="Passed" value={k.outcomes.passed} />
-              <Swatch color={OUTCOME_COLOR.failed} label="Failed" value={k.outcomes.failed} />
-              <Swatch color={OUTCOME_COLOR.blocked} label="Blocked" value={k.outcomes.blocked} />
-              <Swatch color={OUTCOME_COLOR.caution} label="Caution" value={k.outcomes.caution} />
-            </div>
-          </div>
-        </Panel>
-        <Panel
-          title="Modules ready for UAT"
-          foot="Ready = every run executed (same as modules fully executed). Unfinished modules with blocked tests or in-scope open defects stay At risk."
-        >
-          <div className="flex items-center gap-3">
-            <Donut
-              segments={(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[]).map((s) => ({
-                value: report.readiness[s],
-                color: MODULE_STATUS_COLOR[s],
-              }))}
-              center={
-                <span>
-                  <span className="block text-lg font-bold tabular-nums">
-                    {report.readiness.ready} / {report.modules.length}
-                  </span>
-                  <span className="text-[10px] text-slate-500">ready</span>
-                </span>
-              }
-            />
-            <div className="flex flex-col gap-1 text-[11px] text-slate-600">
-              {(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[])
-                .filter((s) => s !== "inProgress" || report.readiness.inProgress > 0)
-                .map((s) => (
-                  <Swatch key={s} color={MODULE_STATUS_COLOR[s]} label={MODULE_STATUS_LABEL[s]} value={report.readiness[s]} />
-                ))}
-            </div>
-          </div>
-        </Panel>
+            >
+              <div className="flex items-center gap-3">
+                <Donut
+                  segments={(["passed", "failed", "blocked", "caution", "notRun"] as const).map((o) => ({ value: k.outcomes[o], color: OUTCOME_COLOR[o] }))}
+                  center={
+                    <span>
+                      <span className="block text-lg font-bold tabular-nums">{formatPct(k.execPct)}</span>
+                      <span className="block px-3 text-[9.5px] leading-tight text-slate-500">of {labels.name} executed</span>
+                    </span>
+                  }
+                />
+                <div className="flex flex-col gap-1 text-[11px] text-slate-600">
+                  <Swatch color={OUTCOME_COLOR.passed} label="Passed" value={k.outcomes.passed} />
+                  <Swatch color={OUTCOME_COLOR.failed} label="Failed" value={k.outcomes.failed} />
+                  {blockedOrCaution.map((o) => (
+                    <Swatch key={o} color={OUTCOME_COLOR[o]} label={o === "blocked" ? "Blocked" : "Caution"} value={k.outcomes[o]} />
+                  ))}
+                  <Swatch color={OUTCOME_COLOR.notRun} label="Still to run" value={k.stillToRun} />
+                </div>
+              </div>
+            </Panel>
+            <Panel title="Outcome of executed tests" foot={`Target at ${exit ? `${exit} ` : ""}exit: ${report.targets.passRatePct}% pass`}>
+              <div className="flex items-center gap-3">
+                <Donut
+                  segments={(["passed", "failed", "blocked", "caution"] as const).map((o) => ({ value: k.outcomes[o], color: OUTCOME_COLOR[o] }))}
+                  center={
+                    <span>
+                      <span className="block text-lg font-bold tabular-nums">{formatPct(k.passPct, 0)}</span>
+                      <span className="text-[10px] text-slate-500">pass rate</span>
+                    </span>
+                  }
+                />
+                <div className="flex flex-col gap-1 text-[11px] text-slate-600">
+                  <Swatch color={OUTCOME_COLOR.passed} label="Passed" value={k.outcomes.passed} />
+                  <Swatch color={OUTCOME_COLOR.failed} label="Failed" value={k.outcomes.failed} />
+                  <Swatch color={OUTCOME_COLOR.blocked} label="Blocked" value={k.outcomes.blocked} />
+                  <Swatch color={OUTCOME_COLOR.caution} label="Caution" value={k.outcomes.caution} />
+                </div>
+              </div>
+            </Panel>
+            <Panel
+              title="Modules ready for UAT"
+              foot="Ready = every run executed (same as modules fully executed). Unfinished modules with blocked tests or in-scope open defects stay At risk."
+            >
+              <div className="flex items-center gap-3">
+                <Donut
+                  segments={(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[]).map((s) => ({
+                    value: report.readiness[s],
+                    color: MODULE_STATUS_COLOR[s],
+                  }))}
+                  center={
+                    <span>
+                      <span className="block text-lg font-bold tabular-nums">
+                        {report.readiness.ready} / {report.modules.length}
+                      </span>
+                      <span className="text-[10px] text-slate-500">ready</span>
+                    </span>
+                  }
+                />
+                <div className="flex flex-col gap-1 text-[11px] text-slate-600">
+                  {(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[])
+                    .filter((s) => s !== "inProgress" || report.readiness.inProgress > 0)
+                    .map((s) => (
+                      <Swatch key={s} color={MODULE_STATUS_COLOR[s]} label={MODULE_STATUS_LABEL[s]} value={report.readiness[s]} />
+                    ))}
+                </div>
+              </div>
+            </Panel>
+          </>
+        )}
         {hasBaseline ? (
           <Panel
-            title="Total test plan vs this build"
+            title={planned ? "Total test plan vs planned build" : "Total test plan vs this build"}
             foot={
               report.streams.length > 1 ? `Test runs across ${report.streams.join(" and ")}: each case counted once per platform.` : "Each case counted once."
             }
           >
             <div className="relative mt-1 h-4 w-full overflow-hidden rounded-sm bg-slate-200">
               <div className="absolute inset-y-0 left-0 bg-indigo-300" style={{ width: `${buildShare * 100}%` }} />
-              <div className="absolute inset-y-0 left-0 bg-indigo-600" style={{ width: `${executedShare * 100}%` }} />
+              {!planned && <div className="absolute inset-y-0 left-0 bg-indigo-600" style={{ width: `${executedShare * 100}%` }} />}
             </div>
             <div className="relative h-0">
               <div className="absolute -top-5 h-6 w-0.5 bg-slate-900" style={{ left: `calc(${buildShare * 100}% - 1px)` }} />
@@ -435,7 +445,7 @@ function SummaryPage({ report }: { report: Report }) {
                     ["Total test plan", n(k.plan), ""],
                     ["Later builds", n(k.laterBuilds), `${formatPct(pct(k.laterBuilds, k.plan))} of plan`],
                     [labels.build, n(k.inScope), `${formatPct(k.planPct)} of plan`],
-                    ["Executed", n(k.executed), `${formatPct(k.execPct)} of build`],
+                    ["Executed", n(k.executed), planned ? "Not started" : `${formatPct(k.execPct)} of build`],
                     ["Still to run", n(k.stillToRun), notStarted ? `${notStarted} module${notStarted === 1 ? "" : "s"} not started` : ""],
                   ] as const
                 ).map(([label, value, hint]) => (
@@ -464,14 +474,14 @@ function SummaryPage({ report }: { report: Report }) {
             )}
           </Panel>
         ) : (
-          <Panel title="Progress by platform">
+          <Panel title={planned ? "Planned by platform" : "Progress by platform"}>
             <div className="flex flex-col gap-2.5">
               {report.streamRows.map((s) => (
                 <div key={s.stream}>
                   <div className="flex justify-between text-[11.5px]">
                     <span className="font-medium">{s.stream}</span>
                     <span className="text-slate-600 tabular-nums">
-                      {formatPct(s.execPct, 0)} run · {n(s.executed)} / {n(s.total)}
+                      {planned ? `${n(s.total)} planned` : `${formatPct(s.execPct, 0)} run · ${n(s.executed)} / ${n(s.total)}`}
                     </span>
                   </div>
                   <div className="mt-1">
@@ -480,6 +490,25 @@ function SummaryPage({ report }: { report: Report }) {
                 </div>
               ))}
               {report.streamRows.length === 0 && <p className="text-[12px] text-slate-500">No cases in scope.</p>}
+            </div>
+          </Panel>
+        )}
+        {planned && (
+          <Panel title="Modules in this plan" foot={`${report.modules.length} module${report.modules.length === 1 ? "" : "s"} with planned runs; none started.`}>
+            <div className="flex flex-col gap-1.5 text-[11.5px] text-slate-700">
+              {report.modules.map((m) => (
+                <div key={m.id} className="flex justify-between gap-2">
+                  <span className="truncate font-medium">{m.name}</span>
+                  <span className="shrink-0 tabular-nums text-slate-500">
+                    {n(m.inScope)} · {m.streams.join(" · ") || "—"}
+                  </span>
+                </div>
+              ))}
+              {report.laterModules.length > 0 && (
+                <p className="mt-1 border-t border-slate-100 pt-1.5 text-[11px] text-slate-500">
+                  Later builds: {report.laterModules.map((m) => m.name).join(", ")}
+                </p>
+              )}
             </div>
           </Panel>
         )}
@@ -499,6 +528,7 @@ function SummaryPage({ report }: { report: Report }) {
 function PlanTable({ report }: { report: Report }) {
   const k = report.kpis;
   const { labels, hasBaseline } = report;
+  const planned = report.kind === "planned";
   const plat = report.streams.length > 1 ? ` × ${report.streams.length} platforms` : "";
   const footnote = [
     hasBaseline
@@ -506,34 +536,42 @@ function PlanTable({ report }: { report: Report }) {
           k.added ? `, including ${n(k.added)} run${k.added === 1 ? "" : "s"} added in testing` : ""
         }.`
       : `Each case counts once per platform it is planned on (${splitText(k.split.inScope, report.streams)}).`,
-    hasBaseline && k.baseline.executed ? `${report.baselineName} pass rate = ${n(k.baseline.outcomes.passed)} of ${n(k.baseline.executed)} executed.` : "",
+    !planned && hasBaseline && k.baseline.executed ? `${report.baselineName} pass rate = ${n(k.baseline.outcomes.passed)} of ${n(k.baseline.executed)} executed.` : "",
     k.api.inScope
-      ? `API cases (${n(k.api.inScope)}, ${n(k.api.passed)} passed, ${n(k.api.failed)} failed) are not platform runs and are left out of these totals.`
+      ? planned
+        ? `API cases (${n(k.api.inScope)}) are not platform runs and are left out of these totals.`
+        : `API cases (${n(k.api.inScope)}, ${n(k.api.passed)} passed, ${n(k.api.failed)} failed) are not platform runs and are left out of these totals.`
       : "",
-    k.outcomes.caution ? `${n(k.outcomes.caution)} run${k.outcomes.caution === 1 ? "" : "s"} passed with caution count as executed.` : "",
+    !planned && k.outcomes.caution ? `${n(k.outcomes.caution)} run${k.outcomes.caution === 1 ? "" : "s"} passed with caution count as executed.` : "",
+    planned ? "Executed / passed / failed columns are zero because this is a planned-cases document." : "",
   ]
     .filter(Boolean)
     .join(" ");
-  const head = [
-    "Module",
-    ...(hasBaseline ? ["Total plan"] : []),
-    labels.build,
-    ...(hasBaseline ? ["Later builds"] : []),
-    "Executed",
-    "Passed",
-    "Failed",
-    "Blocked",
-    "Still to run",
-    "Pass %",
-    "Build done",
-  ];
+  const head = planned
+    ? ["Module", "Platforms", ...(hasBaseline ? ["Total plan"] : []), labels.build, ...(hasBaseline ? ["Later builds"] : []), "Still to run"]
+    : [
+        "Module",
+        ...(hasBaseline ? ["Total plan"] : []),
+        labels.build,
+        ...(hasBaseline ? ["Later builds"] : []),
+        "Executed",
+        "Passed",
+        "Failed",
+        "Blocked",
+        "Still to run",
+        "Pass %",
+        "Build done",
+      ];
   const row = (m: ModuleRow) => (
     <tr key={m.id} className={m.inBuild ? undefined : "text-slate-400"}>
       <td className={clsx(td, "font-medium")}>{m.inBuild ? m.name : `${m.name} (not in ${labels.name})`}</td>
+      {planned && <td className={`${td} whitespace-nowrap`}>{m.streams.join(" · ") || "—"}</td>}
       {hasBaseline && <td className={num}>{n(m.plan)}</td>}
       <td className={num}>{m.inBuild ? n(m.inScope) : "—"}</td>
       {hasBaseline && <td className={num}>{n(m.laterBuilds)}</td>}
-      {m.inBuild ? (
+      {planned ? (
+        <td className={num}>{m.inBuild ? n(m.stillToRun) : "—"}</td>
+      ) : m.inBuild ? (
         <>
           <td className={num}>{n(m.executed)}</td>
           <td className={num}>{n(m.outcomes.passed)}</td>
@@ -561,16 +599,23 @@ function PlanTable({ report }: { report: Report }) {
         foot={
           <tr>
             <td className={totalCell}>Total</td>
+            {planned && <td className={totalCell}>{report.streams.join(" · ")}</td>}
             {hasBaseline && <td className={totalNum}>{n(k.plan)}</td>}
             <td className={totalNum}>{n(k.inScope)}</td>
             {hasBaseline && <td className={totalNum}>{n(k.laterBuilds)}</td>}
-            {[k.executed, k.outcomes.passed, k.outcomes.failed, k.outcomes.blocked, k.stillToRun].map((v, i) => (
-              <td key={i} className={totalNum}>
-                {n(v)}
-              </td>
-            ))}
-            <td className={totalNum}>{formatPct(k.passPct)}</td>
-            <td className={totalNum}>{formatPct(k.execPct)}</td>
+            {planned ? (
+              <td className={totalNum}>{n(k.stillToRun)}</td>
+            ) : (
+              <>
+                {[k.executed, k.outcomes.passed, k.outcomes.failed, k.outcomes.blocked, k.stillToRun].map((v, i) => (
+                  <td key={i} className={totalNum}>
+                    {n(v)}
+                  </td>
+                ))}
+                <td className={totalNum}>{formatPct(k.passPct)}</td>
+                <td className={totalNum}>{formatPct(k.execPct)}</td>
+              </>
+            )}
           </tr>
         }
       >
@@ -1096,14 +1141,90 @@ function AppendixPage({ report, siteUrl }: { report: Report; siteUrl: string | n
   );
 }
 
+function PlannedScopePage({ report }: { report: Report }) {
+  const { labels } = report;
+  return (
+    <>
+      <div>
+        <Heading note="What is in this build’s plan, and what stays for later builds.">2. Planned scope</Heading>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] leading-relaxed text-slate-700">
+            <p className="text-[11px] font-semibold tracking-wide text-slate-500 uppercase">Scope note</p>
+            <p className="mt-1">{report.narrative.scopeNote || `Cases planned for ${labels.name}.`}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] leading-relaxed text-slate-700">
+            <p className="text-[11px] font-semibold tracking-wide text-slate-500 uppercase">Data note</p>
+            <p className="mt-1">{report.narrative.dataNote}</p>
+          </div>
+        </div>
+        {report.narrative.why.length > 0 && (
+          <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2.5 text-[12px] leading-relaxed text-slate-700">
+            <p className="font-semibold text-slate-900">Modules planned</p>
+            {report.narrative.why.map((line) => (
+              <p key={line} className="mt-1">
+                {line}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+      {report.hasBaseline && (report.scope.added.length > 0 || report.scope.deferred.length > 0) && (
+        <div className="report-keep grid gap-4 md:grid-cols-2">
+          {report.scope.added.length > 0 && (
+            <div>
+              <SubHeading>In {labels.name}, not in the total plan</SubHeading>
+              <p className="text-[12px] leading-relaxed text-slate-700">
+                {report.scope.added
+                  .slice(0, 40)
+                  .map((c) => `TC:${c.testCaseId} ${c.name}`)
+                  .join(" · ")}
+                {report.scope.added.length > 40 ? ` · and ${report.scope.added.length - 40} more` : ""}
+              </p>
+            </div>
+          )}
+          {report.scope.deferred.length > 0 && (
+            <div>
+              <SubHeading>In the total plan, deferred past {labels.name}</SubHeading>
+              <p className="text-[12px] leading-relaxed text-slate-700">
+                {report.scope.deferred
+                  .slice(0, 40)
+                  .map((c) => `TC:${c.testCaseId} ${c.name}`)
+                  .join(" · ")}
+                {report.scope.deferred.length > 40 ? ` · and ${report.scope.deferred.length - 40} more` : ""}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+      <div>
+        <SubHeading>Test sets in this plan</SubHeading>
+        <Table head={["Test set", "Module", "Platform", "Folder", "Planned cases"]}>
+          {report.testSets.map((r) => (
+            <tr key={r.set.testSetId}>
+              <td className={td}>{r.set.name}</td>
+              <td className={td}>{r.module}</td>
+              <td className={td}>{r.stream}</td>
+              <td className={td}>{r.folder}</td>
+              <td className={num}>{r.spiraTotal}</td>
+            </tr>
+          ))}
+        </Table>
+      </div>
+    </>
+  );
+}
+
 export function ReportDocument({ report, changes, siteUrl }: { report: Report; changes: ReportChanges | null; siteUrl: string | null }) {
-  const pages = [
-    <SummaryPage key="summary" report={report} />,
-    <ReadinessPage key="readiness" report={report} />,
-    <ModulesPage key="modules" report={report} changes={changes} />,
-    <DefectsPage key="defects" report={report} siteUrl={siteUrl} />,
-    ...(report.appendix ? [<AppendixPage key="appendix" report={report} siteUrl={siteUrl} />] : []),
-  ];
+  const pages =
+    report.kind === "planned"
+      ? [<SummaryPage key="summary" report={report} />, <PlannedScopePage key="scope" report={report} />]
+      : [
+          <SummaryPage key="summary" report={report} />,
+          <ReadinessPage key="readiness" report={report} />,
+          <ModulesPage key="modules" report={report} changes={changes} />,
+          <DefectsPage key="defects" report={report} siteUrl={siteUrl} />,
+          ...(report.appendix ? [<AppendixPage key="appendix" report={report} siteUrl={siteUrl} />] : []),
+        ];
   return (
     <div className="report-doc flex flex-col gap-6">
       {pages.map((content, i) => (

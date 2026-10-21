@@ -49,9 +49,9 @@ export interface ReportTargets {
   agingDays: number;
 }
 
-/** This build alone, this build against the total test plan, or the total test plan alone. */
-export type ReportKind = "build" | "buildVsPlan" | "plan";
-export const REPORT_KINDS: ReportKind[] = ["build", "buildVsPlan", "plan"];
+/** This build alone, vs total plan, total plan alone, or planned cases before execution starts. */
+export type ReportKind = "build" | "buildVsPlan" | "plan" | "planned";
+export const REPORT_KINDS: ReportKind[] = ["build", "buildVsPlan", "plan", "planned"];
 
 export interface ReportOptions {
   kind: ReportKind;
@@ -349,6 +349,7 @@ export function resolveReportOptions(options: ReportOptions): ReportOptions {
   const none = { releaseId: null, folderId: null };
   if (options.kind === "build") return { ...options, scoped: build, baseline: none };
   if (options.kind === "plan") return { ...options, scoped: plan, baseline: none, environment: options.baselineName };
+  // planned and buildVsPlan: this build measured against the total test plan.
   return { ...options, scoped: build, baseline: plan };
 }
 
@@ -912,6 +913,25 @@ const shortDay = (iso: string) =>
 export function phaseLabels(phase: string, kind: ReportKind = "buildVsPlan"): PhaseLabels {
   const name = phase.trim();
   if (kind === "plan") return { build: "Total test plan", name: "the total test plan", short: "Plan", named: false, inBuild: "In the plan", outside: "Outside the plan" };
+  if (kind === "planned") {
+    return name
+      ? {
+          build: `Planned for ${name}`,
+          name,
+          short: name,
+          named: true,
+          inBuild: `In ${name}`,
+          outside: `Outside ${name}`,
+        }
+      : {
+          build: "Planned for this build",
+          name: "this build",
+          short: "Build",
+          named: false,
+          inBuild: "In this build",
+          outside: "Outside this build",
+        };
+  }
   return name
     ? {
         build: `This build (${name})`,
@@ -1861,11 +1881,16 @@ export function buildReport(input: ReportInput): Report {
     .filter(Boolean)
     .join(" ");
 
-  return {
+  const defaultTitle =
+    options.kind === "planned"
+      ? `${catalog.projectName} — Planned Test Cases`.replace(/\s+/g, " ")
+      : `${catalog.projectName} — Daily ${/^[A-Z]{2,5}\b/.exec(scopedName)?.[0] ?? ""} Test Report`.replace(/\s+/g, " ");
+
+  const report: Report = {
     generatedAt,
     projectId: catalog.projectId,
     projectName: catalog.projectName,
-    title: options.title.trim() || `${catalog.projectName} — Daily ${/^[A-Z]{2,5}\b/.exec(scopedName)?.[0] ?? ""} Test Report`.replace(/\s+/g, " "),
+    title: options.title.trim() || defaultTitle,
     environment: options.environment.trim(),
     preparedBy: options.preparedBy.trim(),
     kind: options.kind,
@@ -1912,6 +1937,149 @@ export function buildReport(input: ReportInput): Report {
       setsRead: Object.keys(input.results).length,
       setsMissing,
     },
+  };
+  return options.kind === "planned" ? asPlannedReport(report) : report;
+}
+
+/** Zero execution and defects so the document is a planned-cases pack, not a progress report. */
+export function asPlannedReport(report: Report): Report {
+  const zeroSplit = (base: PlatformSplit): PlatformSplit => {
+    const out: PlatformSplit = {};
+    for (const s of STREAMS) if ((base[s] ?? 0) > 0) out[s] = 0;
+    return out;
+  };
+  const plannedModule = (m: ModuleRow): ModuleRow => {
+    const notRun = m.executable;
+    const outcomes = { ...emptyCounts(), notRun, notApplicable: Math.max(0, m.inScope - m.executable) };
+    return {
+      ...m,
+      outcomes,
+      executed: 0,
+      stillToRun: notRun,
+      execPct: pct(0, m.executable),
+      passPct: null,
+      failedCases: 0,
+      openDefects: 0,
+      defects: 0,
+      lastRun: null,
+      status: m.inBuild && m.executable > 0 ? "notStarted" : "notStarted",
+      checks: { fullyRun: false, passOk: null, noBlocked: true },
+      byStream: Object.fromEntries(
+        Object.entries(m.byStream).map(([stream, row]) => {
+          const executable = row.total - row.outcomes.notApplicable;
+          return [
+            stream,
+            {
+              ...row,
+              executed: 0,
+              outcomes: { ...emptyCounts(), notRun: executable, notApplicable: row.outcomes.notApplicable },
+            },
+          ];
+        }),
+      ) as ModuleRow["byStream"],
+    };
+  };
+  const modules = report.modules.map(plannedModule);
+  const laterModules = report.laterModules.map(plannedModule);
+  const executable = report.kpis.executable;
+  const inScope = report.kpis.inScope;
+  const stillSplit: PlatformSplit = {};
+  for (const s of report.streams) stillSplit[s] = report.kpis.split.inScope[s] ?? 0;
+  const kpis: Kpis = {
+    ...report.kpis,
+    executed: 0,
+    stillToRun: executable,
+    outcomes: { ...emptyCounts(), notRun: executable, notApplicable: Math.max(0, inScope - executable) },
+    execPct: pct(0, executable),
+    passPct: null,
+    split: {
+      ...report.kpis.split,
+      executed: zeroSplit(report.kpis.split.inScope),
+      passed: zeroSplit(report.kpis.split.inScope),
+      failed: zeroSplit(report.kpis.split.inScope),
+      stillToRun: stillSplit,
+    },
+    baseline: {
+      outcomes: emptyCounts(),
+      executed: 0,
+      passPct: null,
+    },
+    api: {
+      ...report.kpis.api,
+      executed: 0,
+      passed: 0,
+      failed: 0,
+    },
+    spiraRollup: emptyCounts(),
+  };
+  const streamRows: StreamRow[] = report.streamRows.map((s) => {
+    const executableStream = s.total - s.outcomes.notApplicable;
+    return {
+      ...s,
+      executed: 0,
+      outcomes: { ...emptyCounts(), notRun: executableStream, notApplicable: s.outcomes.notApplicable },
+      execPct: pct(0, executableStream),
+      passPct: null,
+    };
+  });
+  const readiness: Record<ModuleStatus, number> = {
+    ready: 0,
+    atRisk: 0,
+    inProgress: 0,
+    notStarted: modules.filter((m) => m.inBuild).length,
+  };
+  const emptySeverityAge = Object.fromEntries(LEVELS.map((l) => [l, AGE_BUCKETS.map(() => 0)])) as DefectSummary["severityAge"];
+  const emptyByPriority = Object.fromEntries(LEVELS.map((l) => [l, 0])) as DefectSummary["byPriority"];
+  const defects: DefectSummary = {
+    rows: [],
+    open: 0,
+    closed: 0,
+    everOpened: 0,
+    stillOpen: 0,
+    openStatus: { open: 0, toDo: 0, inDev: 0, other: 0 },
+    registerName: null,
+    registerRows: [],
+    registerOpen: [],
+    severityAge: emptySeverityAge,
+    byPriority: emptyByPriority,
+    byPriorityInBuild: { ...emptyByPriority },
+    retest: { awaiting: 0, retest: 0, reopened: 0, closed: 0 },
+    openCriticalHigh: 0,
+    withinSla: 0,
+    failedWithoutDefect: [],
+    failedChecked: 0,
+    summary: "Planned test cases document: execution and defects are not included.",
+  };
+  const planText = report.hasBaseline
+    ? `${report.kpis.plan.toLocaleString()} runs in the total plan; ${inScope.toLocaleString()} planned for ${report.labels.name}.`
+    : `${inScope.toLocaleString()} runs planned for ${report.labels.name}.`;
+  return {
+    ...report,
+    kind: "planned",
+    window: { first: null, last: null, text: null },
+    kpis,
+    modules,
+    laterModules,
+    streamRows,
+    readiness,
+    criteria: [],
+    bars: [],
+    status: "amber",
+    autoStatus: "amber",
+    statusReason: "Planned test cases — execution not started.",
+    defects,
+    cycle: null,
+    findings: [],
+    narrative: {
+      headline: `Planned coverage for ${report.labels.name}: ${planText}`,
+      why: modules.filter((m) => m.inBuild).map((m) => `${m.name}: ${m.inScope.toLocaleString()} planned run${m.inScope === 1 ? "" : "s"} (${m.streams.join(", ") || "—"}).`),
+      actions: [],
+      scopeNote: report.narrative.scopeNote.replace(/\s*ran [^.]+?\./, ".").replace(/\s{2,}/g, " ").trim(),
+      dataNote: "This is a planned-cases document. Executed, passed, failed, and defect figures are zero until testing starts.",
+    },
+    trend: { days: [], earlier: 0, pacePerDay: null, daysToFinish: null },
+    failedCases: [],
+    appendix: false,
   };
 }
 

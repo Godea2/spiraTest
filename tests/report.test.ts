@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ReportDocument } from "@/app/(app)/reports/report-document";
 import {
   addSnapshot,
+  asPlannedReport,
   buildReport,
   classifySet,
   combineOutcomes,
@@ -218,6 +219,12 @@ describe("report scope", () => {
     expect(isDoneStatus("done")).toBe(true);
     expect(isDoneStatus("Open")).toBe(false);
     expect(isDoneStatus("Closed")).toBe(false);
+  });
+
+  it("resolves planned reports like build vs plan", () => {
+    const resolved = resolveReportOptions(options({ kind: "planned" }));
+    expect(resolved.scoped.releaseId).toBe(2);
+    expect(resolved.baseline.releaseId).toBe(1);
   });
 
   it("flags API-only linked defects and obvious API failure titles", () => {
@@ -500,6 +507,29 @@ describe("report document", () => {
       ).defects.rows.map((r) => r.incident.incidentId),
     ).toEqual([258]);
     expect(render({ appendix: true }).match(/report-page/g)).toHaveLength(5);
+  });
+
+  it("builds a planned-cases document with zero execution and no defect pages", () => {
+    const planned = buildReport(input({ options: options({ kind: "planned", title: "Simba — Planned" }) }));
+    expect(planned.kind).toBe("planned");
+    expect(planned.title).toBe("Simba — Planned");
+    expect(planned.kpis).toMatchObject({
+      inScope: 8,
+      executed: 0,
+      stillToRun: 8,
+      outcomes: { passed: 0, failed: 0, blocked: 0, caution: 0, notRun: 8 },
+    });
+    expect(planned.defects.everOpened).toBe(0);
+    expect(planned.defects.registerOpen).toEqual([]);
+    expect(planned.failedCases).toEqual([]);
+    expect(planned.statusReason).toMatch(/not started/i);
+    expect(asPlannedReport(buildReport(input())).kpis.executed).toBe(0);
+    const html = renderToStaticMarkup(createElement(ReportDocument, { report: planned, changes: null, siteUrl: null }));
+    expect(html).toContain("Planned test cases");
+    expect(html).toContain("2. Planned scope");
+    expect(html).not.toContain("4. Defects and retesting");
+    expect(html).not.toContain("2. Readiness against");
+    expect(html.match(/report-page/g)).toHaveLength(2);
   });
 });
 

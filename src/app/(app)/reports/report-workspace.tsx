@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheck, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, ClipboardList, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
@@ -55,7 +55,8 @@ const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green
 /** The build's name on the report and its choices. */
 const PHASE = "Phase 1";
 
-const KINDS: { kind: ReportKind; icon: LucideIcon; title: string }[] = [
+const KINDS: { kind: ReportKind; icon: LucideIcon; title: string; hint?: string }[] = [
+  { kind: "planned", icon: ClipboardList, title: "Planned test cases", hint: "Coverage before execution — zeros for run results" },
   { kind: "build", icon: Target, title: `${PHASE}: scoped test cases` },
   { kind: "buildVsPlan", icon: GitCompareArrows, title: `${PHASE}: scoped vs total test plan` },
   { kind: "plan", icon: Layers, title: "Total test plan" },
@@ -63,10 +64,16 @@ const KINDS: { kind: ReportKind; icon: LucideIcon; title: string }[] = [
 
 function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: ReportKind) => void }) {
   return (
-    <div role="radiogroup" aria-label="Report" className="grid gap-3 md:grid-cols-3">
-      {KINDS.map(({ kind, icon: Icon, title }) => {
+    <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {KINDS.map(({ kind, icon: Icon, title, hint }) => {
         const selected = value === kind;
-        const featured = kind === "buildVsPlan";
+        const featured = kind === "planned" || kind === "buildVsPlan";
+        const featuredTone =
+          kind === "planned"
+            ? "bg-gradient-to-br from-slate-700 via-slate-800 to-slate-900 text-white shadow-lg shadow-slate-900/25 hover:-translate-y-0.5 hover:shadow-xl"
+            : "bg-gradient-to-br from-amber-500 via-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-orange-500/40";
+        const selectedRing =
+          kind === "planned" ? "ring-4 ring-slate-400/60 dark:ring-slate-300/40" : "ring-4 ring-orange-300/70 dark:ring-orange-400/50";
         return (
           <button
             key={kind}
@@ -76,10 +83,8 @@ function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: R
             onClick={() => onChange(kind)}
             className={clsx(
               "relative flex min-h-28 cursor-pointer flex-col justify-between gap-4 rounded-xl p-4 text-left transition focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:outline-none dark:focus-visible:ring-offset-zinc-900",
-              featured
-                ? "bg-gradient-to-br from-amber-500 via-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-orange-500/40"
-                : "well hover:border-slate-300 dark:hover:border-white/20",
-              selected && (featured ? "ring-4 ring-orange-300/70 dark:ring-orange-400/50" : "ring-2 ring-brand-500 dark:ring-brand-400"),
+              featured ? featuredTone : "well hover:border-slate-300 dark:hover:border-white/20",
+              selected && (featured ? selectedRing : "ring-2 ring-brand-500 dark:ring-brand-400"),
             )}
           >
             <span
@@ -90,9 +95,12 @@ function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: R
             >
               <Icon className="size-[18px]" aria-hidden />
             </span>
-            <span className="flex items-end justify-between gap-2">
-              <span className="text-[15px] leading-snug font-semibold">{title}</span>
-              {selected && <CircleCheck className={clsx("size-5 shrink-0", featured ? "text-white" : "text-brand-600 dark:text-brand-400")} aria-hidden />}
+            <span className="flex flex-col gap-1">
+              <span className="flex items-end justify-between gap-2">
+                <span className="text-[15px] leading-snug font-semibold">{title}</span>
+                {selected && <CircleCheck className={clsx("size-5 shrink-0", featured ? "text-white" : "text-brand-600 dark:text-brand-400")} aria-hidden />}
+              </span>
+              {hint && <span className={clsx("text-[12px] leading-snug", featured ? "text-white/80" : "text-slate-500 dark:text-zinc-400")}>{hint}</span>}
             </span>
           </button>
         );
@@ -114,27 +122,37 @@ function Figure({ label, value, hint }: { label: string; value: string; hint?: s
 /** The generated report in brief, with the button that opens it. */
 function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: () => void; onShare: () => void }) {
   const k = report.kpis;
+  const planned = report.kind === "planned";
   return (
     <section className="surface flex flex-col gap-4 p-5">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold tracking-tight">{report.title}</p>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-zinc-400">
-            {report.labels.build}: every case in the test sets of {report.scopedName} ({report.scopedLabel})
-            {report.hasBaseline ? `, measured against the total test plan in ${report.baselineName} (${report.baselineLabel}).` : "."}
+            {planned
+              ? `Planned cases for ${report.labels.name} from ${report.scopedName} (${report.scopedLabel})${
+                  report.hasBaseline ? `, against the total plan in ${report.baselineName}.` : "."
+                } Execution not started.`
+              : `${report.labels.build}: every case in the test sets of ${report.scopedName} (${report.scopedLabel})${
+                  report.hasBaseline ? `, measured against the total test plan in ${report.baselineName} (${report.baselineLabel}).` : "."
+                }`}
           </p>
         </div>
-        <Badge tone={STATUS_TONE[report.status]}>Overall {report.status.toUpperCase()}</Badge>
+        <Badge tone={STATUS_TONE[report.status]}>{planned ? "PLANNED" : `Overall ${report.status.toUpperCase()}`}</Badge>
       </div>
       <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {report.hasBaseline ? (
           <Figure label="Total test plan" value={k.plan.toLocaleString()} hint={splitText(k.split.plan, report.streams)} />
         ) : (
-          <Figure label="Modules" value={report.modules.length.toLocaleString()} hint={`${report.readiness.ready} ready for UAT`} />
+          <Figure label="Modules" value={report.modules.length.toLocaleString()} hint={planned ? "Not started" : `${report.readiness.ready} ready for UAT`} />
         )}
         <Figure label={report.labels.build} value={k.inScope.toLocaleString()} hint={splitText(k.split.inScope, report.streams)} />
-        <Figure label="Executed" value={k.executed.toLocaleString()} hint={`${formatPct(k.execPct)} of ${report.labels.name}`} />
-        <Figure label="Pass rate" value={formatPct(k.passPct)} hint={`${k.outcomes.passed.toLocaleString()} passed · ${k.outcomes.failed.toLocaleString()} failed`} />
+        <Figure label="Executed" value={k.executed.toLocaleString()} hint={planned ? "Not started" : `${formatPct(k.execPct)} of ${report.labels.name}`} />
+        <Figure
+          label={planned ? "Still to run" : "Pass rate"}
+          value={planned ? k.stillToRun.toLocaleString() : formatPct(k.passPct)}
+          hint={planned ? "All planned runs" : `${k.outcomes.passed.toLocaleString()} passed · ${k.outcomes.failed.toLocaleString()} failed`}
+        />
       </dl>
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" icon={Eye} onClick={onOpen}>
@@ -372,27 +390,29 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               <Field label="Go-live date">
                 {(props) => <input {...props} type="date" className="input" value={options.goLive ?? ""} onChange={(e) => update({ goLive: e.target.value || null })} />}
               </Field>
-              <Field
-                label="Defects Review bucket"
-                hint={buckets.length === 0 ? "Create a bucket on the Defects page first." : "All-time defects KPI uses this bucket."}
-              >
-                {(props) => (
-                  <select
-                    {...props}
-                    className="input"
-                    value={options.defectBucketId ?? ""}
-                    disabled={buckets.length === 0}
-                    onChange={(e) => update(withDefectBucket(options, buckets, e.target.value || null))}
-                  >
-                    {buckets.length === 0 ? <option value="">No buckets yet</option> : null}
-                    {buckets.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name} ({b.incidentIds.length})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
+              {options.kind !== "planned" && (
+                <Field
+                  label="Defects Review bucket"
+                  hint={buckets.length === 0 ? "Create a bucket on the Defects page first." : "All-time defects KPI uses this bucket."}
+                >
+                  {(props) => (
+                    <select
+                      {...props}
+                      className="input"
+                      value={options.defectBucketId ?? ""}
+                      disabled={buckets.length === 0}
+                      onChange={(e) => update(withDefectBucket(options, buckets, e.target.value || null))}
+                    >
+                      {buckets.length === 0 ? <option value="">No buckets yet</option> : null}
+                      {buckets.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} ({b.incidentIds.length})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </Field>
+              )}
             </div>
 
             {setupProblem && (
@@ -431,7 +451,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
 
         {report && <ReportSummary report={report} onOpen={() => setViewerOpen(true)} onShare={() => setShareOpen(true)} />}
 
-        {report && report.defects.rows.length > 0 && options && (
+        {report && report.kind !== "planned" && report.defects.rows.length > 0 && options && (
           <Collapsible title="Defect register notes" count={report.defects.rows.length} icon={NotebookPen} open={notesOpen} onToggle={() => setNotesOpen((o) => !o)}>
             <p className="px-5 pt-2 text-sm text-slate-600 dark:text-zinc-400">
               Your reading of each defect for the register on page 4: the feature, whether it is in {report.labels.name}, and why it has its severity and priority. Kept in this
