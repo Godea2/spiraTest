@@ -393,7 +393,7 @@ function SummaryPage({ report }: { report: Report }) {
             </Panel>
             <Panel
               title="Modules ready for UAT"
-              foot="Ready = every run executed (same as modules fully executed). Unfinished modules with blocked tests or in-scope open defects stay At risk."
+              foot="Ready = every run executed. In progress = at least half run. At risk = started but under half executed."
             >
               <div className="flex items-center gap-3">
                 <Donut
@@ -710,7 +710,7 @@ function ModulesPage({ report, changes }: { report: Report; changes: ReportChang
   return (
     <>
       <div>
-        <Heading note="Ready means every planned run on every platform has been executed — the same count as modules fully executed above. Pass rate, blocked tests and open defects stay in the columns; unfinished modules with blocked tests or in-scope open defects are At risk.">
+        <Heading note="Ready = every planned run executed. In progress = at least half of the module’s runs done. At risk = started but under half executed (e.g. 1 of 56). Pass rate, blocked tests and open defects stay in the columns.">
           3b. Module readiness for UAT
         </Heading>
         <Table

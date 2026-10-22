@@ -364,7 +364,7 @@ describe("buildReport", () => {
     expect(both.findings.some((f) => f.check === "Results differ between platforms")).toBe(false);
   });
 
-  it("marks a finished clean module ready, and mid-run work in progress until gates fail", () => {
+  it("marks a finished module ready; mostly-run unfinished as in progress; little-run as at risk", () => {
     const allPassed = {
       ...input().results,
       20: [tc(100, PASSED, "2026-10-10T10:00:00Z"), tc(101, PASSED, "2026-10-11T10:00:00Z"), tc(103, PASSED, "2026-10-11T11:00:00Z")],
@@ -382,6 +382,7 @@ describe("buildReport", () => {
     );
     expect(outOfScope.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "ready", openDefects: 1 });
 
+    // 5 of 6 runs done (≥50%) → In progress even with a failure left.
     const midRun = buildReport(
       input({
         results: {
@@ -394,6 +395,21 @@ describe("buildReport", () => {
     );
     expect(midRun.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "inProgress", stillToRun: 1, outcomes: { failed: 1 } });
     expect(midRun.readiness.inProgress).toBe(1);
+
+    // Only 1 of 6 runs done (<50%) → At risk (little of the module run yet).
+    const littleRun = buildReport(
+      input({
+        results: {
+          ...input().results,
+          20: [tc(100, FAILED, "2026-10-11T10:00:00Z"), tc(101, null), tc(103, null)],
+          21: [tc(100, null), tc(101, null), tc(103, null)],
+        },
+        incidents: [],
+        links: {},
+      }),
+    );
+    expect(littleRun.modules.find((m) => m.name === "Payments")).toMatchObject({ status: "atRisk", executed: 1, stillToRun: 5 });
+    expect(littleRun.readiness.atRisk).toBe(1);
   });
 
   it("takes this build from the release's test sets, and modules only in the baseline as later builds", () => {
