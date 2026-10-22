@@ -72,15 +72,57 @@ beforeEach(() => {
   calls.readTestCase.mockImplementation(async (_p: number, testCaseId: number) => detail(testCaseId));
   calls.api.mockImplementation(async (path: string, init: { body: { cases: Array<{ key: string }> } }) => {
     if (path.endsWith("/understand")) return analysis;
+    if (path.endsWith("/incidents")) return { incidents: [], complete: true };
+    if (path.endsWith("/find-existing")) return { hits: [] };
     if (path.endsWith("/search")) return { candidates: ["1:1", "1:2", "1:3", "1:4", "1:5"].map((key) => ({ key, relevance: "high" })) };
     return { matches: init.body.cases.map((c) => verdict(c.key, c.key !== "1:2")) };
   });
 });
 
 describe("searchDefect", () => {
+  it("checks Spira and app defects with no modules chosen, without looking for cases", async () => {
+    calls.api.mockImplementation(async (path: string) => {
+      if (path.endsWith("/understand")) return analysis;
+      if (path.endsWith("/incidents")) {
+        return {
+          incidents: [{ incidentId: 99, name: "OTP never arrives on login", status: "Open", open: true }],
+          complete: true,
+        };
+      }
+      if (path.endsWith("/find-existing")) {
+        return {
+          hits: [
+            {
+              key: "spira:99",
+              source: "spira",
+              incidentId: 99,
+              recordId: null,
+              title: "OTP never arrives on login",
+              text: "OTP never arrives on login Open",
+              status: "Open",
+              open: true,
+              relevance: "high",
+              reason: "Same OTP login failure",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await searchDefect(24, [], "unable to login, not getting otp", () => {});
+    expect(out).toMatchObject({
+      modules: 0,
+      total: 0,
+      cases: [],
+      complete: true,
+      existing: [{ key: "spira:99", relevance: "high" }],
+    });
+    expect(calls.api.mock.calls.some(([path]) => String(path).endsWith("/search"))).toBe(false);
+  });
+
   it("checks steps batch by batch as they are read, showing verdicts as they come", async () => {
     const partials: number[] = [];
-    const out = await searchDefect([draft], "unable to login, not getting otp", () => {}, (s) => partials.push(s.cases.length));
+    const out = await searchDefect(24, [draft], "unable to login, not getting otp", () => {}, (s) => partials.push(s.cases.length));
 
     expect(out.cases.map((c) => [c.target.card.key, c.match.verdict])).toEqual([
       ["1:1", "fails"],
@@ -100,15 +142,17 @@ describe("searchDefect", () => {
       if (testCaseId === 1003) throw new Error("Spira did not answer.");
       return detail(testCaseId);
     });
-    const out = await searchDefect([draft], "unable to login, not getting otp", () => {});
+    const out = await searchDefect(24, [draft], "unable to login, not getting otp", () => {});
     expect(out.cases.find((c) => c.target.card.key === "1:3")?.match).toMatchObject({ verdict: "possible", reason: expect.stringContaining("Spira did not answer") });
 
-    calls.api.mockImplementation(async (path: string) => {
+    calls.api.mockImplementation(async (path: string, init: { body: { cases: Array<{ key: string }> } }) => {
       if (path.endsWith("/understand")) return analysis;
+      if (path.endsWith("/incidents")) return { incidents: [], complete: true };
+      if (path.endsWith("/find-existing")) return { hits: [] };
       if (path.endsWith("/search")) return { candidates: [{ key: "1:1", relevance: "high" }] };
       throw new Error("Gemini is answering slowly right now.");
     });
-    const unchecked = await searchDefect([draft], "unable to login again, not getting otp", () => {});
+    const unchecked = await searchDefect(24, [draft], "unable to login again, not getting otp", () => {});
     expect(unchecked).toMatchObject({ complete: false, cases: [{ match: { verdict: "possible", reason: expect.stringContaining("answering slowly") } }] });
   });
 
@@ -116,15 +160,17 @@ describe("searchDefect", () => {
     calls.api.mockImplementation(async () => {
       throw new Error("No Gemini model answered.");
     });
-    const unread = await searchDefect([draft], "MTN missing from the Data network provider list", () => {});
+    const unread = await searchDefect(24, [draft], "MTN missing from the Data network provider list", () => {});
     expect(unread).toMatchObject({ understood: false, complete: false, searched: 0, total: 6, cases: [], unreadError: "Working out the feature: No Gemini model answered." });
     expect(unread.analysis.title).toBe("MTN missing from the Data network provider list");
 
     calls.api.mockImplementation(async (path: string) => {
       if (path.endsWith("/understand")) return analysis;
+      if (path.endsWith("/incidents")) return { incidents: [], complete: true };
+      if (path.endsWith("/find-existing")) return { hits: [] };
       throw new Error("No Gemini model answered.");
     });
-    const unmatched = await searchDefect([draft], "MTN missing from the Data network provider list again", () => {});
+    const unmatched = await searchDefect(24, [draft], "MTN missing from the Data network provider list again", () => {});
     expect(unmatched).toMatchObject({ understood: true, complete: false, searched: 0, cases: [], unreadError: 'Matching cases to "Sign-in": No Gemini model answered.' });
   });
 
@@ -172,19 +218,21 @@ describe("searchDefect", () => {
       let busyMatches = 1;
       calls.api.mockImplementation(async (path: string, init: { body: { cases: Array<{ key: string }> } }) => {
         if (path.endsWith("/understand")) return analysis;
+        if (path.endsWith("/incidents")) return { incidents: [], complete: true };
+        if (path.endsWith("/find-existing")) return { hits: [] };
         if (path.endsWith("/search")) {
           if (busyMatches-- > 0) throw new ApiError(503, "Gemini is overloaded right now.");
           return { candidates: [{ key: "1:1", relevance: "high" }] };
         }
         return { matches: init.body.cases.map((c) => verdict(c.key, true)) };
       });
-      const pending = searchDefect([draft], "airtime purchase fails for MTN", () => {});
+      const pending = searchDefect(24, [draft], "airtime purchase fails for MTN", () => {});
       await vi.advanceTimersByTimeAsync(4_000);
       await expect(pending).resolves.toMatchObject({ cases: [{ match: { verdict: "fails" } }] });
       expect(calls.api.mock.calls.filter(([path]) => String(path).endsWith("/search"))).toHaveLength(2);
 
       busyMatches = 2;
-      const failing = searchDefect([draft], "airtime purchase fails for Glo", () => {});
+      const failing = searchDefect(24, [draft], "airtime purchase fails for Glo", () => {});
       await vi.advanceTimersByTimeAsync(4_000);
       await expect(failing).resolves.toMatchObject({ searched: 0, cases: [], unreadError: expect.stringContaining("overloaded") });
     } finally {

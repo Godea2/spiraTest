@@ -230,22 +230,20 @@ async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /**
- * Finds existing Spira/app defects that match the description, then the cases a defect makes fail,
- * across the given drafts. Gemini first works out the feature, matches Spira incidents and app-logged
- * defects, then picks cases by name and verifies them against Spira steps. When nothing fails and no
- * existing defect is a strong match, the UI can draft a new test case to create and fail. Read-only.
+ * Finds existing Spira/app defects that match the description, then (when modules are chosen) the cases
+ * a defect makes fail. Modules are optional: with none, only Spira incidents and app-logged defects are
+ * checked across the whole project. With modules, Gemini also picks cases by name and verifies steps.
+ * Read-only.
  */
 export async function searchDefect(
+  projectId: number,
   drafts: Draft[],
   description: string,
   onPhase: (phase: SearchPhase) => void,
   onPartial?: (search: DefectSearch) => void,
 ): Promise<DefectSearch> {
-  if (drafts.length === 0) throw new Error("Choose at least one module to search.");
-  const projectId = drafts[0].projectId;
   if (drafts.some((d) => d.projectId !== projectId)) throw new Error("Search the modules of one Spira project at a time.");
   const targets = defectTargets(drafts);
-  if (targets.length === 0) throw new Error("The chosen modules have no cases left to search.");
   const modules = new Set(targets.map((t) => t.module)).size;
   const appRecords = listDefects(projectId);
 
@@ -299,6 +297,23 @@ export async function searchDefect(
     }
   } catch (err) {
     existingError = errorMessage(err);
+  }
+
+  // No modules: Spira + app defects only. Tick modules to also find cases to fail.
+  if (targets.length === 0) {
+    return {
+      description,
+      analysis,
+      searched: 0,
+      total: 0,
+      modules: 0,
+      unreadError: null,
+      understood: true,
+      complete: true,
+      existing,
+      existingError,
+      cases: [],
+    };
   }
 
   // Only a very large search is narrowed first, by the wording of the feature as Gemini read it.

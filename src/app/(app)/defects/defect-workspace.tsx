@@ -231,10 +231,10 @@ export function DefectWorkspace({
   const projects = useMemo(() => [...new Set((drafts ?? []).filter((d) => d.testSets.length > 0).map((d) => d.projectId))], [drafts]);
   const settingsProject = settings?.projectId ?? null;
   const projectId = useMemo(() => {
-    if (pickedProject !== null && projects.includes(pickedProject)) return pickedProject;
+    if (pickedProject !== null && (projects.includes(pickedProject) || pickedProject === settingsProject)) return pickedProject;
     const opened = drafts?.find((d) => d.id === from);
-    if (opened && projects.includes(opened.projectId)) return opened.projectId;
-    if (settingsProject !== null && projects.includes(settingsProject)) return settingsProject;
+    if (opened) return opened.projectId;
+    if (settingsProject !== null) return settingsProject;
     return projects[0] ?? null;
   }, [pickedProject, projects, drafts, from, settingsProject]);
 
@@ -274,27 +274,25 @@ export function DefectWorkspace({
         />
       )}
 
-      {inProject.length === 0 ? (
+      {projectId === null ? (
         <EmptyState
           icon={Bug}
-          title="Nothing to search yet"
+          title="No Spira project selected"
           action={
-            <ButtonLink href={scopedMode ? "/uat-build" : "/"} variant="primary">
-              {scopedMode ? "Open UAT build" : "Start a comparison"}
+            <ButtonLink href="/settings" variant="primary">
+              Open Settings
             </ButtonLink>
           }
         >
-          {scopedMode
-            ? "Load cases from Spira on UAT build first, then search for defects against this build."
-            : "Compare a module with its Spira test sets first. Its cases can then be searched for defects here, before or after the live apply."}
+          Choose the Spira project in Settings so Gemini can search its incidents and any defects logged in this app.
         </EmptyState>
       ) : (
         <>
-          {!scopedMode && (
+          {!scopedMode && inProject.length > 0 && (
           <Section
             icon={Layers}
-            title="Where to look"
-            description="Choose the modules the defect is likely in: fewer modules make a faster, sharper search. Your choice is remembered in this browser."
+            title="Where to look for cases"
+            description="Optional. Spira incidents and defects logged here are always searched for the whole project. Tick modules only when you also want Gemini to find cases to fail."
             actions={
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -308,9 +306,11 @@ export function DefectWorkspace({
                 <Button size="sm" variant="ghost" disabled={scoped.length === 0} onClick={() => leaveOut(new Set([...excluded, ...inProject.map((d) => d.id)]))}>
                   None
                 </Button>
-                {projects.length > 1 && (
+                {(projects.length > 1 || (settingsProject !== null && !projects.includes(settingsProject))) && (
                   <select className="input w-auto" aria-label="Spira project" value={projectId ?? ""} onChange={(e) => setProject(Number(e.target.value))}>
-                    {projects.map((p) => <option key={p} value={p}>Project {p}</option>)}
+                    {[...new Set([...projects, ...(settingsProject !== null ? [settingsProject] : [])])].map((p) => (
+                      <option key={p} value={p}>Project {p}</option>
+                    ))}
                   </select>
                 )}
               </div>
@@ -319,8 +319,8 @@ export function DefectWorkspace({
             <div className="flex flex-col gap-4">
               <p className="text-sm text-slate-600 dark:text-zinc-400">
                 {scoped.length === 0
-                  ? "No module chosen. Tick the modules to search."
-                  : `Searching ${plural(scoped.length, "module")} of ${inProject.length}, ${plural(scopedCases, "case")}.`}
+                  ? "No module chosen — search still checks every Spira incident and app-logged defect. Tick modules to also find cases to fail."
+                  : `Also searching ${plural(scoped.length, "module")} of ${inProject.length}, ${plural(scopedCases, "case")}.`}
               </p>
               <div className="flex flex-wrap gap-2">
                 {inProject.map((d) => {
@@ -367,10 +367,16 @@ export function DefectWorkspace({
           </Section>
           )}
 
+          {!scopedMode && inProject.length === 0 && (
+            <Notice tone="info" title="No compared modules yet">
+              You can still search Spira incidents and defects logged in this app. Compare a module to also find cases to fail, or to draft a new test case.
+            </Notice>
+          )}
+
           {scopedMode && (
             <div className="flex flex-wrap items-end justify-between gap-3">
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                Searching this build: {plural(inProject.length, "module")}, {plural(scopedCases, "case")}.
+                Searching this build: {plural(inProject.length, "module")}, {plural(scopedCases, "case")}. Spira incidents and app defects are checked for the whole project.
               </p>
               <label className="flex min-w-[16rem] flex-col gap-1 text-sm">
                 <span className="flex items-center gap-1.5 font-medium">
@@ -387,21 +393,19 @@ export function DefectWorkspace({
             </div>
           )}
 
-          {projectId !== null && (
-            <Finder
-              key={projectId}
-              projectId={projectId}
-              drafts={scoped}
-              allModules={inProject.length}
-              draftsById={draftsById}
-              tester={tester.trim()}
-              aiOn={aiOn}
-              aiKnown={!!ai}
-              siteUrl={spira?.siteUrl ?? null}
-              records={records}
-              onChanged={refresh}
-            />
-          )}
+          <Finder
+            key={projectId}
+            projectId={projectId}
+            drafts={scoped}
+            allModules={inProject.length}
+            draftsById={draftsById}
+            tester={tester.trim()}
+            aiOn={aiOn}
+            aiKnown={!!ai}
+            siteUrl={spira?.siteUrl ?? null}
+            records={records}
+            onChanged={refresh}
+          />
         </>
       )}
 
@@ -483,7 +487,7 @@ function Finder({
 
   async function find() {
     const description = text.trim();
-    if (description.length < 10 || !aiOn || drafts.length === 0) return;
+    if (description.length < 10 || !aiOn) return;
     const run = ++searchRun.current;
     setError(null);
     setOutcome(null);
@@ -517,7 +521,7 @@ function Finder({
       }
     };
     try {
-      result = await searchDefect(drafts, description, setPhase, show);
+      result = await searchDefect(projectId, drafts, description, setPhase, show);
       setTiming({ startedAt, tookMs: Date.now() - startedAt });
       show(result);
     } catch (err) {
@@ -528,9 +532,15 @@ function Finder({
     // No existing case fails ("might be affected" ones are unconfirmed), or Gemini could not finish: the defect
     // gets a test case of its own to be failed against. With the option on, its confirmation opens as soon as
     // it is drafted, but only after a complete search, so a case Gemini could not check is not overlooked.
-    // A description that repeats a defect raised before, or a strong Spira/app match, never opens it on its own.
+    // Needs at least one module (for test sets). A description that repeats a defect raised before, or a strong
+    // Spira/app match, never opens it on its own.
     const repeatsNow = similarDefects(records, description).filter((m) => m.record.id !== differentFrom);
-    if (result && !result.cases.some((c) => c.match.verdict === "fails") && !strongExistingDefect(result.existing)) {
+    if (
+      result &&
+      drafts.length > 0 &&
+      !result.cases.some((c) => c.match.verdict === "fails") &&
+      !strongExistingDefect(result.existing)
+    ) {
       void draftNewCase(result, autoNewCase && result.complete && repeatsNow.length === 0 ? run : null);
     }
   }
@@ -704,7 +714,7 @@ function Finder({
     <Section
       icon={Bug}
       title="Find a defect"
-      description="Gemini checks Spira incidents and defects already logged here, works out which feature the defect is in, picks the cases about that feature by context, then checks each one against its steps in Spira. You choose which to fail — or add a new test case when nothing covers it."
+      description="Gemini always checks Spira incidents and defects already logged here for the whole project. If you ticked modules, it also finds cases to fail. You choose which to fail — or add a new test case when nothing covers it."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && aiKnown && (
@@ -732,10 +742,11 @@ function Finder({
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-slate-500 dark:text-zinc-400">
-              Name the screen, the action and what happened. Searches {plural(drafts.length, "module")}. <kbd className="kbd">Ctrl</kbd>+<kbd className="kbd">Enter</kbd> searches.
+              Name the screen, the action and what happened. Always searches Spira and this app
+              {drafts.length > 0 ? `; also ${plural(drafts.length, "module")} for cases` : ""}. <kbd className="kbd">Ctrl</kbd>+<kbd className="kbd">Enter</kbd> searches.
             </p>
-            <Button variant="primary" icon={Search} busy={searching} disabled={!aiOn || text.trim().length < 10 || drafts.length === 0 || !!job} onClick={() => void find()}>
-              {search ? "Search again" : "Find affected cases"}
+            <Button variant="primary" icon={Search} busy={searching} disabled={!aiOn || text.trim().length < 10 || !!job} onClick={() => void find()}>
+              {search ? "Search again" : drafts.length > 0 ? "Find defects and cases" : "Find existing defects"}
             </Button>
           </div>
           <Switch
@@ -820,9 +831,14 @@ function Finder({
                   </p>
                 )}
                 <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
-                  Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
-                  {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
-                  {timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}. Suggested severity: {search.analysis.severity}.
+                  {search.total === 0
+                    ? `Checked Spira incidents and app-logged defects for the whole project${timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}.`
+                    : <>
+                        Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
+                        {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
+                        {timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}.
+                      </>}{" "}
+                  Suggested severity: {search.analysis.severity}.
                 </p>
               </div>
             )}
@@ -888,7 +904,13 @@ function Finder({
             )}
 
             {search.cases.length === 0 ? (
-              searching || search.searched === 0 ? null : (
+              searching ? null : search.total === 0 ? (
+                <p className="py-2 text-center text-sm text-slate-500">
+                  {search.existing.length > 0
+                    ? "Existing defects above may already cover this. Tick modules above and search again to also find cases to fail."
+                    : "No close match in Spira or this app. Tick modules above and search again to find cases to fail, or to draft a new test case."}
+                </p>
+              ) : search.searched === 0 ? null : (
                 <p className="py-2 text-center text-sm text-slate-500">
                   No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
                   {drafts.length < allModules ? " Include more modules above and search again, or add" : " Add"} it as a new test case below, so it can be failed and reported.
@@ -961,7 +983,7 @@ function Finder({
                   setNewCase(null);
                 }}
               />
-            ) : searching ? null : (
+            ) : searching || drafts.length === 0 ? null : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
                 <span className="text-slate-600 dark:text-zinc-400">
                   {strongExistingDefect(search.existing)
