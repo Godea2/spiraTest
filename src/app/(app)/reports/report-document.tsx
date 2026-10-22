@@ -292,11 +292,14 @@ function SummaryPage({ report }: { report: Report }) {
       color="#15803d"
     />,
     <Kpi
-      key="failed"
-      label="Failed"
-      value={n(k.outcomes.failed)}
-      hint={`${n(k.outcomes.blocked)} blocked`}
-      split={<PlatformLine report={report} split={k.split.failed} />}
+      key="defects-today"
+      label="Defects today"
+      value={n(report.defects.today.length)}
+      hint={
+        report.defects.today.length
+          ? `${report.defects.today.filter((r) => r.source === "spira").length} Spira · ${report.defects.today.filter((r) => r.source === "app" || r.alsoInApp).length} in this app`
+          : "Spira + this app"
+      }
       color="#b91c1c"
     />,
     <Kpi key="open-defects" label="All-time defects" value={n(report.defects.everOpened)} color="#b91c1c" />,
@@ -324,7 +327,7 @@ function SummaryPage({ report }: { report: Report }) {
     <>
       {planned && (
         <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-[12.5px] leading-relaxed text-slate-700">
-          Planned test cases for {labels.name}: execution has not started. Executed, passed, failed, and defects are shown as zero.
+          Planned test cases for {labels.name}: execution has not started. Executed, passed, defects today, and other defect figures are shown as zero.
         </p>
       )}
       <div
@@ -864,11 +867,46 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
   const openRows = d.registerOpen;
   const openShown = openRows.slice(0, 120);
   const actions = report.narrative.actions;
+  const todayShown = d.today.slice(0, 80);
   return (
     <>
       <div>
         <Heading>4. Defects and retesting</Heading>
         <p className="text-[12.5px] leading-relaxed text-slate-700">{d.summary}</p>
+      </div>
+      <div>
+        <SubHeading>Defects captured today</SubHeading>
+        <p className="mb-2 text-[11.5px] text-slate-500">
+          Spira incidents created on this report day, plus defects logged in this app today (same IN: counted once).
+        </p>
+        {d.today.length === 0 ? (
+          <p className="text-[12.5px] text-emerald-700">No defects captured today in Spira or this app.</p>
+        ) : (
+          <>
+            <Table head={["ID", "Defect", "Source", "Status", "Open"]}>
+              {todayShown.map((row) => (
+                <tr key={row.key}>
+                  <td className={td}>
+                    {row.incidentId != null ? (
+                      <SpiraLink href={incidentUrl(row.incidentId)}>IN:{row.incidentId}</SpiraLink>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className={td}>{row.title}</td>
+                  <td className={td}>
+                    {row.source === "spira" ? (row.alsoInApp ? "Spira + app" : "Spira") : "This app"}
+                  </td>
+                  <td className={td}>{row.status ?? "—"}</td>
+                  <td className={td}>{row.open ? "Yes" : "No"}</td>
+                </tr>
+              ))}
+            </Table>
+            {d.today.length > todayShown.length && (
+              <p className="mt-2 text-[11.5px] text-slate-500">{d.today.length - todayShown.length} more in the Excel export.</p>
+            )}
+          </>
+        )}
       </div>
       <div className="report-keep grid gap-5 lg:grid-cols-3">
         <div>

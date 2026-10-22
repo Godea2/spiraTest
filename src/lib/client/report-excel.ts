@@ -285,6 +285,19 @@ export async function exportReportWorkbookStyled(report: Report, siteUrl: string
   );
   addTableSheet(
     wb,
+    "Defects today",
+    report.defects.today.map((d) => ({
+      ID: d.incidentId != null ? `IN:${d.incidentId}` : "",
+      Defect: d.title,
+      Source: d.source === "spira" ? (d.alsoInApp ? "Spira + app" : "Spira") : "This app",
+      Status: d.status ?? "",
+      Open: d.open ? "Yes" : "No",
+      Raised: day(d.createdAt),
+      Link: d.incidentId != null ? link(`Incident/${d.incidentId}.aspx`) : "",
+    })),
+  );
+  addTableSheet(
+    wb,
     "Defects",
     report.defects.rows.map((d) => ({
       ID: `IN:${d.incident.incidentId}`,

@@ -7,6 +7,7 @@ import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
 import { listBuckets } from "@/lib/client/defect-buckets";
+import { listDefects } from "@/lib/client/defects";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
 import {
   buildReport,
@@ -24,12 +25,18 @@ import {
   type DefectNote,
   type RagStatus,
   type Report,
+  type ReportAppDefect,
   type ReportInput,
   type ReportKind,
   type ReportOptions,
 } from "@/lib/domain/report";
 import type { DefectBucket } from "@/lib/domain/incident-register";
 import type { ReportCatalog } from "@/lib/domain/types";
+
+/** Defects logged in this browser for the "Defects today" KPI and section. */
+function appDefectsForReport(projectId: number): ReportAppDefect[] {
+  return listDefects(projectId).map((r) => ({ id: r.id, at: r.at, title: r.title, incidentId: r.incidentId }));
+}
 
 /** Snapshot the chosen Review bucket onto report options so generate/share use the same IDs. */
 function withDefectBucket(options: ReportOptions, buckets: DefectBucket[], bucketId: string | null): ReportOptions {
@@ -253,8 +260,8 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     return { ...resolveReportOptions({ ...options, kind: read.kind }), baseline: read.baseline, scoped: read.scoped };
   }, [data, options]);
   const report = useMemo(() => {
-    if (!data || !reportOptions || data.input.catalog.projectId !== projectId) return null;
-    return buildReport({ ...data.input, options: reportOptions });
+    if (!data || !reportOptions || data.input.catalog.projectId !== projectId || projectId === null) return null;
+    return buildReport({ ...data.input, options: reportOptions, appDefects: appDefectsForReport(projectId) });
   }, [data, reportOptions, projectId]);
   const scopeChanged = !!(
     data &&
@@ -284,10 +291,11 @@ export function ReportWorkspace({ share }: { share: string | null }) {
         // storage full: generate still uses withBucket for this run
       }
       const input = await readReportData({ catalog: fresh, options: withBucket, mappings: settings?.mappings ?? [], onProgress: setProgress, signal: controller.signal });
-      const built = buildReport(input);
+      const withApp = { ...input, appDefects: appDefectsForReport(projectId) };
+      const built = buildReport(withApp);
       const before = recordSnapshot(built, resolved);
       const previous = previousSnapshot(before, built);
-      setData({ input, changes: previous ? { since: previous.at, rows: compareSnapshots(previous, snapshotOf(built)) } : null });
+      setData({ input: withApp, changes: previous ? { since: previous.at, rows: compareSnapshots(previous, snapshotOf(built)) } : null });
       setViewerOpen(true);
     } catch (err) {
       if ((err as Error).name !== "AbortError") setError(errorMessage(err));

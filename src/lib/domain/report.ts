@@ -466,6 +466,19 @@ export function countsOnDefectReport(incident: { open: boolean; status: string |
   return incident.open && !isDoneStatus(incident.status);
 }
 
+/** One defect raised on the report day: Spira incident created that day and/or logged in this app that day. */
+export interface DefectsTodayRow {
+  key: string;
+  source: "spira" | "app";
+  incidentId: number | null;
+  title: string;
+  status: string | null;
+  open: boolean;
+  createdAt: string | null;
+  /** Spira row that was also logged in this app on the same day. */
+  alsoInApp: boolean;
+}
+
 export interface DefectSummary {
   rows: DefectRow[];
   /** Currently open defects in this build's register. */
@@ -483,6 +496,11 @@ export interface DefectSummary {
   registerRows: DefectRow[];
   /** Still-open Review-bucket defects (for the list at the end of the report). */
   registerOpen: DefectRow[];
+  /**
+   * Spira incidents created on the report day, plus defects logged in this app that day
+   * (deduped when both refer to the same IN:). Drives the cover "Defects today" KPI.
+   */
+  today: DefectsTodayRow[];
   /** Open defects by severity (rows) and age bucket (columns). */
   severityAge: Record<Level, number[]>;
   /** Open defects by priority, all and those in the build. */
@@ -756,6 +774,14 @@ export interface Report {
   };
 }
 
+/** App-logged defect used only to build the "Defects today" list (browser store). */
+export interface ReportAppDefect {
+  id: string;
+  at: string;
+  title: string;
+  incidentId: number | null;
+}
+
 export interface ReportInput {
   catalog: ReportCatalog;
   options: ReportOptions;
@@ -767,6 +793,58 @@ export interface ReportInput {
   /** Incidents linked to each looked-up test case. */
   links: Record<number, number[]>;
   generatedAt: string;
+  /** Defects logged in this app (local store); optional on shared/live server reports. */
+  appDefects?: ReportAppDefect[];
+}
+
+/**
+ * Spira incidents created on `day` (YYYY-MM-DD) plus app-logged defects that day.
+ * Same IN: counted once (Spira wins; `alsoInApp` when the app also logged it that day).
+ */
+export function defectsCapturedOnDay(
+  day: string,
+  incidents: ReportIncident[],
+  app: ReportAppDefect[] = [],
+): DefectsTodayRow[] {
+  const spiraToday = incidents.filter((i) => i.createdAt && dayOf(i.createdAt) === day);
+  const byIncident = new Map(spiraToday.map((i) => [i.incidentId, i]));
+  const appToday = app.filter((r) => dayOf(r.at) === day);
+  const alsoInApp = new Set<number>();
+  const rows: DefectsTodayRow[] = spiraToday.map((i) => ({
+    key: `spira:${i.incidentId}`,
+    source: "spira" as const,
+    incidentId: i.incidentId,
+    title: i.name,
+    status: i.status,
+    open: i.open,
+    createdAt: i.createdAt,
+    alsoInApp: false,
+  }));
+  for (const r of appToday) {
+    if (r.incidentId && byIncident.has(r.incidentId)) {
+      alsoInApp.add(r.incidentId);
+      continue;
+    }
+    rows.push({
+      key: `app:${r.id}`,
+      source: "app",
+      incidentId: r.incidentId,
+      title: r.title,
+      status: r.incidentId ? "Logged in app" : "App only",
+      open: true,
+      createdAt: r.at,
+      alsoInApp: false,
+    });
+  }
+  for (const row of rows) {
+    if (row.incidentId && alsoInApp.has(row.incidentId)) row.alsoInApp = true;
+  }
+  return rows.sort(
+    (a, b) =>
+      Number(b.source === "spira") - Number(a.source === "spira") ||
+      (b.incidentId ?? 0) - (a.incidentId ?? 0) ||
+      a.title.localeCompare(b.title),
+  );
 }
 
 interface Placement {
@@ -1312,6 +1390,8 @@ export function buildReport(input: ReportInput): Report {
     return `${parts[0]}${parts.length > 1 ? `, ${parts.slice(1).join(" and ")}` : ""}${covering}. ${open.length} open, ${defectRows.length - open.length} closed. ${severity}${priority}.`;
   })();
 
+  const todayDefects = defectsCapturedOnDay(dayOf(today), input.incidents, input.appDefects ?? []);
+
   const defects: DefectSummary = {
     rows: defectRows,
     open: open.length,
@@ -1322,6 +1402,7 @@ export function buildReport(input: ReportInput): Report {
     registerName,
     registerRows,
     registerOpen,
+    today: todayDefects,
     severityAge,
     byPriority,
     byPriorityInBuild,
@@ -2040,6 +2121,7 @@ export function asPlannedReport(report: Report): Report {
     registerName: null,
     registerRows: [],
     registerOpen: [],
+    today: [],
     severityAge: emptySeverityAge,
     byPriority: emptyByPriority,
     byPriorityInBuild: { ...emptyByPriority },

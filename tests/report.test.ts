@@ -11,6 +11,7 @@ import {
   compareSnapshots,
   decodeShare,
   defaultReportOptions,
+  defectsCapturedOnDay,
   encodeShare,
   folderFamily,
   initialReportOptions,
@@ -453,7 +454,9 @@ describe("report document", () => {
       "3b. Module readiness for UAT",
       "3c. Change since Cycle 1 (iOS test sets)",
       "4. Defects and retesting",
+      "Defects captured today",
       "4d. Defect register: severity and priority",
+      "Defects today",
       "All-time defects",
       "Key risks and actions",
       "Open defects",
@@ -465,6 +468,7 @@ describe("report document", () => {
       stillOpen: 0,
       open: 1,
       closed: 1,
+      today: [],
       openStatus: { open: 0, toDo: 0, inDev: 0, other: 0 },
       registerName: null,
       registerRows: [],
@@ -520,6 +524,7 @@ describe("report document", () => {
       outcomes: { passed: 0, failed: 0, blocked: 0, caution: 0, notRun: 8 },
     });
     expect(planned.defects.everOpened).toBe(0);
+    expect(planned.defects.today).toEqual([]);
     expect(planned.defects.registerOpen).toEqual([]);
     expect(planned.failedCases).toEqual([]);
     expect(planned.statusReason).toMatch(/not started/i);
@@ -530,6 +535,30 @@ describe("report document", () => {
     expect(html).not.toContain("4. Defects and retesting");
     expect(html).not.toContain("2. Readiness against");
     expect(html.match(/report-page/g)).toHaveLength(2);
+  });
+
+  it("lists Spira and app defects captured on the report day, deduping the same IN:", () => {
+    const day = "2026-10-12";
+    const rows = defectsCapturedOnDay(
+      day,
+      [
+        incident(10, { name: "OTP missing", createdAt: `${day}T08:00:00.000Z`, status: "Open" }),
+        incident(11, { name: "Old bug", createdAt: "2026-10-01T08:00:00.000Z" }),
+        incident(12, { name: "Closed today", createdAt: `${day}T12:00:00.000Z`, open: false, status: "Done" }),
+      ],
+      [
+        { id: "a1", at: `${day}T09:00:00.000Z`, title: "OTP missing (app)", incidentId: 10 },
+        { id: "a2", at: `${day}T10:00:00.000Z`, title: "App-only crash", incidentId: null },
+        { id: "a3", at: "2026-10-11T10:00:00.000Z", title: "Yesterday", incidentId: null },
+      ],
+    );
+    expect(rows.map((r) => r.key)).toEqual(["spira:12", "spira:10", "app:a2"]);
+    expect(rows.find((r) => r.key === "spira:10")).toMatchObject({ alsoInApp: true, title: "OTP missing" });
+    expect(buildReport(input({
+      generatedAt: `${day}T15:00:00.000Z`,
+      incidents: [incident(10, { createdAt: `${day}T08:00:00.000Z` }), incident(11, { createdAt: "2026-10-01T08:00:00.000Z" })],
+      appDefects: [{ id: "a2", at: `${day}T10:00:00.000Z`, title: "App-only crash", incidentId: null }],
+    })).defects.today).toHaveLength(2);
   });
 });
 
