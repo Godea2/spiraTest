@@ -5,6 +5,7 @@ import { MAX_ATTACHMENT_BASE64, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, MAX_CAPTI
 import {
   MAX_DEFECT_CANDIDATES,
   MAX_DEFECT_SEARCH_CASES,
+  MAX_EXISTING_DEFECT_POOL,
   MAX_DEFECT_TEXT,
   MAX_DEFECT_VERIFY_BATCH,
   MAX_NEW_CASE_CHOICES,
@@ -261,6 +262,25 @@ export const defectSearchRequestSchema = z.object({
   description: defectText,
   analysis: analysisSchema,
   cases: z.array(searchCaseSchema).min(1).max(MAX_DEFECT_SEARCH_CASES, `Send at most ${MAX_DEFECT_SEARCH_CASES} cases per request.`),
+});
+
+export const defectFindExistingRequestSchema = z.object({
+  description: defectText,
+  analysis: analysisSchema,
+  existing: z
+    .array(
+      z.object({
+        key: z.string().max(80),
+        source: z.enum(["spira", "app"]),
+        incidentId: z.number().int().positive().nullable(),
+        recordId: z.string().max(80).nullable(),
+        title: z.string().max(300),
+        text: z.string().max(2_000),
+        status: z.string().max(120).nullable(),
+        open: z.boolean(),
+      }),
+    )
+    .max(MAX_EXISTING_DEFECT_POOL, `Send at most ${MAX_EXISTING_DEFECT_POOL} existing defects per request.`),
 });
 
 const progressText = z.string().trim().min(10, "Describe what you tested in a sentence or two.").max(MAX_PROGRESS_TEXT);

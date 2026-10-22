@@ -3,6 +3,10 @@ import { runSignature, type RunnableStep } from "./execution";
 import type { BlockedConfidence, Card, Column, DefectCandidate, DefectMatch, DefectRecord, DefectVerdict, Draft, ExecutionProgress, TestCaseStep } from "./types";
 
 export const MAX_DEFECT_TEXT = 4_000;
+/** Spira + app defects Gemini may score in one find-existing request (pre-narrowed by wording). */
+export const MAX_EXISTING_DEFECT_POOL = 120;
+/** Existing defects Gemini may return as matches. */
+export const MAX_EXISTING_DEFECT_HITS = 8;
 /**
  * Case names Gemini matches per request. The answer is only ids and a relevance, so a few hundred names
  * fit well inside the time limit; most searches need one request.
@@ -316,6 +320,75 @@ export function similarDefects(records: DefectRecord[], description: string): Ar
     .map((record) => ({ record, similarity: wordingSimilarity(description, record.description) }))
     .filter((m) => m.similarity >= SAME_DEFECT_SIMILARITY)
     .sort((a, b) => b.similarity - a.similarity);
+}
+
+/** One existing Spira incident or app-logged defect offered as a possible duplicate. */
+export interface ExistingDefectCandidate {
+  /** Stable id for Gemini: `spira:123` or `app:{recordId}`. */
+  key: string;
+  source: "spira" | "app";
+  incidentId: number | null;
+  recordId: string | null;
+  title: string;
+  /** Name + status (+ optional local description) for ranking and the model. */
+  text: string;
+  status: string | null;
+  open: boolean;
+}
+
+export interface ExistingDefectHit extends ExistingDefectCandidate {
+  relevance: "high" | "medium" | "low";
+  reason: string;
+}
+
+/** Rank Spira incidents and app records by wording so Gemini only sees the closest pool. */
+export function rankExistingDefectPool(
+  description: string,
+  analysis: { feature: string; related: string[]; symptom: string; title?: string },
+  spira: Array<{ incidentId: number; name: string; status: string | null; open: boolean }>,
+  app: DefectRecord[],
+  limit = MAX_EXISTING_DEFECT_POOL,
+): ExistingDefectCandidate[] {
+  const query = [description, analysis.feature, analysis.symptom, analysis.title ?? "", ...analysis.related].join(" ");
+  const candidates: ExistingDefectCandidate[] = [
+    ...spira.map((i) => ({
+      key: `spira:${i.incidentId}`,
+      source: "spira" as const,
+      incidentId: i.incidentId,
+      recordId: null,
+      title: i.name,
+      text: `${i.name} ${i.status ?? ""}`,
+      status: i.status,
+      open: i.open,
+    })),
+    ...app.map((r) => ({
+      key: `app:${r.id}`,
+      source: "app" as const,
+      incidentId: r.incidentId,
+      recordId: r.id,
+      title: r.title,
+      text: `${r.title} ${r.description}`,
+      status: r.incidentId ? "Logged in app" : "App only",
+      open: true,
+    })),
+  ];
+  return rankByWording(query, candidates, limit);
+}
+
+/** Prefer Spira matches, then higher relevance, for the existing-defect panel. */
+export function sortExistingDefectHits(hits: ExistingDefectHit[]): ExistingDefectHit[] {
+  const rank = { high: 0, medium: 1, low: 2 };
+  return [...hits].sort(
+    (a, b) =>
+      Number(b.source === "spira") - Number(a.source === "spira") ||
+      rank[a.relevance] - rank[b.relevance] ||
+      (b.incidentId ?? 0) - (a.incidentId ?? 0),
+  );
+}
+
+/** High or medium: same bug already logged — do not auto-draft a new test case. */
+export function strongExistingDefect(hits: ExistingDefectHit[]): boolean {
+  return hits.some((h) => h.relevance === "high" || h.relevance === "medium");
 }
 
 /** The defect whose failed run this test set membership already carries, if one still holds it. */

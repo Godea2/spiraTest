@@ -12,11 +12,15 @@ import {
   mergeCandidates,
   pickBySeverity,
   rankByWording,
+  rankExistingDefectPool,
   sameNameCases,
   settleDefectVerdicts,
   similarDefects,
+  sortExistingDefectHits,
   stepsToReproduce,
+  strongExistingDefect,
   wordingSimilarity,
+  type ExistingDefectHit,
   type RawDefectVerdict,
   type VerifiedCase,
 } from "@/lib/domain/defects";
@@ -320,5 +324,50 @@ describe("searching across modules", () => {
     expect(text).not.toContain("## Expected result");
     expect(text).not.toContain("## Environment");
     expect(text).toContain("## Failed test cases (2 in 2 modules)\nOnboarding:\n- TC1 Login (test run 901)\nHome Screen:\n- TC2 Balance card, step 3: View balance (test run 902)");
+  });
+
+  it("ranks Spira and app defects by wording for the find-existing pool", () => {
+    const app = [
+      { id: "a1", title: "OTP never arrives", description: "Unable to login, the OTP never arrives by SMS." },
+      { id: "a2", title: "Balance is blank", description: "Home balance card shows a blank amount." },
+    ] as unknown as DefectRecord[];
+    const pool = rankExistingDefectPool(
+      "Login fails because the OTP SMS never arrives",
+      { feature: "Login OTP", related: ["SMS"], symptom: "OTP never arrives", title: "OTP SMS missing" },
+      [
+        { incidentId: 10, name: "OTP SMS not delivered on login", status: "Open", open: true },
+        { incidentId: 11, name: "Airtime purchase timeout", status: "Closed", open: false },
+      ],
+      app,
+      3,
+    );
+    expect(pool[0]).toMatchObject({ key: "spira:10", source: "spira", incidentId: 10, open: true });
+    expect(pool.map((p) => p.key)).toContain("app:a1");
+    expect(pool.map((p) => p.key)).not.toContain("app:a2");
+  });
+
+  it("sorts existing hits Spira-first then by relevance, and gates strong matches", () => {
+    const hit = (over: Partial<ExistingDefectHit>): ExistingDefectHit => ({
+      key: "x",
+      source: "app",
+      incidentId: null,
+      recordId: "r",
+      title: "t",
+      text: "t",
+      status: null,
+      open: true,
+      relevance: "low",
+      reason: "",
+      ...over,
+    });
+    const sorted = sortExistingDefectHits([
+      hit({ key: "app:1", source: "app", relevance: "high" }),
+      hit({ key: "spira:2", source: "spira", incidentId: 2, relevance: "low" }),
+      hit({ key: "spira:9", source: "spira", incidentId: 9, relevance: "medium" }),
+    ]);
+    expect(sorted.map((h) => h.key)).toEqual(["spira:9", "spira:2", "app:1"]);
+    expect(strongExistingDefect(sorted)).toBe(true);
+    expect(strongExistingDefect([hit({ relevance: "low" })])).toBe(false);
+    expect(strongExistingDefect([])).toBe(false);
   });
 });

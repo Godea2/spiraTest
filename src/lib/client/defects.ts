@@ -17,9 +17,12 @@ import {
   mergeCandidates,
   failedForDefect,
   rankByWording,
+  rankExistingDefectPool,
   sameNameCases,
+  sortExistingDefectHits,
   stepsToReproduce,
   type DefectTarget,
+  type ExistingDefectHit,
   type VerifiedCase,
 } from "@/lib/domain/defects";
 import { MAX_ATTACHMENTS, MAX_ENVIRONMENT, runFailure, type RunFailure } from "@/lib/domain/defect-report";
@@ -55,6 +58,7 @@ import { api, ApiError, errorMessage } from "./api";
 import { toBase64, type PendingFile } from "./attachments";
 import { allDrafts, getDraft, mutateDraft } from "./drafts";
 import { recordResults, refreshExecution } from "./execution";
+import { listProjectIncidents } from "./incident-register";
 import { readItem, writeItem } from "./storage";
 import { readTestCase } from "./test-cases";
 import { compareTestSet, contextOf } from "./workflow";
@@ -159,6 +163,10 @@ export interface DefectSearch {
   understood: boolean;
   /** Every case name was read and every likely case checked against its steps. */
   complete: boolean;
+  /** Spira incidents and app-logged defects Gemini judged the same bug. */
+  existing: ExistingDefectHit[];
+  /** Why existing-defect matching failed; null when it ran or there was nothing to check. */
+  existingError: string | null;
   cases: DefectCase[];
 }
 
@@ -170,6 +178,7 @@ function unreadAnalysis(description: string): DefectAnalysis {
 
 export type SearchPhase =
   | { stage: "understanding"; modules: number }
+  | { stage: "findingExisting"; spira: number; app: number }
   | { stage: "reading"; total: number; modules: number; feature: string }
   /** Steps of `read` cases are in from Spira and `done` are checked, of `total`; both run side by side. */
   | { stage: "checking"; read: number; done: number; total: number };
@@ -221,14 +230,10 @@ async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /**
- * Finds the cases a defect makes fail, across the given drafts (any module, Draft or Completed, and
- * before live apply also Out of Scope and Needs Review cards). Gemini first works out which feature
- * the defect is in and what else that feature is called, then picks the cases about that feature from
- * their names, by context rather than shared words; the app reads their steps from Spira, and Gemini
- * checks each against its steps, naming the failing step and quoting the case. A handful of requests
- * per search; the server falls back to other models, and a request is asked once more only when every model
- * was busy. When Gemini still cannot answer, the search ends without cases and says why (`unreadError`), so
- * the defect can be added as a new test case instead. Read-only.
+ * Finds existing Spira/app defects that match the description, then the cases a defect makes fail,
+ * across the given drafts. Gemini first works out the feature, matches Spira incidents and app-logged
+ * defects, then picks cases by name and verifies them against Spira steps. When nothing fails and no
+ * existing defect is a strong match, the UI can draft a new test case to create and fail. Read-only.
  */
 export async function searchDefect(
   drafts: Draft[],
@@ -242,6 +247,7 @@ export async function searchDefect(
   const targets = defectTargets(drafts);
   if (targets.length === 0) throw new Error("The chosen modules have no cases left to search.");
   const modules = new Set(targets.map((t) => t.module)).size;
+  const appRecords = listDefects(projectId);
 
   onPhase({ stage: "understanding", modules });
   const outline = new Map<string, Set<string>>();
@@ -253,10 +259,47 @@ export async function searchDefect(
       [...outline].map(([module, sets]) => ({ module, testSets: [...sets].slice(0, 12) })),
     );
   } catch (err) {
-    const unread = { description, analysis: unreadAnalysis(description), searched: 0, total: targets.length, modules, understood: false, complete: false };
+    const unread = {
+      description,
+      analysis: unreadAnalysis(description),
+      searched: 0,
+      total: targets.length,
+      modules,
+      understood: false,
+      complete: false,
+      existing: [],
+      existingError: null,
+    };
     return { ...unread, unreadError: `Working out the feature: ${errorMessage(err)}`, cases: [] };
   }
   const reading = { feature: analysis.feature, related: analysis.related, area: analysis.area, symptom: analysis.symptom, expected: analysis.expected };
+
+  let existing: ExistingDefectHit[] = [];
+  let existingError: string | null = null;
+  onPhase({ stage: "findingExisting", spira: 0, app: appRecords.length });
+  try {
+    const { incidents, complete } = await listProjectIncidents(projectId);
+    onPhase({ stage: "findingExisting", spira: incidents.length, app: appRecords.length });
+    const pool = rankExistingDefectPool(
+      description,
+      { feature: analysis.feature, related: analysis.related, symptom: analysis.symptom, title: analysis.title },
+      incidents.map((i) => ({ incidentId: i.incidentId, name: i.name, status: i.status, open: i.open })),
+      appRecords,
+    );
+    if (pool.length > 0) {
+      const out = await askGemini<{ hits: ExistingDefectHit[] }>("/api/ai/defect/find-existing", {
+        description,
+        analysis: reading,
+        existing: pool,
+      });
+      existing = sortExistingDefectHits(out.hits);
+    }
+    if (!complete && existing.length === 0) {
+      existingError = "Spira returned only its most recent incidents; none matched closely.";
+    }
+  } catch (err) {
+    existingError = errorMessage(err);
+  }
 
   // Only a very large search is narrowed first, by the wording of the feature as Gemini read it.
   const entries = rankByWording(
@@ -292,7 +335,18 @@ export async function searchDefect(
       ? `Matching cases to "${analysis.feature || analysis.area}": ${errorMessage(failedPart.error)}`
       : errorMessage(failedPart.error);
   const candidates = mergeCandidates(answered, MAX_DEFECT_CHECKS);
-  const result = { description, analysis, searched, total: entries.length, modules, unreadError, understood: true, complete: !failedPart };
+  const result = {
+    description,
+    analysis,
+    searched,
+    total: entries.length,
+    modules,
+    unreadError,
+    understood: true,
+    complete: !failedPart,
+    existing,
+    existingError,
+  };
 
   const byKey = new Map(entries.map((e) => [e.key, e.target]));
   const picked = candidates.flatMap((candidate) => {

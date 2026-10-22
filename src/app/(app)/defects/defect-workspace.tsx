@@ -63,7 +63,17 @@ import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import { formatDateTime } from "@/lib/client/format";
 import { effectiveColumn, isCompleted } from "@/lib/domain/board";
 import { MAX_ATTACHMENTS, MAX_ENVIRONMENT } from "@/lib/domain/defect-report";
-import { defectTargets, failedForDefect, MAX_DEFECT_TEXT, MAX_NEW_CASE_SETS, MAX_NEW_CASE_STEPS, pickBySeverity, similarDefects } from "@/lib/domain/defects";
+import {
+  defectTargets,
+  failedForDefect,
+  MAX_DEFECT_TEXT,
+  MAX_NEW_CASE_SETS,
+  MAX_NEW_CASE_STEPS,
+  pickBySeverity,
+  similarDefects,
+  strongExistingDefect,
+  type ExistingDefectHit,
+} from "@/lib/domain/defects";
 import { currentStatus, STATUS_LABEL } from "@/lib/domain/execution";
 import { isUatDraftId } from "@/lib/domain/uat-build";
 import {
@@ -101,9 +111,26 @@ function Elapsed({ since }: { since: number }) {
 
 function phaseText(phase: SearchPhase): string {
   if (phase.stage === "understanding") return `Gemini is working out which feature the defect is in (${plural(phase.modules, "module")} to search)…`;
+  if (phase.stage === "findingExisting") {
+    if (phase.spira === 0 && phase.app === 0) return "Checking Spira incidents and defects already logged in this app…";
+    return `Checking whether this is already logged: ${plural(phase.spira, "Spira incident")} and ${plural(phase.app, "app defect")}…`;
+  }
   if (phase.stage === "reading") return `Gemini is matching ${plural(phase.total, "case")} in ${plural(phase.modules, "module")} to ${phase.feature ? `"${phase.feature}"` : "the defect"}…`;
   return `Checking the steps of ${plural(phase.total, "likely case")} against the defect: ${phase.read} read from Spira, ${phase.done} checked. Results show below as they come in…`;
 }
+
+function phaseProgress(phase: SearchPhase): { value: number; max: number } {
+  if (phase.stage === "understanding") return { value: 1, max: 4 };
+  if (phase.stage === "findingExisting") return { value: 2, max: 4 };
+  if (phase.stage === "reading") return { value: 3, max: 4 };
+  return { value: phase.read + phase.done, max: Math.max(1, phase.total * 2) };
+}
+
+const EXISTING_RELEVANCE: Record<ExistingDefectHit["relevance"], string> = {
+  high: "Same defect",
+  medium: "Very likely the same",
+  low: "Might be related",
+};
 
 /** The new test case being written for a defect no existing case covers. */
 type NewCaseForm = {
@@ -501,9 +528,9 @@ function Finder({
     // No existing case fails ("might be affected" ones are unconfirmed), or Gemini could not finish: the defect
     // gets a test case of its own to be failed against. With the option on, its confirmation opens as soon as
     // it is drafted, but only after a complete search, so a case Gemini could not check is not overlooked.
-    // A description that repeats a defect raised before never opens it on its own.
+    // A description that repeats a defect raised before, or a strong Spira/app match, never opens it on its own.
     const repeatsNow = similarDefects(records, description).filter((m) => m.record.id !== differentFrom);
-    if (result && !result.cases.some((c) => c.match.verdict === "fails")) {
+    if (result && !result.cases.some((c) => c.match.verdict === "fails") && !strongExistingDefect(result.existing)) {
       void draftNewCase(result, autoNewCase && result.complete && repeatsNow.length === 0 ? run : null);
     }
   }
@@ -677,7 +704,7 @@ function Finder({
     <Section
       icon={Bug}
       title="Find a defect"
-      description="Gemini works out which feature the defect is in, picks the cases about that feature by context (whatever they call it), then checks each one against its steps in Spira, naming the failing step and quoting the case. You choose which to fail."
+      description="Gemini checks Spira incidents and defects already logged here, works out which feature the defect is in, picks the cases about that feature by context, then checks each one against its steps in Spira. You choose which to fail — or add a new test case when nothing covers it."
     >
       <div className="flex flex-col gap-4">
         {!aiOn && aiKnown && (
@@ -718,7 +745,7 @@ function Finder({
               storeAutoNewCase(on);
             }}
             label="When no case fails, add the defect as a new test case"
-            description="Gemini drafts the test case, and the confirmation to create it in Spira, add it to its test sets and fail it opens on its own. Nothing is written until you confirm; cases that only might be affected are left for you to check."
+            description="Gemini drafts the test case, and the confirmation to create it in Spira, add it to its test sets and fail it opens on its own — unless Spira or this app already has a strong match. Nothing is written until you confirm; cases that only might be affected are left for you to check."
           />
           {repeats.length > 0 && !job && (
             <Notice
@@ -767,10 +794,7 @@ function Finder({
               <span>{phaseText(phase)}</span>
               {timing && <Elapsed since={timing.startedAt} />}
             </span>
-            <ProgressBar
-              value={phase.stage === "understanding" ? 1 : phase.stage === "reading" ? 2 : phase.read + phase.done}
-              max={phase.stage === "understanding" || phase.stage === "reading" ? 3 : Math.max(1, phase.total * 2)}
-            />
+            <ProgressBar {...phaseProgress(phase)} />
           </div>
         )}
         {error && <Notice tone="danger" title="The search did not finish">{error}</Notice>}
@@ -815,6 +839,46 @@ function Finder({
             {search.analysis.question && (
               <Notice tone="warning" title="To sharpen the search">
                 {search.analysis.question} Add the answer to the description and search again.
+              </Notice>
+            )}
+            {search.existingError && (
+              <Notice tone="warning" title="Existing defects could not be fully checked">
+                {search.existingError} Fail a matching case below if you recognise the bug, or add a new test case only when you are sure it is new.
+              </Notice>
+            )}
+            {search.existing.length > 0 && (
+              <Notice tone="warning" title="This may already be logged in Spira or this app">
+                <ul className="flex flex-col gap-1.5">
+                  {search.existing.map((hit) => {
+                    const url = hit.incidentId ? incidentUrl(hit.incidentId) : null;
+                    return (
+                      <li key={hit.key}>
+                        <span className="font-medium">{EXISTING_RELEVANCE[hit.relevance]}</span>
+                        {" · "}
+                        <span>&quot;{clip(hit.title, 90)}&quot;</span>
+                        {hit.source === "spira" && hit.incidentId != null && (
+                          <>
+                            {" · "}
+                            {url ? (
+                              <a href={url} target="_blank" rel="noreferrer" className="underline">
+                                IN:{hit.incidentId}
+                              </a>
+                            ) : (
+                              `IN:${hit.incidentId}`
+                            )}
+                          </>
+                        )}
+                        {hit.source === "app" && <> · Logged in this app</>}
+                        {hit.status && <> · {hit.status}</>}
+                        {hit.open === false && <> · Closed</>}
+                        {hit.reason && <span className="block text-slate-600 dark:text-zinc-400">{hit.reason}</span>}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-1">
+                  Prefer failing an existing case or linking the open Spira incident. Add a new test case only when this is a different defect.
+                </p>
               </Notice>
             )}
             {changedSince && (
@@ -899,7 +963,11 @@ function Finder({
               />
             ) : searching ? null : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
-                <span className="text-slate-600 dark:text-zinc-400">None of these covers the defect? Add it as a new test case and fail it.</span>
+                <span className="text-slate-600 dark:text-zinc-400">
+                  {strongExistingDefect(search.existing)
+                    ? "Still a different defect? Add a new test case and fail it."
+                    : "None of these covers the defect? Add it as a new test case and fail it."}
+                </span>
                 <Button size="sm" icon={Plus} disabled={!!job} onClick={() => void draftNewCase(search)}>Add a new test case</Button>
               </div>
             )}
