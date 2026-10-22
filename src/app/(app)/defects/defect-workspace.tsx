@@ -397,6 +397,7 @@ export function DefectWorkspace({
             key={projectId}
             projectId={projectId}
             drafts={scoped}
+            availableDrafts={inProject}
             allModules={inProject.length}
             draftsById={draftsById}
             tester={tester.trim()}
@@ -405,6 +406,7 @@ export function DefectWorkspace({
             siteUrl={spira?.siteUrl ?? null}
             records={records}
             onChanged={refresh}
+            onUseAllModules={() => leaveOut(new Set())}
           />
         </>
       )}
@@ -417,6 +419,7 @@ export function DefectWorkspace({
 function Finder({
   projectId,
   drafts,
+  availableDrafts,
   allModules,
   draftsById,
   tester,
@@ -425,9 +428,13 @@ function Finder({
   siteUrl,
   records,
   onChanged,
+  onUseAllModules,
 }: {
   projectId: number;
+  /** Modules currently ticked for the case search. */
   drafts: Draft[];
+  /** Every compared module in the project (for “find related cases” after an existing-only search). */
+  availableDrafts: Draft[];
   allModules: number;
   draftsById: Map<string, Draft>;
   tester: string;
@@ -437,6 +444,7 @@ function Finder({
   /** Defects already raised in this project, newest first. */
   records: DefectRecord[];
   onChanged: () => void;
+  onUseAllModules: () => void;
 }) {
   const [text, setText] = useState("");
   const [phase, setPhase] = useState<SearchPhase | null>(null);
@@ -472,7 +480,9 @@ function Finder({
   const searchRun = useRef(0);
   const optionsLoad = useRef<Promise<void> | null>(null);
   const { settings } = useSettings();
-  const caseTargets = useMemo(() => newCaseTargets(drafts), [drafts]);
+  /** Modules used for drafting a new case: ticked ones, else every compared module in the project. */
+  const boardsForNewCase = drafts.length > 0 ? drafts : availableDrafts;
+  const caseTargets = useMemo(() => newCaseTargets(boardsForNewCase), [boardsForNewCase]);
 
   const [differentFrom, setDifferentFrom] = useState<string | null>(null);
 
@@ -485,7 +495,7 @@ function Finder({
   const similar = useMemo(() => similarDefects(records, text), [records, text]);
   const repeats = similar.length > 0 && similar[0].record.id !== differentFrom ? similar : [];
 
-  async function find() {
+  async function find(caseDrafts: Draft[] = drafts) {
     const description = text.trim();
     if (description.length < 10 || !aiOn) return;
     const run = ++searchRun.current;
@@ -495,7 +505,7 @@ function Finder({
     setNewCase(null);
     setSearch(null);
     setPicks({});
-    setPhase({ stage: "understanding", modules: drafts.length });
+    setPhase({ stage: "understanding", modules: caseDrafts.length });
     const startedAt = Date.now();
     setTiming({ startedAt, tookMs: null });
     let result: DefectSearch | null = null;
@@ -521,7 +531,7 @@ function Finder({
       }
     };
     try {
-      result = await searchDefect(projectId, drafts, description, setPhase, show);
+      result = await searchDefect(projectId, caseDrafts, description, setPhase, show);
       setTiming({ startedAt, tookMs: Date.now() - startedAt });
       show(result);
     } catch (err) {
@@ -537,28 +547,36 @@ function Finder({
     const repeatsNow = similarDefects(records, description).filter((m) => m.record.id !== differentFrom);
     if (
       result &&
-      drafts.length > 0 &&
+      caseDrafts.length > 0 &&
       !result.cases.some((c) => c.match.verdict === "fails") &&
       !strongExistingDefect(result.existing)
     ) {
-      void draftNewCase(result, autoNewCase && result.complete && repeatsNow.length === 0 ? run : null);
+      void draftNewCase(result, autoNewCase && result.complete && repeatsNow.length === 0 ? run : null, caseDrafts);
     }
   }
 
-  async function draftNewCase(from: DefectSearch, confirmFor: number | null = null) {
+  /** After Spira/app-only search: tick every module and find cases (or draft a new one) so the defect can be raised. */
+  function findRelatedCases() {
+    if (availableDrafts.length === 0) return;
+    onUseAllModules();
+    void find(availableDrafts);
+  }
+
+  async function draftNewCase(from: DefectSearch, confirmFor: number | null = null, boardDrafts: Draft[] = boardsForNewCase) {
     const statusId = readNewCaseStatus(projectId);
+    const targetsForBoards = newCaseTargets(boardDrafts);
     setNewCase({ status: "drafting", error: null, reason: "", testCase: { ...EMPTY_CASE, statusId }, targets: [] });
     try {
-      const s = await suggestNewCase(drafts, from);
+      const s = await suggestNewCase(boardDrafts, from);
       const form: NewCaseForm = {
         status: "ready",
         error: null,
         reason: s.reason,
         testCase: { name: s.name, description: s.description, steps: s.steps, failingStep: s.failingStep, statusId },
-        targets: s.testSetKeys.filter((k) => caseTargets.some((t) => t.key === k)),
+        targets: s.testSetKeys.filter((k) => targetsForBoards.some((t) => t.key === k)),
       };
       setNewCase(form);
-      const repeated = newCaseDuplicates(projectId, caseTargets.filter((t) => form.targets.includes(t.key)), form.testCase.name, records).length > 0;
+      const repeated = newCaseDuplicates(projectId, targetsForBoards.filter((t) => form.targets.includes(t.key)), form.testCase.name, records).length > 0;
       if (confirmFor !== null && form.targets.length > 0 && !newCaseProblem(form) && !repeated) {
         // Spira's lists first, so the incident fields and the case's status are settled before confirming.
         await optionsLoad.current;
@@ -905,11 +923,46 @@ function Finder({
 
             {search.cases.length === 0 ? (
               searching ? null : search.total === 0 ? (
-                <p className="py-2 text-center text-sm text-slate-500">
-                  {search.existing.length > 0
-                    ? "Existing defects above may already cover this. Tick modules above and search again to also find cases to fail."
-                    : "No close match in Spira or this app. Tick modules above and search again to find cases to fail, or to draft a new test case."}
-                </p>
+                <div className="flex flex-col gap-3 rounded-xl border border-slate-200 px-4 py-4 dark:border-white/10">
+                  <div>
+                    <h3 className="text-sm font-semibold">
+                      {strongExistingDefect(search.existing) || search.existing.length > 0
+                        ? "Still raise this as a new defect?"
+                        : "No existing defect found — raise it next"}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600 dark:text-zinc-400">
+                      {availableDrafts.length === 0
+                        ? "Compare a module first. Gemini can then find related test cases to fail, or draft a new case and log the incident in Spira."
+                        : strongExistingDefect(search.existing) || search.existing.length > 0
+                          ? `If this is a different bug, search ${plural(availableDrafts.length, "module")} for related cases to fail, or draft a new test case and raise the incident.`
+                          : `Search ${plural(availableDrafts.length, "module")} for related test cases to fail. If none cover it, Gemini drafts a new case and you raise the defect in Spira.`}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {availableDrafts.length > 0 ? (
+                      <>
+                        <Button variant="primary" icon={Search} disabled={!!job} onClick={() => findRelatedCases()}>
+                          Find related test cases
+                        </Button>
+                        <Button
+                          size="sm"
+                          icon={Plus}
+                          disabled={!!job}
+                          onClick={() => {
+                            onUseAllModules();
+                            void draftNewCase(search, null, availableDrafts);
+                          }}
+                        >
+                          Add a new test case
+                        </Button>
+                      </>
+                    ) : (
+                      <ButtonLink href="/" variant="primary">
+                        Start a comparison
+                      </ButtonLink>
+                    )}
+                  </div>
+                </div>
               ) : search.searched === 0 ? null : (
                 <p className="py-2 text-center text-sm text-slate-500">
                   No case in the {plural(search.modules, "module")} searched is about this feature, including Out of Scope cases on drafts.
@@ -983,7 +1036,7 @@ function Finder({
                   setNewCase(null);
                 }}
               />
-            ) : searching || drafts.length === 0 ? null : (
+            ) : searching || (drafts.length === 0 && availableDrafts.length === 0) || search.total === 0 ? null : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm dark:border-white/15">
                 <span className="text-slate-600 dark:text-zinc-400">
                   {strongExistingDefect(search.existing)
