@@ -230,10 +230,10 @@ async function inPool<T, R>(items: T[], size: number, run: (item: T) => Promise<
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /**
- * Finds existing Spira/app defects that match the description, then (when modules are chosen) the cases
- * a defect makes fail. Modules are optional: with none, only Spira incidents and app-logged defects are
- * checked across the whole project. With modules, Gemini also picks cases by name and verifies steps.
- * Read-only.
+ * Finds existing Spira/app defects that match the description (open and closed/Done), then (when modules
+ * are chosen) the cases a defect makes fail. Modules are optional: with none, only Spira incidents and
+ * app-logged defects are checked across the whole project. With modules, Gemini also picks cases by name
+ * and verifies steps. Read-only.
  */
 export async function searchDefect(
   projectId: number,

@@ -112,8 +112,8 @@ function Elapsed({ since }: { since: number }) {
 function phaseText(phase: SearchPhase): string {
   if (phase.stage === "understanding") return `Gemini is working out which feature the defect is in (${plural(phase.modules, "module")} to search)…`;
   if (phase.stage === "findingExisting") {
-    if (phase.spira === 0 && phase.app === 0) return "Checking Spira incidents and defects already logged in this app…";
-    return `Checking whether this is already logged: ${plural(phase.spira, "Spira incident")} and ${plural(phase.app, "app defect")}…`;
+    if (phase.spira === 0 && phase.app === 0) return "Checking Spira incidents (open and closed) and defects already logged in this app…";
+    return `Checking whether this was raised before (open or closed): ${plural(phase.spira, "Spira incident")} and ${plural(phase.app, "app defect")}…`;
   }
   if (phase.stage === "reading") return `Gemini is matching ${plural(phase.total, "case")} in ${plural(phase.modules, "module")} to ${phase.feature ? `"${phase.feature}"` : "the defect"}…`;
   return `Checking the steps of ${plural(phase.total, "likely case")} against the defect: ${phase.read} read from Spira, ${phase.done} checked. Results show below as they come in…`;
@@ -850,7 +850,7 @@ function Finder({
                 )}
                 <p className="mt-1.5 text-xs text-slate-500 dark:text-zinc-400">
                   {search.total === 0
-                    ? `Checked Spira incidents and app-logged defects for the whole project${timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}.`
+                    ? `Checked Spira incidents (open and closed/Done) and app-logged defects for the whole project${timing?.tookMs != null ? ` in ${Math.max(1, Math.round(timing.tookMs / 1000))}s` : ""}.`
                     : <>
                         Matched {search.searched === search.total ? plural(search.total, "case") : `${search.searched} of ${plural(search.total, "case")}`} in{" "}
                         {plural(search.modules, "module")} to this feature by context and checked the steps of {plural(search.cases.length, "likely case")}
@@ -881,7 +881,7 @@ function Finder({
               </Notice>
             )}
             {search.existing.length > 0 && (
-              <Notice tone="warning" title="This may already be logged in Spira or this app">
+              <Notice tone="warning" title="This may already have been raised in Spira or this app">
                 <ul className="flex flex-col gap-1.5">
                   {search.existing.map((hit) => {
                     const url = hit.incidentId ? incidentUrl(hit.incidentId) : null;
@@ -904,14 +904,14 @@ function Finder({
                         )}
                         {hit.source === "app" && <> · Logged in this app</>}
                         {hit.status && <> · {hit.status}</>}
-                        {hit.open === false && <> · Closed</>}
+                        {hit.open === false ? <> · Closed / Done</> : hit.open ? <> · Open</> : null}
                         {hit.reason && <span className="block text-slate-600 dark:text-zinc-400">{hit.reason}</span>}
                       </li>
                     );
                   })}
                 </ul>
                 <p className="mt-1">
-                  Prefer failing an existing case or linking the open Spira incident. Add a new test case only when this is a different defect.
+                  Closed or Done still means it was raised before — reopen or retest that incident if it is the same bug. Add a new test case only when this is a different defect.
                 </p>
               </Notice>
             )}
@@ -935,7 +935,7 @@ function Finder({
                         ? "Compare a module first. Gemini can then find related test cases to fail, or draft a new case and log the incident in Spira."
                         : strongExistingDefect(search.existing) || search.existing.length > 0
                           ? `If this is a different bug, search ${plural(availableDrafts.length, "module")} for related cases to fail, or draft a new test case and raise the incident.`
-                          : `Search ${plural(availableDrafts.length, "module")} for related test cases to fail. If none cover it, Gemini drafts a new case and you raise the defect in Spira.`}
+                          : `No open or closed Spira match was close enough. Search ${plural(availableDrafts.length, "module")} for related test cases to fail. If none cover it, Gemini drafts a new case and you raise the defect in Spira.`}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">

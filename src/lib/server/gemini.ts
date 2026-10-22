@@ -978,14 +978,15 @@ export async function draftDefectCase(
 
 const FIND_EXISTING_INSTRUCTION = `You are a senior QA test analyst on a mobile banking release. A tester is about to raise a defect.
 You get how the defect was read (feature, related names, symptom, expected) and a pool of existing defects: Spira incidents
-(IN:…) and defects already logged in this app.
+(IN:…) and defects already logged in this app. The pool includes open and closed (Done, Resolved, Closed, etc.).
 
 Decide which existing defects are the same bug — same broken behaviour on the same screen or journey — not merely the same
-module word. Prefer:
+module word. Closed or Done incidents still count: the tester needs to know it was raised before, even if it is no longer open.
+Prefer:
 - high: title/status leave little doubt it is the same defect (same symptom and screen);
 - medium: very likely the same, wording differs;
 - low: might be related; a person should decide.
-Leave out unrelated defects that only share a product area.
+Leave out unrelated defects that only share a product area. Do not drop a match only because it is closed or Done.
 
 Return at most ${MAX_EXISTING_DEFECT_HITS} matches, strongest first, using the keys given. Return none when nothing is the same defect.
 

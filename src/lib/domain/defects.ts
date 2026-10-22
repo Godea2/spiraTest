@@ -375,13 +375,14 @@ export function rankExistingDefectPool(
   return rankByWording(query, candidates, limit);
 }
 
-/** Prefer Spira matches, then higher relevance, for the existing-defect panel. */
+/** Prefer Spira matches, then higher relevance, then still-open, for the existing-defect panel. Closed/Done stay listed. */
 export function sortExistingDefectHits(hits: ExistingDefectHit[]): ExistingDefectHit[] {
   const rank = { high: 0, medium: 1, low: 2 };
   return [...hits].sort(
     (a, b) =>
       Number(b.source === "spira") - Number(a.source === "spira") ||
       rank[a.relevance] - rank[b.relevance] ||
+      Number(b.open) - Number(a.open) ||
       (b.incidentId ?? 0) - (a.incidentId ?? 0),
   );
 }

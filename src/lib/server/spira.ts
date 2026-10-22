@@ -1093,7 +1093,7 @@ const incidentSchema = z.object({
 const incidentListSchema = z.array(incidentSchema);
 
 /** Status names that end an incident, used only when Spira does not say whether the status is open. */
-const CLOSED_STATUS = /closed|not reproducible|duplicate|rejected|won'?t fix|not a (bug|defect)/i;
+const CLOSED_STATUS = /closed|done|resolved|fixed|verified|complete|not reproducible|duplicate|rejected|won'?t fix|not a (bug|defect)/i;
 
 function toIncident(raw: z.infer<typeof incidentSchema>): ReportIncident {
   const status = raw.IncidentStatusName?.trim() || null;

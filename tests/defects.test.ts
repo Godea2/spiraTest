@@ -361,13 +361,15 @@ describe("searching across modules", () => {
       ...over,
     });
     const sorted = sortExistingDefectHits([
-      hit({ key: "app:1", source: "app", relevance: "high" }),
-      hit({ key: "spira:2", source: "spira", incidentId: 2, relevance: "low" }),
-      hit({ key: "spira:9", source: "spira", incidentId: 9, relevance: "medium" }),
+      hit({ key: "app:1", source: "app", relevance: "high", open: true }),
+      hit({ key: "spira:2", source: "spira", incidentId: 2, relevance: "low", open: true }),
+      hit({ key: "spira:8", source: "spira", incidentId: 8, relevance: "medium", open: false }),
+      hit({ key: "spira:9", source: "spira", incidentId: 9, relevance: "medium", open: true }),
     ]);
-    expect(sorted.map((h) => h.key)).toEqual(["spira:9", "spira:2", "app:1"]);
+    expect(sorted.map((h) => h.key)).toEqual(["spira:9", "spira:8", "spira:2", "app:1"]);
     expect(strongExistingDefect(sorted)).toBe(true);
     expect(strongExistingDefect([hit({ relevance: "low" })])).toBe(false);
+    expect(strongExistingDefect([hit({ relevance: "high", open: false })])).toBe(true);
     expect(strongExistingDefect([])).toBe(false);
   });
 });
