@@ -289,7 +289,6 @@ export async function exportReportWorkbookStyled(report: Report, siteUrl: string
     report.defects.today.map((d) => ({
       ID: d.incidentId != null ? `IN:${d.incidentId}` : "",
       Defect: d.title,
-      Source: d.source === "spira" ? (d.alsoInApp ? "Spira + app" : "Spira") : "This app",
       Status: d.status ?? "",
       Open: d.open ? "Yes" : "No",
       Raised: day(d.createdAt),

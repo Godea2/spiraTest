@@ -140,7 +140,7 @@ export function buildReportSummaryGrid(report: Report): (string | number)[][] {
     ...OUTCOMES.map((o) => row(OUTCOME_LABEL[o], k.outcomes[o])),
     row("Still to run", k.stillToRun),
     row("Pass rate", formatPct(k.passPct)),
-    row("Defects today (Spira + this app)", report.defects.today.length),
+    row("Defects today", report.defects.today.length),
     row("All-time defects (Review bucket)", report.defects.everOpened),
     row("Review bucket", report.defects.registerName ?? ""),
     row("Still open (bucket)", report.defects.stillOpen),

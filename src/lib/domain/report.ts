@@ -1180,12 +1180,12 @@ export function buildReport(input: ReportInput): Report {
     const fullyRun = t.executable > 0 && t.executed === t.executable;
     const passOk = t.executed > 0 ? (passPct ?? 0) >= targets.passRatePct : null;
     const noBlocked = t.outcomes.blocked === 0;
-    /** Half or more of planned runs done — still unfinished, but not "at risk" of never starting. */
+    /** Half or more of planned runs done — treat as Ready for UAT (executives); not At risk. */
     const mostlyRun = t.executable > 0 && t.executed * 100 >= t.executable * 50;
-    // Ready = fully executed. At risk = started but little executed yet (e.g. 1 of 56).
-    // In progress = a large share already run; blocked/open defects stay on the module table.
+    // Ready = fully executed, or at least half run. At risk = started but under half executed.
+    // Blocked / open defects stay on the module table; they do not keep a mostly-run module At risk.
     const status: ModuleStatus =
-      t.executed === 0 ? "notStarted" : fullyRun ? "ready" : mostlyRun ? "inProgress" : "atRisk";
+      t.executed === 0 ? "notStarted" : fullyRun || mostlyRun ? "ready" : "atRisk";
     const byCase = groupBy(mine, (r) => String(r.testCaseId));
     const samePerPlatform = [...byCase.values()].every((list) => new Set(list.filter((r) => isExecuted(r.outcome)).map((r) => r.outcome)).size <= 1);
     let lastRun: string | null = null;
@@ -1805,7 +1805,10 @@ export function buildReport(input: ReportInput): Report {
       m.outcomes.blocked ? plural(m.outcomes.blocked, "blocked run") : "",
       m.openDefects ? plural(m.openDefects, "open defect") : "",
     ].filter(Boolean);
-    why.push(`${m.name}: fully executed (${plural(m.executed, "run")}${quality.length ? ` · ${quality.join(" · ")}` : ""}).`);
+    const extent = m.checks.fullyRun
+      ? `fully executed (${plural(m.executed, "run")}`
+      : `${formatPct(m.execPct)} executed (${plural(m.executed, "run")} of ${m.executable}`;
+    why.push(`${m.name}: ${extent}${quality.length ? ` · ${quality.join(" · ")}` : ""}).`);
   }
   for (const m of by("atRisk")) {
     const left = m.stillToRun ? `; ${plural(m.stillToRun, "run")} still to go` : "";
@@ -1814,12 +1817,8 @@ export function buildReport(input: ReportInput): Report {
     );
   }
   for (const m of by("inProgress")) {
-    const failedRuns = m.outcomes.failed;
-    const failures = failedRuns ? `, ${plural(m.failedCases, "case")} failed so far` : ", with no failures yet";
-    const blocked = m.outcomes.blocked ? `, ${plural(m.outcomes.blocked, "blocked run")}` : "";
-    why.push(
-      `${m.name}: ${m.executed.toLocaleString()} of ${plural(m.executable, "run")} so far (${formatPct(m.execPct)} executed · ${formatPct(m.passPct)} pass)${failures}${blocked}.`,
-    );
+    // Kept for older snapshots; new reports map mostly-run modules to Ready.
+    why.push(`${m.name}: ${m.executed.toLocaleString()} of ${plural(m.executable, "run")} so far (${formatPct(m.passPct)} pass).`);
   }
   if (notStarted.length) {
     why.push(`${list(notStarted.map((m) => m.name))}: ${runsText(splitOf(runs.filter((r) => notStarted.some((m) => m.id === r.moduleId))))} not yet started.`);

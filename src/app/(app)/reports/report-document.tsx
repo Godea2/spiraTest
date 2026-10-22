@@ -291,17 +291,7 @@ function SummaryPage({ report }: { report: Report }) {
       split={<PlatformLine report={report} split={k.split.passed} />}
       color="#15803d"
     />,
-    <Kpi
-      key="defects-today"
-      label="Defects today"
-      value={n(report.defects.today.length)}
-      hint={
-        report.defects.today.length
-          ? `${report.defects.today.filter((r) => r.source === "spira").length} Spira · ${report.defects.today.filter((r) => r.source === "app" || r.alsoInApp).length} in this app`
-          : "Spira + this app"
-      }
-      color="#b91c1c"
-    />,
+    <Kpi key="defects-today" label="Defects today" value={n(report.defects.today.length)} color="#b91c1c" />,
     <Kpi key="open-defects" label="All-time defects" value={n(report.defects.everOpened)} color="#b91c1c" />,
     <Kpi
       key="left"
@@ -391,13 +381,10 @@ function SummaryPage({ report }: { report: Report }) {
                 </div>
               </div>
             </Panel>
-            <Panel
-              title="Modules ready for UAT"
-              foot="Ready = every run executed. In progress = at least half run. At risk = started but under half executed."
-            >
+            <Panel title="Modules ready for UAT">
               <div className="flex items-center gap-3">
                 <Donut
-                  segments={(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[]).map((s) => ({
+                  segments={(["ready", "atRisk", "notStarted"] as const).map((s) => ({
                     value: report.readiness[s],
                     color: MODULE_STATUS_COLOR[s],
                   }))}
@@ -411,11 +398,9 @@ function SummaryPage({ report }: { report: Report }) {
                   }
                 />
                 <div className="flex flex-col gap-1 text-[11px] text-slate-600">
-                  {(Object.keys(MODULE_STATUS_COLOR) as ModuleStatus[])
-                    .filter((s) => s !== "inProgress" || report.readiness.inProgress > 0)
-                    .map((s) => (
-                      <Swatch key={s} color={MODULE_STATUS_COLOR[s]} label={MODULE_STATUS_LABEL[s]} value={report.readiness[s]} />
-                    ))}
+                  {(["ready", "atRisk", "notStarted"] as const).map((s) => (
+                    <Swatch key={s} color={MODULE_STATUS_COLOR[s]} label={MODULE_STATUS_LABEL[s]} value={report.readiness[s]} />
+                  ))}
                 </div>
               </div>
             </Panel>
@@ -710,7 +695,7 @@ function ModulesPage({ report, changes }: { report: Report; changes: ReportChang
   return (
     <>
       <div>
-        <Heading note="Ready = every planned run executed. In progress = at least half of the module’s runs done. At risk = started but under half executed (e.g. 1 of 56). Pass rate, blocked tests and open defects stay in the columns.">
+        <Heading note="Ready = at least half of the module’s planned runs executed. At risk = started but under half executed. Pass rate, blocked tests and open defects stay in the columns.">
           3b. Module readiness for UAT
         </Heading>
         <Table
@@ -876,14 +861,11 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
       </div>
       <div>
         <SubHeading>Defects captured today</SubHeading>
-        <p className="mb-2 text-[11.5px] text-slate-500">
-          Spira incidents created on this report day, plus defects logged in this app today (same IN: counted once).
-        </p>
         {d.today.length === 0 ? (
-          <p className="text-[12.5px] text-emerald-700">No defects captured today in Spira or this app.</p>
+          <p className="text-[12.5px] text-emerald-700">No defects captured today.</p>
         ) : (
           <>
-            <Table head={["ID", "Defect", "Source", "Status", "Open"]}>
+            <Table head={["ID", "Defect", "Status", "Open"]}>
               {todayShown.map((row) => (
                 <tr key={row.key}>
                   <td className={td}>
@@ -894,9 +876,6 @@ function DefectsPage({ report, siteUrl }: { report: Report; siteUrl: string | nu
                     )}
                   </td>
                   <td className={td}>{row.title}</td>
-                  <td className={td}>
-                    {row.source === "spira" ? (row.alsoInApp ? "Spira + app" : "Spira") : "This app"}
-                  </td>
                   <td className={td}>{row.status ?? "—"}</td>
                   <td className={td}>{row.open ? "Yes" : "No"}</td>
                 </tr>
