@@ -1,11 +1,13 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheck, ClipboardList, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, ClipboardList, Download, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
+import { downloadScopeTestCases } from "@/lib/client/case-export";
 import { listBuckets } from "@/lib/client/defect-buckets";
 import { listDefects } from "@/lib/client/defects";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
@@ -304,6 +306,33 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     }
   };
 
+  /** Pulls Spira cases for the chosen release(s) into Excel — SIT/plan or this build, without generating the full report. */
+  const downloadCases = async () => {
+    if (!options || !resolved || projectId === null || !catalog || scopedSets === 0) return;
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
+    setError(null);
+    setProgress({ step: "Reading test cases from Spira", done: 0, total: 1 });
+    try {
+      const fresh = await loadCatalog(projectId, controller.signal);
+      setCatalogState({ projectId, catalog: fresh, error: null });
+      const out = await downloadScopeTestCases({
+        catalog: fresh,
+        options: resolveReportOptions(resolved),
+        mappings: settings?.mappings ?? [],
+        siteUrl: spira?.siteUrl ?? null,
+        onProgress: setProgress,
+        signal: controller.signal,
+      });
+      toast.success(`Downloaded ${out.cases.toLocaleString()} test case${out.cases === 1 ? "" : "s"} from ${out.sets} Spira test set${out.sets === 1 ? "" : "s"}.`);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") setError(errorMessage(err));
+    } finally {
+      if (abort.current === controller) setProgress(null);
+    }
+  };
+
   // The link carries the report as it was read (its type), and the module mappings of its test sets.
   const shareRequest = useMemo((): ShareRequest | null => {
     if (!options || !catalog || projectId === null) return null;
@@ -433,6 +462,15 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
                 {data ? "Read Spira again" : "Generate report"}
               </Button>
+              <Button
+                icon={Download}
+                onClick={() => void downloadCases()}
+                busy={busy}
+                disabled={setupProblem !== null || scopedSets === 0}
+                title="Excel of every test case in the chosen Spira release (SIT or this build). Does not include step text."
+              >
+                Download test cases
+              </Button>
               {busy && progress && (
                 <div className="flex min-w-60 flex-1 flex-col gap-1.5">
                   <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
@@ -443,6 +481,9 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                 </div>
               )}
             </div>
+            <p className="mt-2 text-xs text-slate-500 dark:text-zinc-400">
+              Download test cases pulls the cases in the release selected above (pick <strong>Total test plan</strong> for SIT). Module, platform, TC id, name and status — not step text.
+            </p>
             {scopeChanged && !busy && (
               <Notice tone="info" className="mt-4">
                 The report type or releases changed since Spira was read. Read Spira again to report on them; the report you have is still for the previous choice.
