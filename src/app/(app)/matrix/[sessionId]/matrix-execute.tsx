@@ -15,6 +15,7 @@ import {
   getMatrixSession,
   loadMatrixStore,
   MATRIX_PACK_LABEL,
+  modulesInSession,
   recordMatrixResult,
   resultsForSession,
   sessionCounts,
@@ -23,8 +24,8 @@ import {
   type MatrixSession,
   type MatrixStore,
 } from "@/lib/client/matrix";
-import { EXECUTION_STATUSES, type ExecutionStatus } from "@/lib/domain/types";
 import { STATUS_LABEL } from "@/lib/domain/execution";
+import { EXECUTION_STATUSES, type ExecutionStatus } from "@/lib/domain/types";
 import { StatusChip, STATUS_STYLE } from "../../drafts/[id]/execute/runner";
 
 type Filter = "all" | "notRun" | ExecutionStatus;
@@ -48,6 +49,7 @@ export function MatrixExecute() {
   const [session, setSession] = useState<MatrixSession | null>(null);
   const [tester, setTester] = useState("");
   const [filter, setFilter] = useState<Filter>("notRun");
+  const [moduleTab, setModuleTab] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [comment, setComment] = useState("");
@@ -64,22 +66,25 @@ export function MatrixExecute() {
     const s = getMatrixSession(projectId, sessionId);
     setSession(s);
     setMissing(!s);
+    if (s?.module) setModuleTab(s.module);
   }, [projectId, sessionId]);
 
   const resultMap = useMemo(() => (store && session ? resultsForSession(store, session) : new Map<string, MatrixResult>()), [store, session]);
   const counts = useMemo(() => (session && store ? sessionCounts(session, store.results) : null), [session, store]);
+  const moduleRows = useMemo(() => (session ? modulesInSession(session.cases) : []), [session]);
 
   const visible = useMemo(() => {
     if (!session) return [];
     const q = query.trim().toLowerCase();
     return session.cases.filter((c) => {
-      if (q && !`${c.name} TC${c.testCaseId} ${c.module}`.toLowerCase().includes(q)) return false;
+      if (moduleTab !== "all" && c.module !== moduleTab) return false;
+      if (q && !`${c.name} TC${c.testCaseId} ${c.module} ${c.testSetName}`.toLowerCase().includes(q)) return false;
       const r = resultMap.get(c.key);
       if (filter === "all") return true;
       if (filter === "notRun") return !r;
       return r?.status === filter;
     });
-  }, [session, query, filter, resultMap]);
+  }, [session, query, filter, resultMap, moduleTab]);
 
   const changeTester = (name: string) => {
     setTester(name);
@@ -100,7 +105,7 @@ export function MatrixExecute() {
     setComment("");
     storeEnvironment(`${environmentLabel(session.device, session.network)} · ${session.releaseLabel}`);
     toast.success(`${STATUS_LABEL[status]} · TC${card.testCaseId}`);
-    const remaining = session.cases.filter((c) => c.key !== card.key && !resultsForSession(next, session).has(c.key));
+    const remaining = visible.filter((c) => c.key !== card.key && !resultsForSession(next, session).has(c.key));
     setOpenKey(remaining[0]?.key ?? null);
   };
 
@@ -130,7 +135,7 @@ export function MatrixExecute() {
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
       <PageHeader
         title={environmentLabel(session.device, session.network)}
-        description={`${MATRIX_PACK_LABEL[session.pack]}${session.module ? ` · ${session.module}` : ""} · ${session.releaseLabel} · Results stay in this app`}
+        description={`${MATRIX_PACK_LABEL[session.pack]}${session.module ? ` · ${session.module}` : ""} · ${session.releaseLabel} · Exact Spira cases · Marks stay in this app`}
         actions={
           <ButtonLink href="/matrix" size="sm" icon={ArrowLeft}>
             Matrix
@@ -139,7 +144,7 @@ export function MatrixExecute() {
       />
 
       <Notice tone="info">
-        You are executing on <strong>{session.device}</strong> with <strong>{session.network}</strong>. Use this SIM and handset for every case in the session.
+        You are executing on <strong>{session.device}</strong> with <strong>{session.network}</strong>. Same Spira modules and case names as Prod–Phase 1 — mark Passed / Failed like UAT execute.
       </Notice>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -159,6 +164,38 @@ export function MatrixExecute() {
         )}
       </div>
 
+      {moduleRows.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setModuleTab("all")}
+            className={clsx(
+              "rounded-lg px-3 py-1.5 text-xs font-medium transition",
+              moduleTab === "all"
+                ? "bg-slate-900 text-white dark:bg-white dark:text-zinc-900"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/[0.06] dark:text-zinc-300",
+            )}
+          >
+            All modules ({session.cases.length})
+          </button>
+          {moduleRows.map((m) => (
+            <button
+              key={m.module}
+              type="button"
+              onClick={() => setModuleTab(m.module)}
+              className={clsx(
+                "rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                moduleTab === m.module
+                  ? "bg-slate-900 text-white dark:bg-white dark:text-zinc-900"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/[0.06] dark:text-zinc-300",
+              )}
+            >
+              {m.module} ({m.count})
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         {FILTERS.map((f) => (
           <button
@@ -168,7 +205,7 @@ export function MatrixExecute() {
             className={clsx(
               "rounded-lg px-3 py-1.5 text-xs font-medium transition",
               filter === f.id
-                ? "bg-slate-900 text-white dark:bg-white dark:text-zinc-900"
+                ? "bg-brand-600 text-white"
                 : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/[0.06] dark:text-zinc-300",
             )}
           >
@@ -186,7 +223,7 @@ export function MatrixExecute() {
         </label>
       </div>
 
-      <Section title="Cases" description={`${visible.length} shown`}>
+      <Section title="Cases" description={`${visible.length.toLocaleString()} shown · Spira modules on ${session.device === "iOS" ? "iOS" : "Android"}`}>
         {visible.length === 0 ? (
           <p className="text-sm text-slate-500 dark:text-zinc-500">No cases in this filter.</p>
         ) : (

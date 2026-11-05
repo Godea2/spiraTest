@@ -10,6 +10,9 @@ import {
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
   modulesInCatalog,
+  modulesInSession,
+  platformCounts,
+  platformForDevice,
   resultId,
   selectSessionCases,
   sessionCounts,
@@ -113,11 +116,9 @@ export function startMatrixSession(input: {
   });
   if (cases.length === 0) {
     throw new Error(
-      input.pack === "smoke"
-        ? `No smoke cases found for ${input.device} on this release. Try Full module or reload the catalogue.`
-        : input.pack === "module"
-          ? `No cases in module "${input.module}" for ${input.device}.`
-          : `No cases for ${input.device} on this release.`,
+      input.pack === "module"
+        ? `No Spira cases in module "${input.module}" for ${input.device}. Reload cases or pick another module.`
+        : `No Spira ${platformForDevice(input.device)} cases on this release. Reload cases from Settings release 1.0.0.0.0006.`,
     );
   }
   const now = new Date().toISOString();
@@ -233,6 +234,9 @@ export {
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
   modulesInCatalog,
+  modulesInSession,
+  platformCounts,
+  platformForDevice,
   selectSessionCases,
   sessionCounts,
 };

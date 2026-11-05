@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCoverage,
   emptyMatrixStore,
-  isSmokeCase,
+  modulesInSession,
   platformForDevice,
   resultId,
   selectSessionCases,
@@ -28,41 +28,41 @@ describe("matrix domain", () => {
     expect(platformForDevice("tecno")).toBe("Android");
   });
 
-  it("detects smoke journeys by name", () => {
-    expect(isSmokeCase("User can login with OTP")).toBe(true);
-    expect(isSmokeCase("Airtime top-up MTN")).toBe(true);
-    expect(isSmokeCase("View card statement archive")).toBe(false);
-  });
-
-  it("selects smoke cases for the device platform only", () => {
+  it("selects every Spira case on the device platform", () => {
     const catalog = [
-      caseOf({ key: "1:1", testCaseId: 1, name: "Login with OTP", module: "Onboarding", platform: "Android" }),
-      caseOf({ key: "2:2", testCaseId: 2, name: "Login with OTP", module: "Onboarding", platform: "iOS" }),
-      caseOf({ key: "1:3", testCaseId: 3, name: "Archive statement", module: "Cards", platform: "Android" }),
-    ];
-    const androidSmoke = selectSessionCases(catalog, { device: "Samsung", pack: "smoke", module: null });
-    expect(androidSmoke.map((c) => c.key)).toEqual(["1:1"]);
-    const iosSmoke = selectSessionCases(catalog, { device: "iOS", pack: "smoke", module: null });
-    expect(iosSmoke.map((c) => c.key)).toEqual(["2:2"]);
-  });
-
-  it("selects a full module for an OEM", () => {
-    const catalog = [
-      caseOf({ key: "1:1", testCaseId: 1, name: "Login", module: "Onboarding", platform: "Android" }),
-      caseOf({ key: "1:2", testCaseId: 2, name: "Upgrade tier", module: "Onboarding", platform: "Android" }),
+      caseOf({ key: "1:1", testCaseId: 1, name: "Login with OTP", module: "Accounts & Transactions", platform: "Android" }),
+      caseOf({ key: "2:2", testCaseId: 2, name: "Login with OTP", module: "Accounts & Transactions", platform: "iOS" }),
       caseOf({ key: "1:3", testCaseId: 3, name: "Freeze card", module: "Cards", platform: "Android" }),
     ];
-    const list = selectSessionCases(catalog, { device: "tecno", pack: "module", module: "Onboarding" });
-    expect(list.map((c) => c.testCaseId)).toEqual([1, 2]);
+    const android = selectSessionCases(catalog, { device: "Samsung", pack: "all", module: null });
+    expect(android.map((c) => c.testCaseId)).toEqual([1, 3]);
+    const ios = selectSessionCases(catalog, { device: "iOS", pack: "all", module: null });
+    expect(ios.map((c) => c.testCaseId)).toEqual([2]);
   });
 
-  it("builds a 4×3 coverage grid and marks cells from results", () => {
+  it("selects one Spira module for an OEM", () => {
+    const catalog = [
+      caseOf({ key: "1:1", testCaseId: 1, name: "Login", module: "Customer Onboarding & Home Screen", platform: "Android" }),
+      caseOf({ key: "1:2", testCaseId: 2, name: "Upgrade tier", module: "Customer Onboarding & Home Screen", platform: "Android" }),
+      caseOf({ key: "1:3", testCaseId: 3, name: "Freeze card", module: "Cards", platform: "Android" }),
+    ];
+    const list = selectSessionCases(catalog, {
+      device: "tecno",
+      pack: "module",
+      module: "Customer Onboarding & Home Screen",
+    });
+    expect(list.map((c) => c.testCaseId)).toEqual([1, 2]);
+    expect(modulesInSession(list)).toEqual([{ module: "Customer Onboarding & Home Screen", count: 2 }]);
+  });
+
+  it("builds a 4×3 coverage grid sized to the Spira platform catalogue", () => {
     const store = emptyMatrixStore(24);
     store.releaseId = 99;
     store.releaseLabel = "1.0.0.0.0006";
     store.cases = [
       caseOf({ key: "1:1", testCaseId: 1, name: "Login OTP", module: "Onboarding", platform: "Android" }),
       caseOf({ key: "1:2", testCaseId: 2, name: "Transfer money", module: "Transactions", platform: "Android" }),
+      caseOf({ key: "2:3", testCaseId: 3, name: "Login OTP", module: "Onboarding", platform: "iOS" }),
     ];
     const result: MatrixResult = {
       id: resultId("Samsung", "MTN", "1:1"),
@@ -82,10 +82,13 @@ describe("matrix domain", () => {
     const coverage = buildCoverage(withResult, 99);
     expect(coverage.totalCells).toBe(12);
     expect(coverage.executedCells).toBe(1);
-    const cell = coverage.cells.find((c) => c.device === "Samsung" && c.network === "MTN")!;
-    expect(cell.executed).toBe(1);
-    expect(cell.passed).toBe(1);
-    expect(cell.status).toBe("inProgress");
+    const androidCell = coverage.cells.find((c) => c.device === "Samsung" && c.network === "MTN")!;
+    expect(androidCell.planned).toBe(2);
+    expect(androidCell.executed).toBe(1);
+    expect(androidCell.status).toBe("inProgress");
+    const iosCell = coverage.cells.find((c) => c.device === "iOS" && c.network === "MTN")!;
+    expect(iosCell.planned).toBe(1);
+    expect(iosCell.executed).toBe(0);
   });
 
   it("counts session progress from cell results", () => {
@@ -96,7 +99,7 @@ describe("matrix domain", () => {
       releaseLabel: "1.0.0.0.0006",
       device: "itel",
       network: "Glo",
-      pack: "smoke",
+      pack: "all",
       module: null,
       tester: "Ada",
       createdAt: "2026-11-05T09:00:00.000Z",

@@ -175,7 +175,7 @@ function SummaryPage({ report }: { report: MatrixReport }) {
         <Kpi label="Sessions" value={n(k.sessions)} hint={`${n(k.failed)} failed · ${n(k.blocked)} blocked`} color="#334155" />
       </div>
       <div>
-        <Heading note="OEM × carrier coverage for this release. Covered = planned smoke (or larger pack) fully executed with no failures.">
+        <Heading note="OEM × carrier coverage for this release. Planned = Spira iOS or Android cases on the working release (same catalogue across networks). Covered = that platform’s cases fully executed on the cell with no failures.">
           1. Device × network board
         </Heading>
         <Table head={["Device", ...MATRIX_NETWORKS]}>
@@ -208,7 +208,7 @@ function DetailPage({ report }: { report: MatrixReport }) {
   return (
     <>
       <div>
-        <Heading note="Each cell with counts. Planned is smoke size for that device’s platform, or the larger pack if a fuller session was run.">
+        <Heading note="Each cell with counts. Planned is the Spira case count for that device’s platform (Android or iOS).">
           2. Cell detail
         </Heading>
         <Table head={["Device", "Network", "Status", "Planned", "Executed", "Passed", "Failed", "Blocked", "Caution", "Last result"]} numeric={[3, 4, 5, 6, 7, 8]}>

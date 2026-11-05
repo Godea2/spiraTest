@@ -20,7 +20,11 @@ import {
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
   modulesInCatalog,
+  modulesInSession,
+  platformCounts,
+  platformForDevice,
   replaceCatalog,
+  selectSessionCases,
   sessionCounts,
   startMatrixSession,
   type MatrixCellStatus,
@@ -61,7 +65,7 @@ export function MatrixWorkspace() {
   const [tester, setTester] = useState("");
   const [device, setDevice] = useState<MatrixDevice>("Samsung");
   const [network, setNetwork] = useState<MatrixNetwork>("MTN");
-  const [pack, setPack] = useState<MatrixPack>("smoke");
+  const [pack, setPack] = useState<MatrixPack>("all");
   const [module, setModule] = useState("");
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -81,7 +85,18 @@ export function MatrixWorkspace() {
   }, [projectId]);
 
   const coverage = useMemo(() => (store ? buildCoverage(store, releaseId) : null), [store, releaseId]);
-  const modules = useMemo(() => (store ? modulesInCatalog(store.cases) : []), [store]);
+  const modules = useMemo(() => {
+    if (!store) return [];
+    const platform = platformForDevice(device);
+    return modulesInCatalog(store.cases.filter((c) => c.platform === platform));
+  }, [store, device]);
+  const platforms = useMemo(() => (store ? platformCounts(store.cases) : null), [store]);
+  const previewCases = useMemo(() => {
+    if (!store?.cases.length) return [];
+    return selectSessionCases(store.cases, { device, pack, module: pack === "module" ? module : null });
+  }, [store, device, pack, module]);
+  const previewModules = useMemo(() => modulesInSession(previewCases), [previewCases]);
+  const legacySmoke = useMemo(() => store?.sessions.filter((s) => s.pack === "smoke") ?? [], [store]);
 
   const loadCatalog = useCallback(async () => {
     if (projectId === null || releaseId === null) {
@@ -94,13 +109,24 @@ export function MatrixWorkspace() {
       const catalog = await loadWeekCatalog(projectId, releaseId, releaseLabel);
       const next = replaceCatalog(projectId, catalog);
       setStore(next);
-      toast.success(`Loaded ${plural(next.cases.length, "case")} from Spira`);
+      const counts = platformCounts(next.cases);
+      toast.success(
+        `Loaded ${plural(counts.total, "Spira case")}: ${counts.android.toLocaleString()} Android · ${counts.ios.toLocaleString()} iOS`,
+      );
     } catch (err) {
       setLoadError(errorMessage(err));
     } finally {
       setLoading(false);
     }
   }, [projectId, releaseId, releaseLabel]);
+
+  // Pull the Settings release catalogue once when Matrix opens with no Spira pull yet.
+  useEffect(() => {
+    if (!spira?.configured || projectId === null || releaseId === null || store === null || loading) return;
+    if (store.catalogLoadedAt) return;
+    void loadCatalog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional first empty load
+  }, [spira?.configured, projectId, releaseId, store]);
 
   const changeTester = (name: string) => {
     setTester(name);
@@ -163,7 +189,7 @@ export function MatrixWorkspace() {
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
       <PageHeader
         title="Matrix"
-        description="Execute Spira cases against device and network combinations. Results stay in this app so coverage is visible without cloning test sets in Spira."
+        description="The same Spira iOS/Android test cases for this release (Prod–Phase 1), executed once per device × network. Results stay in this app — Spira is not cloned per OEM or SIM."
         actions={
           <>
             <Button
@@ -183,22 +209,31 @@ export function MatrixWorkspace() {
 
       {loadError && <Notice tone="danger">{loadError}</Notice>}
       {!spira?.configured && <Notice tone="warning">Connect Spira in Settings before loading cases.</Notice>}
+      {legacySmoke.length > 0 && (
+        <Notice tone="warning" title="Old smoke sessions (the “10 cases”)">
+          Delete those sessions below, set Pack to <strong>All Spira modules</strong>, then Start again. You will get the full Prod–Phase 1 catalogue (Accounts, Bills, Cards, Onboarding, …) — not a keyword subset.
+        </Notice>
+      )}
 
       <Section
         title="Coverage board"
-        description={`${releaseLabel || "Current release"} · ${coverage ? `${coverage.coveredCells} covered · ${coverage.executedCells} started · ${coverage.failedCells} with failures of ${coverage.totalCells} cells` : "Load cases to size the smoke pack."}`}
+        description={
+          platforms && store?.catalogLoadedAt
+            ? `${releaseLabel || "Current release"} · ${platforms.total.toLocaleString()} Spira cases (${platforms.android.toLocaleString()} Android · ${platforms.ios.toLocaleString()} iOS) · ${coverage ? `${coverage.coveredCells} cells covered · ${coverage.executedCells} started` : ""}`
+            : `${releaseLabel || "Current release"} · Load Spira cases to size the board`
+        }
       >
         {!coverage || (!store?.catalogLoadedAt && coverage.executedCells === 0) ? (
           <EmptyState
             icon={Smartphone}
-            title="No catalogue yet"
+            title="No Spira catalogue yet"
             action={
               <Button icon={RefreshCw} onClick={() => void loadCatalog()} busy={loading} disabled={!spira?.configured || releaseId === null}>
                 Load Spira cases
               </Button>
             }
           >
-            Load iOS/Android cases from the Settings release. Smoke sessions then pick carrier-sensitive journeys per device.
+            Pulls every iOS and Android test set planned on the Settings release — the same cases shown in Spira under Prod–Phase 1.
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
@@ -247,13 +282,13 @@ export function MatrixWorkspace() {
               </tbody>
             </table>
             <p className="mt-3 text-xs text-slate-500 dark:text-zinc-500">
-              Click a cell to pre-select it for a new session. Covered means smoke (or the pack you ran) is fully executed with no failures.
+              Each cell’s denominator is the Spira case count for that platform (Android OEMs share the Android sets; iOS uses the iOS sets). Covered = those cases executed on that device × network with no failures.
             </p>
           </div>
         )}
       </Section>
 
-      <Section title="Start session" description="Lock device and network, then run the selected pack. Marks are stored here — not written back to Spira.">
+      <Section title="Start session" description="Same Spira test cases and modules as Prod–Phase 1. Pick device + network, then mark Passed/Failed like UAT execute. Results stay in this app.">
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="text-xs font-medium text-slate-500 dark:text-zinc-500">Device</span>
@@ -342,19 +377,32 @@ export function MatrixWorkspace() {
             </div>
           </label>
         )}
+        {store?.catalogLoadedAt && (
+          <p className="mt-3 text-sm text-slate-600 dark:text-zinc-400">
+            This session will open{" "}
+            <strong>
+              {previewCases.length.toLocaleString()} Spira case{previewCases.length === 1 ? "" : "s"}
+            </strong>{" "}
+            on {platformForDevice(device)}
+            {previewModules.length > 0
+              ? ` across ${previewModules.length} module${previewModules.length === 1 ? "" : "s"}: ${previewModules.map((m) => `${m.module} (${m.count})`).join(", ")}`
+              : ""}
+            .
+          </p>
+        )}
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button
             variant="primary"
             icon={Play}
             busy={starting}
-            disabled={!store?.catalogLoadedAt || (pack === "module" && !module) || starting}
+            disabled={!store?.catalogLoadedAt || previewCases.length === 0 || (pack === "module" && !module) || starting}
             onClick={start}
           >
             Start {environmentLabel(device, network)}
           </Button>
           <Badge tone="neutral">
-            {store?.catalogLoadedAt
-              ? `${plural(store.cases.length, "case")} loaded · ${releaseLabel}`
+            {store?.catalogLoadedAt && platforms
+              ? `${platforms.total.toLocaleString()} Spira · ${platforms.android.toLocaleString()} Android · ${platforms.ios.toLocaleString()} iOS · ${releaseLabel}`
               : "Catalogue not loaded"}
           </Badge>
         </div>
