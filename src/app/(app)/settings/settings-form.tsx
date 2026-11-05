@@ -324,13 +324,13 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
       <Section
         icon={FolderKanban}
         title="Spira project"
-        description="Project-Simba with the build under test and the total test plan. Use Testing cycle to flip SIT ↔ UAT in one click. New comparisons and reports use the saved release; existing drafts keep the values they were created with."
+        description="Project-Simba with the build under test and the total test plan. Use Testing cycle to flip SIT ↔ UAT ↔ Prod in one click. New comparisons, Matrix, and reports use the saved release; existing drafts keep the values they were created with."
       >
         <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-medium text-zinc-900">Testing cycle</p>
             <p className="text-xs text-zinc-500">
-              {activeCycle ? CYCLE_PRESETS[activeCycle].hint : "Custom release — pick SIT or UAT, or choose a release below."}
+              {activeCycle ? CYCLE_PRESETS[activeCycle].hint : "Custom release — pick SIT, UAT, or Prod, or choose a release below."}
               {!releaseList && " Connect Spira to resolve UAT by build version."}
             </p>
           </div>
@@ -341,7 +341,7 @@ function SettingsEditor({ settings }: { settings: AppSettings }) {
                 size="sm"
                 variant={activeCycle === id ? "primary" : "secondary"}
                 busy={saving}
-                disabled={saving || activeCycle === id || (!releaseList && id === "uat")}
+                disabled={saving || activeCycle === id || (!releaseList && (id === "uat" || id === "prod"))}
                 onClick={() => void switchCycle(id)}
                 title={CYCLE_PRESETS[id].hint}
               >

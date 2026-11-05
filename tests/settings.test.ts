@@ -114,11 +114,23 @@ describe("SIT / UAT testing cycles", () => {
     release(156, "1.0.0.0001", "1.0.0.0001 - Sprint2"),
     release(157, "1.0.0.0002", "1.0.0.0002 - Sprint3"),
     release(160, "1.0.0.0.0004", "1.0.0.0.0004 - UAT Cycle 1"),
+    release(170, "1.0.0.0.0006", "1.0.0.0.0006"),
   ];
 
   it("resolves SIT and UAT by known RL id", () => {
     expect(resolveCycleRelease(releases, CYCLE_PRESETS.sit)?.releaseId).toBe(157);
     expect(resolveCycleRelease(releases, CYCLE_PRESETS.uat)?.releaseId).toBe(160);
+  });
+
+  it("resolves Prod by version 1.0.0.0.0006", () => {
+    expect(resolveCycleRelease(releases, CYCLE_PRESETS.prod)?.releaseId).toBe(170);
+    expect(cycleSettingsPatch(releases, "prod")).toMatchObject({
+      projectId: 24,
+      releaseId: 170,
+      releaseLabel: "1.0.0.0.0006",
+    });
+    expect(detectCycle(170, releases)).toBe("prod");
+    expect(CYCLE_PRESETS.prod.folderName).toBe("Prod- Phase 1");
   });
 
   it("applies UAT Cycle 1 (RL:160)", () => {

@@ -7,6 +7,7 @@ import {
   OUTCOMES,
   RETEST_LABEL,
 } from "@/lib/domain/report";
+import { matrixCoverageFor } from "./matrix";
 import { buildReportSummaryGrid } from "./report";
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "");
@@ -391,6 +392,24 @@ export async function exportReportWorkbookStyled(report: Report, siteUrl: string
       "Runs last executed": d.executed,
       "Of which failed": d.failed,
       "Executed so far": d.cumulative,
+    })),
+  );
+
+  const matrix = matrixCoverageFor(report.projectId);
+  addTableSheet(
+    wb,
+    "Device network matrix",
+    matrix.cells.map((c) => ({
+      Device: c.device,
+      Network: c.network,
+      Status: c.status === "covered" ? "Covered" : c.status === "failed" ? "Failed" : c.status === "inProgress" ? "In progress" : "Not started",
+      Planned: c.planned,
+      Executed: c.executed,
+      Passed: c.passed,
+      Failed: c.failed,
+      Blocked: c.blocked,
+      Caution: c.caution,
+      "Last result": day(c.lastAt),
     })),
   );
 

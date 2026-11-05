@@ -49,9 +49,9 @@ export interface ReportTargets {
   agingDays: number;
 }
 
-/** This build alone, vs total plan, total plan alone, or planned cases before execution starts. */
-export type ReportKind = "build" | "buildVsPlan" | "plan" | "planned";
-export const REPORT_KINDS: ReportKind[] = ["build", "buildVsPlan", "plan", "planned"];
+/** This build alone, vs total plan, total plan alone, planned cases, or device × network matrix. */
+export type ReportKind = "build" | "buildVsPlan" | "plan" | "planned" | "matrix";
+export const REPORT_KINDS: ReportKind[] = ["build", "buildVsPlan", "plan", "planned", "matrix"];
 
 export interface ReportOptions {
   kind: ReportKind;
@@ -347,7 +347,7 @@ export function resolveReportOptions(options: ReportOptions): ReportOptions {
   const build = { releaseId: options.scoped.releaseId, folderId: null };
   const plan = { releaseId: options.baseline.releaseId, folderId: null };
   const none = { releaseId: null, folderId: null };
-  if (options.kind === "build") return { ...options, scoped: build, baseline: none };
+  if (options.kind === "build" || options.kind === "matrix") return { ...options, scoped: build, baseline: none };
   if (options.kind === "plan") return { ...options, scoped: plan, baseline: none, environment: options.baselineName };
   // planned and buildVsPlan: this build measured against the total test plan.
   return { ...options, scoped: build, baseline: plan };

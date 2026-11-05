@@ -76,9 +76,11 @@ export async function loadWeekCatalog(input: {
   const cycleId: CycleId | null =
     input.releaseId === CYCLE_PRESETS.uat.releaseId || /1\.0\.0\.0\.0004/.test(input.releaseLabel)
       ? "uat"
-      : input.releaseId === CYCLE_PRESETS.sit.releaseId || /1\.0\.0\.0002/.test(input.releaseLabel)
-        ? "sit"
-        : detectCycle(input.releaseId, []);
+      : /1\.0\.0\.0\.0006/.test(input.releaseLabel)
+        ? "prod"
+        : input.releaseId === CYCLE_PRESETS.sit.releaseId || /1\.0\.0\.0002/.test(input.releaseLabel)
+          ? "sit"
+          : detectCycle(input.releaseId, []);
 
   const { sets: mobile, folderName, source } = await listWeekTestSets(input.projectId, input.releaseId, cycleId);
   if (mobile.length === 0) {

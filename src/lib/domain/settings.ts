@@ -38,6 +38,18 @@ export const CYCLE_PRESETS = {
     versionNumber: "1.0.0.0.0004",
     folderName: "UAT - Phase 1",
   },
+  prod: {
+    id: "prod" as const,
+    label: "Prod",
+    hint: "Prod - Phase 1 build 1.0.0.0.0006 (folder Prod- Phase 1)",
+    projectId: TEAM_DEFAULTS.projectId,
+    /** Resolved from Spira by version when the RL id is not yet known in this repo. */
+    releaseId: null as number | null,
+    releaseLabel: "1.0.0.0.0006",
+    planReleaseId: TEAM_DEFAULTS.planReleaseId,
+    versionNumber: "1.0.0.0.0006",
+    folderName: "Prod- Phase 1",
+  },
 } as const;
 
 export type CycleId = keyof typeof CYCLE_PRESETS;

@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheck, ClipboardList, Download, Eye, FileChartColumn, GitCompareArrows, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, ClipboardList, Download, Eye, FileChartColumn, GitCompareArrows, Grid3x3, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
@@ -10,7 +10,9 @@ import { errorMessage } from "@/lib/client/api";
 import { downloadScopeTestCases } from "@/lib/client/case-export";
 import { listBuckets } from "@/lib/client/defect-buckets";
 import { listDefects } from "@/lib/client/defects";
+import { loadMatrixStore, matrixCoverageFor } from "@/lib/client/matrix";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
+import { buildMatrixReport, type MatrixReport } from "@/lib/domain/matrix-report";
 import {
   buildReport,
   compareSnapshots,
@@ -54,6 +56,7 @@ function withDefectBucket(options: ReportOptions, buckets: DefectBucket[], bucke
   };
 }
 import { type ReportChanges } from "./report-document";
+import { MatrixReportViewer } from "./matrix-report-viewer";
 import { ReportViewer } from "./report-viewer";
 import { ShareDialog, type ShareRequest } from "./share-dialog";
 
@@ -69,11 +72,12 @@ const KINDS: { kind: ReportKind; icon: LucideIcon; title: string; hint?: string 
   { kind: "build", icon: Target, title: `${PHASE}: scoped test cases` },
   { kind: "buildVsPlan", icon: GitCompareArrows, title: `${PHASE}: scoped vs total test plan` },
   { kind: "plan", icon: Layers, title: "Total test plan" },
+  { kind: "matrix", icon: Grid3x3, title: "Device × network matrix", hint: "OEM × carrier coverage from the Matrix module" },
 ];
 
 function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: ReportKind) => void }) {
   return (
-    <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
       {KINDS.map(({ kind, icon: Icon, title, hint }) => {
         const selected = value === kind;
         const featured = kind === "planned" || kind === "buildVsPlan";
@@ -185,10 +189,12 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const [stored, setStored] = useState<{ projectId: number; options: ReportOptions | null; fromLink: boolean } | null>(null);
   const [reload, setReload] = useState(0);
   const [data, setData] = useState<{ input: ReportInput; changes: ReportChanges | null } | null>(null);
+  const [matrixReport, setMatrixReport] = useState<MatrixReport | null>(null);
   const [progress, setProgress] = useState<ReportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notesOpen, setNotesOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [matrixViewerOpen, setMatrixViewerOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [buckets, setBuckets] = useState<DefectBucket[]>([]);
   const abort = useRef<AbortController | null>(null);
@@ -273,8 +279,35 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const scopedSets = catalog && resolved ? setsInScope(catalog, resolved.scoped).length : 0;
   const missingPlan = resolved?.kind === "buildVsPlan" && resolved.baseline.releaseId === null;
 
+  const generateMatrix = () => {
+    if (!options || !resolved || projectId === null || !catalog) return;
+    const store = loadMatrixStore(projectId);
+    if (!store.catalogLoadedAt && store.results.length === 0) {
+      setError("Load Spira cases in Matrix and run at least one session (or load the catalogue) before generating this report.");
+      return;
+    }
+    setError(null);
+    const built = buildMatrixReport(store, {
+      projectId,
+      projectName: catalog.projectName,
+      title: options.title.trim() || undefined,
+      preparedBy: options.preparedBy,
+      environment: options.environment.trim() || store.releaseLabel || undefined,
+      goLive: options.goLive,
+      releaseId: resolved.scoped.releaseId ?? store.releaseId,
+    });
+    setMatrixReport(built);
+    setMatrixViewerOpen(true);
+    toast.success("Matrix report ready");
+  };
+
   const generate = async () => {
-    if (!options || !resolved || projectId === null || !catalog || scopedSets === 0 || missingPlan) return;
+    if (!options || !resolved || projectId === null || !catalog) return;
+    if (resolved.kind === "matrix") {
+      generateMatrix();
+      return;
+    }
+    if (scopedSets === 0 || missingPlan) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
@@ -343,16 +376,18 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   }, [options, catalog, projectId, data, settings?.mappings]);
 
   const closeViewer = useCallback(() => setViewerOpen(false), []);
+  const closeMatrixViewer = useCallback(() => setMatrixViewerOpen(false), []);
   const busy = progress !== null;
   const fileName = report ? reportFileName(report) : "";
   const releaseOf = (id: number | null) => catalog?.releases.find((r) => r.releaseId === id)?.versionNumber;
+  const isMatrix = resolved?.kind === "matrix";
   const setupProblem =
     options && resolved
       ? resolved.kind !== "plan" && options.scoped.releaseId === null
         ? "Choose the Phase 1 release in Settings."
-        : resolved.kind !== "build" && options.baseline.releaseId === null
+        : resolved.kind !== "build" && resolved.kind !== "matrix" && options.baseline.releaseId === null
           ? `No total test plan release was found for ${releaseOf(options.scoped.releaseId) ?? "the Phase 1 release"}. Choose the total test plan release in Settings.`
-          : scopedSets === 0
+          : !isMatrix && scopedSets === 0
             ? `Release ${releaseOf(resolved.scoped.releaseId) ?? ""} has no test sets in Spira. Check the Phase 1 release in Settings.`
             : null
       : null;
@@ -427,7 +462,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               <Field label="Go-live date">
                 {(props) => <input {...props} type="date" className="input" value={options.goLive ?? ""} onChange={(e) => update({ goLive: e.target.value || null })} />}
               </Field>
-              {options.kind !== "planned" && (
+              {options.kind !== "planned" && options.kind !== "matrix" && (
                 <Field
                   label="Defects Review bucket"
                   hint={buckets.length === 0 ? "Create a bucket on the Defects page first." : "All-time defects KPI uses this bucket."}
@@ -459,18 +494,25 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             )}
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
-              <Button variant="primary" icon={FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
-                {data ? "Read Spira again" : "Generate report"}
+              <Button variant="primary" icon={isMatrix ? Grid3x3 : FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
+                {isMatrix ? "Generate matrix report" : data ? "Read Spira again" : "Generate report"}
               </Button>
-              <Button
-                icon={Download}
-                onClick={() => void downloadCases()}
-                busy={busy}
-                disabled={setupProblem !== null || scopedSets === 0}
-                title="Excel of every test case in the chosen Spira release (SIT or this build). Does not include step text."
-              >
-                Download test cases
-              </Button>
+              {!isMatrix && (
+                <Button
+                  icon={Download}
+                  onClick={() => void downloadCases()}
+                  busy={busy}
+                  disabled={setupProblem !== null || scopedSets === 0}
+                  title="Excel of every test case in the chosen Spira release (SIT or this build). Does not include step text."
+                >
+                  Download test cases
+                </Button>
+              )}
+              {isMatrix && (
+                <ButtonLink href="/matrix" size="md" icon={Grid3x3}>
+                  Open Matrix
+                </ButtonLink>
+              )}
               {busy && progress && (
                 <div className="flex min-w-60 flex-1 flex-col gap-1.5">
                   <span className="text-xs text-slate-600 tabular-nums dark:text-zinc-400">
@@ -482,7 +524,9 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               )}
             </div>
             <p className="mt-2 text-xs text-slate-500 dark:text-zinc-400">
-              Download test cases pulls the cases in the release selected above (pick <strong>Total test plan</strong> for SIT). Module, platform, TC id, name and status — not step text.
+              {isMatrix
+                ? "Matrix report uses device × network results from the Matrix module (same executive template: status, KPIs, board, PDF/Excel). Load cases and execute sessions in Matrix first."
+                : "Download test cases pulls the cases in the release selected above (pick Total test plan for SIT). Module, platform, TC id, name and status — not step text."}
             </p>
             {scopeChanged && !busy && (
               <Notice tone="info" className="mt-4">
@@ -564,12 +608,18 @@ export function ReportWorkspace({ share }: { share: string | null }) {
           report={report}
           changes={data?.changes ?? null}
           siteUrl={spira?.siteUrl ?? null}
+          matrixCoverage={
+            settings?.projectId != null
+              ? matrixCoverageFor(settings.projectId, options?.scoped.releaseId ?? settings.releaseId)
+              : null
+          }
           fileName={fileName}
           onShare={() => setShareOpen(true)}
           onExcel={() => void exportReportWorkbook(report, spira?.siteUrl ?? null)}
           onClose={closeViewer}
         />
       )}
+      {matrixViewerOpen && matrixReport && <MatrixReportViewer report={matrixReport} onClose={closeMatrixViewer} />}
       {shareOpen && shareRequest && <ShareDialog request={shareRequest} onClose={() => setShareOpen(false)} />}
     </div>
   );

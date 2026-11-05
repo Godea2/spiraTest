@@ -3,6 +3,7 @@
 import { Download, FileSpreadsheet, Link2, X } from "lucide-react";
 import { useEffect, useId, useRef } from "react";
 import { Button } from "@/components/ui";
+import type { MatrixCoverage } from "@/lib/domain/matrix";
 import type { Report } from "@/lib/domain/report";
 import { ReportDocument, type ReportChanges } from "./report-document";
 import { usePdfDownload } from "./use-pdf-download";
@@ -14,6 +15,7 @@ export function ReportViewer({
   report,
   changes,
   siteUrl,
+  matrixCoverage,
   fileName,
   onShare,
   onExcel,
@@ -22,6 +24,7 @@ export function ReportViewer({
   report: Report;
   changes: ReportChanges | null;
   siteUrl: string | null;
+  matrixCoverage?: MatrixCoverage | null;
   fileName: string;
   onShare: () => void;
   onExcel: () => void;
@@ -77,7 +80,7 @@ export function ReportViewer({
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-6 sm:px-8 print:overflow-visible print:p-0">
         <div ref={pagesRef} className="mx-auto max-w-[1280px]">
-          <ReportDocument report={report} changes={changes} siteUrl={siteUrl} />
+          <ReportDocument report={report} changes={changes} siteUrl={siteUrl} matrixCoverage={matrixCoverage} />
         </div>
       </div>
     </div>
