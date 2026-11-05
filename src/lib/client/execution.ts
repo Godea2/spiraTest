@@ -13,8 +13,11 @@ import type {
 import { logActivity } from "./activity";
 import { api } from "./api";
 import { getDraft, mutateDraft } from "./drafts";
+import { getActiveMatrixCell } from "./matrix-context";
+import { recordMatrixMarksFromExecute } from "./matrix";
 import { readItem, writeItem } from "./storage";
 import { contextOf } from "./workflow";
+import type { ExecutionStatus } from "@/lib/domain/types";
 
 const TESTER_KEY = "tester";
 
@@ -121,6 +124,40 @@ export async function recordResults(
       failed: all.filter((r) => r.result === "failed").map((r) => r.testSetTestCaseId),
     },
   });
+
+  // Matrix cell active: mirror Spira marks onto the device × network board (same cases, same modules).
+  const matrixCell = getActiveMatrixCell();
+  if (matrixCell && matrixCell.projectId === draft.projectId && draft.releaseId !== null) {
+    const marks = recorded.flatMap((r) => {
+      if (r.status === "notRun") return [];
+      const input = cases.find((c) => c.testSetTestCaseId === r.testSetTestCaseId);
+      if (!input) return [];
+      return [
+        {
+          caseKey: `${testSetId}:${r.testSetTestCaseId}`,
+          testCaseId: r.testCaseId,
+          module: draft.module,
+          status: r.status as ExecutionStatus,
+          comment: input.comment,
+        },
+      ];
+    });
+    if (marks.length) {
+      try {
+        recordMatrixMarksFromExecute({
+          projectId: matrixCell.projectId,
+          releaseId: draft.releaseId,
+          device: matrixCell.device,
+          network: matrixCell.network,
+          tester,
+          marks,
+        });
+      } catch {
+        // Matrix board is secondary to Spira recording
+      }
+    }
+  }
+
   return { draft: updated, results: all };
 }
 

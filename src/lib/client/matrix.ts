@@ -157,6 +157,51 @@ export function getMatrixSession(projectId: number, sessionId: string): MatrixSe
   return loadMatrixStore(projectId).sessions.find((s) => s.id === sessionId) ?? null;
 }
 
+/**
+ * After Spira Execute records a mark while a Matrix cell is active, mirror it onto the coverage board.
+ * Uses a synthetic session id per cell so the board stays accurate without the old smoke runner.
+ */
+export function recordMatrixMarksFromExecute(input: {
+  projectId: number;
+  releaseId: number;
+  device: MatrixDevice;
+  network: MatrixNetwork;
+  tester: string;
+  marks: Array<{
+    caseKey: string;
+    testCaseId: number;
+    module: string;
+    status: ExecutionStatus;
+    comment?: string;
+  }>;
+}): MatrixStore {
+  let store = loadMatrixStore(input.projectId);
+  const now = new Date().toISOString();
+  const sessionId = `mx-exec-${input.device}-${input.network}`;
+  for (const mark of input.marks) {
+    const result: MatrixResult = {
+      id: resultId(input.device, input.network, mark.caseKey),
+      caseKey: mark.caseKey,
+      testCaseId: mark.testCaseId,
+      module: mark.module,
+      device: input.device,
+      network: input.network,
+      status: mark.status,
+      comment: (mark.comment ?? "").trim().slice(0, 2_000),
+      tester: input.tester.trim().slice(0, 100),
+      at: now,
+      sessionId,
+      releaseId: input.releaseId,
+    };
+    store = upsertResult(store, result);
+  }
+  if (store.releaseId === null) {
+    store = { ...store, releaseId: input.releaseId };
+  }
+  saveMatrixStore(store);
+  return store;
+}
+
 export function recordMatrixResult(input: {
   projectId: number;
   sessionId: string;
