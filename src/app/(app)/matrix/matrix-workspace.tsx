@@ -61,6 +61,7 @@ export function MatrixWorkspace() {
   const [tester, setTester] = useState("");
   const [device, setDevice] = useState<MatrixDevice>("Samsung");
   const [network, setNetwork] = useState<MatrixNetwork>("MTN");
+  const [moduleId, setModuleId] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [matrixReport, setMatrixReport] = useState<MatrixReport | null>(null);
@@ -112,6 +113,22 @@ export function MatrixWorkspace() {
       })
       .filter((row) => row.cards.length > 0);
   }, [uatDrafts, devicePlatform]);
+
+  // Keep module selection valid when device (platform) changes.
+  useEffect(() => {
+    if (moduleRows.length === 0) {
+      setModuleId("");
+      return;
+    }
+    if (!moduleRows.some((r) => r.draft.id === moduleId)) {
+      setModuleId(moduleRows[0].draft.id);
+    }
+  }, [moduleRows, moduleId]);
+
+  const selectedModule = moduleRows.find((r) => r.draft.id === moduleId) ?? moduleRows[0] ?? null;
+  const runHref = selectedModule
+    ? `/matrix/run/${selectedModule.draft.id}?device=${encodeURIComponent(device)}&network=${encodeURIComponent(network)}`
+    : null;
 
   const loadCatalog = useCallback(async () => {
     if (projectId === null || releaseId === null) {
@@ -256,10 +273,10 @@ export function MatrixWorkspace() {
       )}
 
       <Section
-        title="1. Where are you testing?"
+        title="Where are you testing?"
         description={
           hasCatalog
-            ? `${store?.releaseLabel || releaseLabel} · ${platforms?.android ?? 0} Android · ${platforms?.ios ?? 0} iOS · ${plural(uatDrafts.length, "module")}`
+            ? `${store?.releaseLabel || releaseLabel} · ${platforms?.android ?? 0} Android · ${platforms?.ios ?? 0} iOS · ${plural(moduleRows.length, "module")} for ${devicePlatform}`
             : "Load Spira cases once — every network shares that same catalogue."
         }
       >
@@ -277,7 +294,7 @@ export function MatrixWorkspace() {
           </EmptyState>
         ) : (
           <div className="flex flex-col gap-5">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <fieldset className="min-w-0">
                 <legend className="mb-2 text-xs font-medium text-slate-500 dark:text-zinc-500">Device</legend>
                 <div className="flex flex-wrap gap-2">
@@ -297,9 +314,6 @@ export function MatrixWorkspace() {
                     </button>
                   ))}
                 </div>
-                <p className="mt-1.5 text-[11px] text-slate-500">
-                  {devicePlatform} cases · {plannedForPlatform.toLocaleString()} planned
-                </p>
               </fieldset>
 
               <fieldset className="min-w-0">
@@ -321,8 +335,27 @@ export function MatrixWorkspace() {
                     </button>
                   ))}
                 </div>
-                <p className="mt-1.5 text-[11px] text-slate-500">Same cases on every network</p>
               </fieldset>
+
+              <label className="flex min-w-0 flex-col gap-1.5 text-sm sm:col-span-2 lg:col-span-1">
+                <span className="text-xs font-medium text-slate-500 dark:text-zinc-500">Module</span>
+                <select
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 dark:border-white/10 dark:bg-white/[0.04]"
+                  value={selectedModule?.draft.id ?? ""}
+                  onChange={(e) => setModuleId(e.target.value)}
+                  disabled={moduleRows.length === 0}
+                >
+                  {moduleRows.length === 0 ? (
+                    <option value="">No {devicePlatform} modules</option>
+                  ) : (
+                    moduleRows.map(({ draft: d, counts }) => (
+                      <option key={d.id} value={d.id}>
+                        {d.module} ({counts.total})
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
 
               <label className="flex min-w-0 flex-col gap-1.5 text-sm">
                 <span className="text-xs font-medium text-slate-500 dark:text-zinc-500">Tester</span>
@@ -338,23 +371,99 @@ export function MatrixWorkspace() {
               </label>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-              <p className="text-slate-700 dark:text-zinc-200">
-                <span className="font-semibold">
-                  {device} · {network}
-                </span>
-                <span className="text-slate-500 dark:text-zinc-500">
-                  {" "}
-                  · {activeCell ? CELL_LABEL[activeCell.status] : "Not started"} · {activeCell?.executed ?? 0}/
-                  {plannedForPlatform || "—"} {devicePlatform}
-                </span>
-              </p>
+            {moduleRows.length === 0 ? (
+              <Notice
+                tone="warning"
+                title={`No ${devicePlatform} modules yet`}
+                action={
+                  <Button size="sm" variant="primary" icon={RefreshCw} busy={loading} onClick={() => void loadCatalog()}>
+                    Reload from Spira
+                  </Button>
+                }
+              >
+                Expected Accounts, Bill Payment, Cards, Core Banking, Onboarding, Profile, Transfers.
+              </Notice>
+            ) : (
+              <>
+                <fieldset>
+                  <legend className="mb-2 text-xs font-medium text-slate-500 dark:text-zinc-500">
+                    Or tap a module ({devicePlatform})
+                  </legend>
+                  <div className="flex flex-wrap gap-2">
+                    {moduleRows.map(({ draft: d, counts }) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => setModuleId(d.id)}
+                        className={clsx(
+                          "rounded-lg border px-3 py-2 text-left text-sm transition",
+                          (selectedModule?.draft.id ?? moduleId) === d.id
+                            ? "border-brand-600 bg-brand-50 text-brand-900 dark:bg-brand-500/15 dark:text-brand-100"
+                            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-200",
+                        )}
+                      >
+                        <span className="font-medium">{d.module}</span>
+                        <span className="ml-1.5 text-xs text-slate-500">{counts.total}</span>
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {selectedModule && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+                    <div className="min-w-0 text-sm">
+                      <p className="font-semibold text-slate-900 dark:text-zinc-100">
+                        {selectedModule.draft.module}
+                        <span className="font-normal text-slate-500">
+                          {" "}
+                          · {device} · {network}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {plural(selectedModule.counts.total, "case")} · {selectedModule.executed} done
+                        {selectedModule.counts.notRun > 0 ? ` · ${selectedModule.counts.notRun} left` : ""}
+                        {" · "}
+                        Cell {activeCell ? CELL_LABEL[activeCell.status] : "Not started"} ({activeCell?.executed ?? 0}/
+                        {plannedForPlatform || "—"})
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
+                        {selectedModule.counts.passed > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            <StatusChip status="passed" /> {selectedModule.counts.passed}
+                          </span>
+                        )}
+                        {selectedModule.counts.failed > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            <StatusChip status="failed" /> {selectedModule.counts.failed}
+                          </span>
+                        )}
+                        {selectedModule.counts.blocked > 0 && (
+                          <span className="inline-flex items-center gap-1">
+                            <StatusChip status="blocked" /> {selectedModule.counts.blocked}
+                          </span>
+                        )}
+                        {selectedModule.counts.notRun > 0 && (
+                          <Badge tone="neutral">{selectedModule.counts.notRun} to run</Badge>
+                        )}
+                      </div>
+                    </div>
+                    {runHref && (
+                      <ButtonLink href={runHref} variant="primary" icon={Play}>
+                        {selectedModule.executed ? "Continue module" : "Run module"}
+                      </ButtonLink>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="flex justify-end">
               <button
                 type="button"
                 className="text-xs font-medium text-brand-700 hover:underline dark:text-brand-300"
                 onClick={() => setShowCoverage((v) => !v)}
               >
-                {showCoverage ? "Hide all cells" : "Show all cells"}
+                {showCoverage ? "Hide coverage cells" : "Show coverage cells"}
               </button>
             </div>
 
@@ -409,65 +518,6 @@ export function MatrixWorkspace() {
           </div>
         )}
       </Section>
-
-      {hasCatalog && (
-        <Section
-          title={`2. Run modules · ${device} · ${network}`}
-          description={`${plural(moduleRows.length, "module")} for ${devicePlatform} — open one and Pass/Fail like UAT.`}
-        >
-          {moduleRows.length === 0 ? (
-            <Notice
-              tone="warning"
-              title={`No ${devicePlatform} modules yet`}
-              action={
-                <Button size="sm" variant="primary" icon={RefreshCw} busy={loading} onClick={() => void loadCatalog()}>
-                  Reload from Spira
-                </Button>
-              }
-            >
-              Expected Accounts, Bill Payment, Cards, Core Banking, Onboarding, Profile, Transfers. Reload the full Prod catalogue.
-            </Notice>
-          ) : (
-            <ul className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-white/5 dark:border-white/10 dark:bg-zinc-900/40">
-              {moduleRows.map(({ draft: d, counts, executed }) => {
-                const href = `/matrix/run/${d.id}?device=${encodeURIComponent(device)}&network=${encodeURIComponent(network)}`;
-                return (
-                  <li key={d.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-slate-900 dark:text-zinc-100">{d.module}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {plural(counts.total, "case")} · {executed} done
-                        {counts.notRun > 0 ? ` · ${counts.notRun} left` : ""}
-                      </p>
-                      <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
-                        {counts.passed > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            <StatusChip status="passed" /> {counts.passed}
-                          </span>
-                        )}
-                        {counts.failed > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            <StatusChip status="failed" /> {counts.failed}
-                          </span>
-                        )}
-                        {counts.blocked > 0 && (
-                          <span className="inline-flex items-center gap-1">
-                            <StatusChip status="blocked" /> {counts.blocked}
-                          </span>
-                        )}
-                        {counts.notRun > 0 && <Badge tone="neutral">{counts.notRun} to run</Badge>}
-                      </div>
-                    </div>
-                    <ButtonLink href={href} size="sm" variant="primary" icon={Play}>
-                      {executed ? "Continue" : "Run"}
-                    </ButtonLink>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Section>
-      )}
 
       {loading && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/20 backdrop-blur-[1px]">

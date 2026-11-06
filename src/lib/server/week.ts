@@ -48,19 +48,29 @@ async function listWeekTestSets(
   cycleId: CycleId | null,
 ): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
   // Same cut as Reports “this build”: sets planned on the working release, iOS/Android only.
+  // Also union the cycle folder (e.g. Prod- Phase 1) — Spira’s release filter alone can miss
+  // sets that still show 0006 in the UI, which left Matrix with only ~1 module.
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
-  if (onRelease.length) return { sets: onRelease, folderName: null, source: "release" };
+  const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
+  let folderName: string | null = null;
 
   if (cycleId) {
-    const folderName = CYCLE_PRESETS[cycleId].folderName;
+    const wantFolder = CYCLE_PRESETS[cycleId].folderName;
     const folders = await listTestSetFolders(projectId);
-    const folder = findCycleFolder(folders, folderName);
+    const folder = findCycleFolder(folders, wantFolder);
     if (folder) {
-      const inFolder = (await listTestSetsInFolder(projectId, folder.folderId, null)).filter((t) => isMobileWeekSet(t.name));
-      if (inFolder.length) return { sets: inFolder, folderName: folder.name, source: "folder" };
+      folderName = folder.name;
+      const inFolder = (await listTestSetsInFolder(projectId, folder.folderId, null)).filter((t) =>
+        isMobileWeekSet(t.name),
+      );
+      for (const t of inFolder) byId.set(t.testSetId, t);
     }
   }
-  return { sets: [], folderName: null, source: "release" };
+
+  const sets = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (sets.length === 0) return { sets: [], folderName: null, source: "release" };
+  const source = onRelease.length > 0 && folderName ? "release" : onRelease.length > 0 ? "release" : "folder";
+  return { sets, folderName, source };
 }
 
 /**
