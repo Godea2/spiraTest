@@ -82,12 +82,40 @@ async function listWeekTestSets(
     releaseLabel ||
     ""
   ).match(/1\.0\.0(?:\.0)?\.\d+/)?.[0];
-  if (versionToken && byId.size < 12) {
+  // Always union by version so a module present on only one platform cut (e.g. Transfers Android)
+  // is not dropped when folder/release already returned 12+ other sets.
+  if (versionToken) {
     const all = await listTestSets(projectId, null);
     for (const t of all) {
       if (!isMobileWeekSet(t.name)) continue;
       const ver = t.releaseVersion || "";
       if (ver.includes(versionToken) || (ver.length > 0 && releaseLabel.includes(ver))) {
+        byId.set(t.testSetId, t);
+      }
+    }
+  }
+
+  // Pair missing counterparts: if we have "Transfers - iOS" but not Android (or vice versa), pull it.
+  const loaded = [...byId.values()];
+  const byStem = new Map<string, { ios: boolean; android: boolean }>();
+  for (const t of loaded) {
+    const { module, platform } = guessMapping(t.name);
+    const stem = module.toLowerCase();
+    const row = byStem.get(stem) ?? { ios: false, android: false };
+    if (platform === "iOS") row.ios = true;
+    if (platform === "Android") row.android = true;
+    byStem.set(stem, row);
+  }
+  const needsPair = [...byStem.entries()].some(([, p]) => p.ios !== p.android);
+  if (needsPair) {
+    const all = await listTestSets(projectId, null);
+    for (const t of all) {
+      if (!isMobileWeekSet(t.name) || byId.has(t.testSetId)) continue;
+      const { module, platform } = guessMapping(t.name);
+      if (platform !== "iOS" && platform !== "Android") continue;
+      const pair = byStem.get(module.toLowerCase());
+      if (!pair) continue;
+      if ((platform === "iOS" && !pair.ios) || (platform === "Android" && !pair.android)) {
         byId.set(t.testSetId, t);
       }
     }

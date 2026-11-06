@@ -15,6 +15,7 @@ import {
   loadMatrixStore,
   MATRIX_DEVICES,
   MATRIX_NETWORKS,
+  matrixModuleLabel,
   normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
@@ -354,7 +355,7 @@ export function MatrixWorkspace() {
                   ) : (
                     moduleRows.map(({ draft: d, counts }) => (
                       <option key={d.id} value={d.id}>
-                        {d.module} ({counts.total})
+                        {matrixModuleLabel(d.module)} ({counts.total})
                       </option>
                     ))
                   )}
@@ -406,7 +407,7 @@ export function MatrixWorkspace() {
                             : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-200",
                         )}
                       >
-                        <span className="font-medium">{d.module}</span>
+                        <span className="font-medium">{matrixModuleLabel(d.module)}</span>
                         <span className="ml-1.5 text-xs text-slate-500">{counts.total}</span>
                       </button>
                     ))}
@@ -417,7 +418,7 @@ export function MatrixWorkspace() {
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
                     <div className="min-w-0 text-sm">
                       <p className="font-semibold text-slate-900 dark:text-zinc-100">
-                        {selectedModule.draft.module}
+                        {matrixModuleLabel(selectedModule.draft.module)}
                         <span className="font-normal text-slate-500">
                           {" "}
                           · {device} · {network}

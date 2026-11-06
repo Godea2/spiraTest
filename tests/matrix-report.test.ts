@@ -62,10 +62,10 @@ describe("matrix report", () => {
 
     expect(report.title).toContain("matrix");
     expect(report.releaseLabel).toBe("1.0.0.0.0006");
-    expect(report.kpis.cells).toBe(12);
+    expect(report.kpis.cells).toBe(15);
     expect(report.kpis.started).toBe(1);
     expect(report.kpis.passed).toBe(1);
     expect(report.status).toBe("amber");
-    expect(report.cells).toHaveLength(12);
+    expect(report.cells).toHaveLength(15);
   });
 });

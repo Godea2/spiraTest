@@ -1254,7 +1254,7 @@ function MatrixCoveragePage({ coverage }: { coverage: MatrixCoverage }) {
       </Heading>
       <p className="mb-3 text-[12.5px] text-slate-600">
         {coverage.releaseLabel || "Current release"} · {coverage.coveredCells} covered · {coverage.executedCells} started ·{" "}
-        {coverage.failedCells} with failures · {coverage.totalCells} cells (iOS, itel, Samsung, tecno × MTN, Airtel, Glo)
+        {coverage.failedCells} with failures · {coverage.totalCells} cells (iOS, itel, Infinix, Samsung, tecno × MTN, Airtel, Glo)
       </p>
       <Table head={["Device", ...MATRIX_NETWORKS]} numeric={[]}>
         {MATRIX_DEVICES.map((device) => (

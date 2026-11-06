@@ -6,7 +6,8 @@
 import { guessMapping } from "./settings";
 import type { ExecutionStatus, Platform } from "./types";
 
-export const MATRIX_DEVICES = ["iOS", "itel", "Samsung", "tecno"] as const;
+/** OEM / OS cells. itel, Infinix, Samsung, tecno all run the same Spira Android sets. */
+export const MATRIX_DEVICES = ["iOS", "itel", "Infinix", "Samsung", "tecno"] as const;
 export type MatrixDevice = (typeof MATRIX_DEVICES)[number];
 
 export const MATRIX_NETWORKS = ["MTN", "Airtel", "Glo"] as const;
@@ -128,6 +129,11 @@ export function platformForDevice(device: MatrixDevice): Platform {
   return device === "iOS" ? "iOS" : "Android";
 }
 
+/** Clean module title for UI (strip "- Android" / "- iOS" leftovers from Spira set names). */
+export function matrixModuleLabel(moduleOrSetName: string): string {
+  return guessMapping(moduleOrSetName).module || moduleOrSetName.trim();
+}
+
 const MOBILE: Platform[] = ["Android", "iOS"];
 
 /**
@@ -230,7 +236,7 @@ export function platformCounts(cases: MatrixCase[]): { android: number; ios: num
 
 /**
  * Coverage grid for a release. Planned = every Spira case on that device's platform
- * (Samsung/itel/tecno → Android sets; iOS → iOS sets) — the same catalogue used across networks.
+ * (Samsung/itel/Infinix/tecno → Android sets; iOS → iOS sets) — the same catalogue used across networks.
  */
 export function buildCoverage(
   store: MatrixStore,

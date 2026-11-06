@@ -28,6 +28,7 @@ describe("matrix domain", () => {
     expect(platformForDevice("iOS")).toBe("iOS");
     expect(platformForDevice("Samsung")).toBe("Android");
     expect(platformForDevice("itel")).toBe("Android");
+    expect(platformForDevice("Infinix")).toBe("Android");
     expect(platformForDevice("tecno")).toBe("Android");
   });
 
@@ -76,7 +77,7 @@ describe("matrix domain", () => {
     expect(modulesInSession(list)).toEqual([{ module: "Customer Onboarding & Home Screen", count: 2 }]);
   });
 
-  it("builds a 4×3 coverage grid sized to the Spira platform catalogue", () => {
+  it("builds a 5×3 coverage grid sized to the Spira platform catalogue", () => {
     const store = emptyMatrixStore(24);
     store.releaseId = 99;
     store.releaseLabel = "1.0.0.0.0006";
@@ -101,7 +102,7 @@ describe("matrix domain", () => {
     };
     const withResult = upsertResult(store, result);
     const coverage = buildCoverage(withResult, 99);
-    expect(coverage.totalCells).toBe(12);
+    expect(coverage.totalCells).toBe(15);
     expect(coverage.executedCells).toBe(1);
     const androidCell = coverage.cells.find((c) => c.device === "Samsung" && c.network === "MTN")!;
     expect(androidCell.planned).toBe(2);
