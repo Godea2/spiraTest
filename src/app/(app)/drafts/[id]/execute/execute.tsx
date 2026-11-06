@@ -74,6 +74,7 @@ export function Execute({
   backLabel,
   hideBoard,
   platformFilter,
+  matrixCell,
 }: {
   id: string;
   /** Override the Completed / Drafts back link (e.g. UAT build). */
@@ -82,6 +83,8 @@ export function Execute({
   hideBoard?: boolean;
   /** Matrix OEM cells: only show Spira cases for this platform (Android or iOS). */
   platformFilter?: Platform | null;
+  /** When set, this is a Matrix bucket run: Pass/Fail also counts for device × network. */
+  matrixCell?: { device: string; network: string } | null;
 }) {
   const { draft, setDraft, error: loadError } = useDraft(id);
   const { spira } = useSettings();
@@ -413,8 +416,12 @@ export function Execute({
             {releaseText ? <span className="text-slate-400 dark:text-zinc-500">· Release {releaseText}</span> : null}
           </span>
         }
-        title={`Execute: ${draft.name}`}
-        description="Run the In Scope cases, including those in Defects. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
+        title={matrixCell ? `${draft.module} · ${matrixCell.device} · ${matrixCell.network}` : `Execute: ${draft.name}`}
+        description={
+          matrixCell
+            ? `Matrix bucket for ${matrixCell.device} on ${matrixCell.network}. Same Pass / Run / bulk mark as UAT — results go to Spira (${platformFilter ?? "platform"}) and count for this cell only.`
+            : "Run the In Scope cases, including those in Defects. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
+        }
         actions={
           <>
             {!hideBoard && <ButtonLink href={`/drafts/${draft.id}`} variant="ghost">Board</ButtonLink>}
@@ -426,6 +433,13 @@ export function Execute({
           </>
         }
       />
+
+      {matrixCell && (
+        <Notice tone="info" title="App bucket · Spira stays iOS/Android">
+          Testing <strong>{matrixCell.device}</strong> on <strong>{matrixCell.network}</strong>. Pass/Fail writes to the Spira{" "}
+          {platformFilter ?? "platform"} set and counts for this bucket only — Spira has no separate MTN/OEM sets.
+        </Notice>
+      )}
 
       {job && (
         <Notice

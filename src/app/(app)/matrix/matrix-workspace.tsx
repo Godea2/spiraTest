@@ -140,7 +140,7 @@ export function MatrixWorkspace() {
     const moduleName = prodModuleLabel(selectedModule.draft.module) ?? matrixModuleLabel(selectedModule.draft.module);
     setOpeningBucket(true);
     try {
-      const { session, created } = ensureMatrixBucket({
+      const { created } = ensureMatrixBucket({
         projectId,
         device,
         network,
@@ -159,7 +159,9 @@ export function MatrixWorkspace() {
           ? `Created bucket · ${device} · ${network} · ${moduleName}`
           : `Opened bucket · ${device} · ${network} · ${moduleName}`,
       );
-      router.push(`/matrix/${session.id}`);
+      // Same Execute UI as UAT: Pass / Run / bulk mark, with this cell locked for the board.
+      const q = new URLSearchParams({ device, network });
+      router.push(`/matrix/run/${selectedModule.draft.id}?${q.toString()}`);
     } catch (err) {
       toast.error(errorMessage(err));
       setOpeningBucket(false);

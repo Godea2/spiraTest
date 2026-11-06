@@ -37,7 +37,8 @@ function MatrixRunInner() {
     return () => clearActiveMatrixCell();
   }, [settings?.projectId, settings?.releaseId, settings?.releaseLabel, device, network]);
 
-  const cellLabel = isDevice(device) && isNetwork(network) ? `${device} · ${network}` : "Matrix";
+  const cellOk = isDevice(device) && isNetwork(network);
+  const cellLabel = cellOk ? `${device} · ${network}` : "Matrix";
   const platformFilter = isDevice(device) ? platformForDevice(device) : null;
 
   return (
@@ -47,6 +48,7 @@ function MatrixRunInner() {
       backLabel={`Matrix (${cellLabel})`}
       hideBoard
       platformFilter={platformFilter}
+      matrixCell={cellOk ? { device, network } : null}
     />
   );
 }
