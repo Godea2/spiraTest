@@ -1249,7 +1249,7 @@ function PlannedScopePage({ report }: { report: Report }) {
 function MatrixCoveragePage({ coverage }: { coverage: MatrixCoverage }) {
   return (
     <>
-      <Heading note="App-owned device × network execution (Matrix). Spira still holds iOS/Android module depth; this board shows OEM and carrier coverage without duplicating test sets.">
+      <Heading note="App-owned device × network execution (Prod Testing). Spira still holds iOS/Android module depth; this board shows OEM and carrier coverage without duplicating test sets.">
         Device × network coverage
       </Heading>
       <p className="mb-3 text-[12.5px] text-slate-600">
@@ -1278,7 +1278,7 @@ function MatrixCoveragePage({ coverage }: { coverage: MatrixCoverage }) {
         ))}
       </Table>
       <p className="mt-3 text-[11.5px] text-slate-500">
-        Execute sessions from the Matrix module. Smoke packs target login, OTP, transfers, airtime/data, bills and onboarding on each cell.
+        Execute sessions from Prod Testing. Smoke packs target login, OTP, transfers, airtime/data, bills and onboarding on each cell.
       </p>
     </>
   );

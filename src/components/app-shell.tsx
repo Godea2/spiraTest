@@ -43,7 +43,7 @@ const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: str
   { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week") },
   { href: "/notes", label: "Notes", icon: NotebookPen, match: (p) => p.startsWith("/notes") },
   { href: "/progress", label: "Progress", icon: ListChecks, match: (p) => p.startsWith("/progress") },
-  { href: "/matrix", label: "Matrix", icon: Grid3x3, match: (p) => p.startsWith("/matrix") },
+  { href: "/matrix", label: "Prod Testing", icon: Grid3x3, match: (p) => p.startsWith("/matrix") },
   { href: "/defects", label: "Defects", icon: Bug, match: (p) => p.startsWith("/defects") },
   { href: "/reports", label: "Reports", icon: FileChartColumn, match: (p) => p.startsWith("/reports") },
   { href: "/activity", label: "Activity", icon: Activity, match: (p) => p.startsWith("/activity") },

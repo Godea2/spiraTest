@@ -38,14 +38,14 @@ function MatrixRunInner() {
   }, [settings?.projectId, settings?.releaseId, settings?.releaseLabel, device, network]);
 
   const cellOk = isDevice(device) && isNetwork(network);
-  const cellLabel = cellOk ? `${device} · ${network}` : "Matrix";
+  const cellLabel = cellOk ? `${device} · ${network}` : "Prod Testing";
   const platformFilter = isDevice(device) ? platformForDevice(device) : null;
 
   return (
     <Execute
       id={params.id}
       backHref="/matrix"
-      backLabel={`Matrix (${cellLabel})`}
+      backLabel={`Prod Testing (${cellLabel})`}
       hideBoard
       platformFilter={platformFilter}
       matrixCell={cellOk ? { device, network } : null}

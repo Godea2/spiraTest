@@ -145,7 +145,7 @@ export function replaceCatalog(
   const counts = platformCounts(next.cases);
   logActivity({
     type: "matrix.catalogLoaded",
-    message: `Matrix: loaded ${next.cases.length} Spira cases (${counts.android} Android · ${counts.ios} iOS) in ${catalog.modules.length} modules for ${catalog.releaseLabel}.`,
+    message: `Prod Testing: loaded ${next.cases.length} Spira cases (${counts.android} Android · ${counts.ios} iOS) in ${catalog.modules.length} modules for ${catalog.releaseLabel}.`,
     details: {
       releaseId: catalog.releaseId,
       cases: next.cases.length,
@@ -240,7 +240,7 @@ export function startMatrixSession(input: {
   saveMatrixStore(next);
   logActivity({
     type: "matrix.sessionStarted",
-    message: `Matrix bucket ${environmentLabel(session.device, session.network)}${session.module ? ` · ${session.module}` : ""}: ${cases.length} case(s).`,
+    message: `Prod Testing bucket ${environmentLabel(session.device, session.network)}${session.module ? ` · ${session.module}` : ""}: ${cases.length} case(s).`,
     details: {
       sessionId: session.id,
       device: session.device,

@@ -45,15 +45,15 @@ export function MatrixExecute() {
   if (projectId === null) {
     return (
       <EmptyState icon={Smartphone} title="No project" action={<ButtonLink href="/settings">Open Settings</ButtonLink>}>
-        Save Settings, then open Matrix again.
+        Save Settings, then open Prod Testing again.
       </EmptyState>
     );
   }
 
   if (missing) {
     return (
-      <EmptyState icon={Smartphone} title="Bucket not found" action={<ButtonLink href="/matrix" icon={ArrowLeft}>Back to Matrix</ButtonLink>}>
-        That matrix bucket is missing, or its module draft is not loaded. Open it again from Matrix.
+      <EmptyState icon={Smartphone} title="Bucket not found" action={<ButtonLink href="/matrix" icon={ArrowLeft}>Back to Prod Testing</ButtonLink>}>
+        That Prod Testing bucket is missing, or its module draft is not loaded. Open it again from Prod Testing.
       </EmptyState>
     );
   }

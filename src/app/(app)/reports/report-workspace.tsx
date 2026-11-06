@@ -72,7 +72,7 @@ const KINDS: { kind: ReportKind; icon: LucideIcon; title: string; hint?: string 
   { kind: "build", icon: Target, title: `${PHASE}: scoped test cases` },
   { kind: "buildVsPlan", icon: GitCompareArrows, title: `${PHASE}: scoped vs total test plan` },
   { kind: "plan", icon: Layers, title: "Total test plan" },
-  { kind: "matrix", icon: Grid3x3, title: "Device × network matrix", hint: "OEM × carrier coverage from the Matrix module" },
+  { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier coverage from Prod Testing" },
 ];
 
 function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: ReportKind) => void }) {
@@ -283,7 +283,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     if (!options || !resolved || projectId === null || !catalog) return;
     const store = loadMatrixStore(projectId);
     if (!store.catalogLoadedAt && store.results.length === 0) {
-      setError("Load Spira cases in Matrix and run at least one session (or load the catalogue) before generating this report.");
+      setError("Load Spira cases in Prod Testing and run at least one session (or load the catalogue) before generating this report.");
       return;
     }
     setError(null);
@@ -298,7 +298,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     });
     setMatrixReport(built);
     setMatrixViewerOpen(true);
-    toast.success("Matrix report ready");
+    toast.success("Prod Testing report ready");
   };
 
   const generate = async () => {
@@ -495,7 +495,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
               <Button variant="primary" icon={isMatrix ? Grid3x3 : FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
-                {isMatrix ? "Generate matrix report" : data ? "Read Spira again" : "Generate report"}
+                {isMatrix ? "Generate Prod Testing report" : data ? "Read Spira again" : "Generate report"}
               </Button>
               {!isMatrix && (
                 <Button
@@ -510,7 +510,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               )}
               {isMatrix && (
                 <ButtonLink href="/matrix" size="md" icon={Grid3x3}>
-                  Open Matrix
+                  Open Prod Testing
                 </ButtonLink>
               )}
               {busy && progress && (
@@ -525,7 +525,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             </div>
             <p className="mt-2 text-xs text-slate-500 dark:text-zinc-400">
               {isMatrix
-                ? "Matrix report uses device × network results from the Matrix module (same executive template: status, KPIs, board, PDF/Excel). Load cases and execute sessions in Matrix first."
+                ? "Prod Testing report uses device × network results (same executive template: status, KPIs, board, PDF/Excel). Load cases and execute sessions in Prod Testing first."
                 : "Download test cases pulls the cases in the release selected above (pick Total test plan for SIT). Module, platform, TC id, name and status — not step text."}
             </p>
             {scopeChanged && !busy && (

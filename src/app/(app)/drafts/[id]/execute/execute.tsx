@@ -419,7 +419,7 @@ export function Execute({
         title={matrixCell ? `${draft.module} · ${matrixCell.device} · ${matrixCell.network}` : `Execute: ${draft.name}`}
         description={
           matrixCell
-            ? `Matrix bucket for ${matrixCell.device} on ${matrixCell.network}. Same Pass / Run / bulk mark as UAT — results go to Spira (${platformFilter ?? "platform"}) and count for this cell only.`
+            ? `Prod Testing bucket for ${matrixCell.device} on ${matrixCell.network}. Same Pass / Run / bulk mark as UAT — results go to Spira (${platformFilter ?? "platform"}) and count for this cell only.`
             : "Run the In Scope cases, including those in Defects. Open a case to go step by step, or pass it in one click. Each result is recorded in Spira as a test run as soon as you save it, and can be undone."
         }
         actions={

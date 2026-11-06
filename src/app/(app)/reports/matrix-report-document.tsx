@@ -84,7 +84,7 @@ function PageFoot({ report, page, pages }: { report: MatrixReport; page: number;
     <footer className="mt-6 flex flex-wrap justify-between gap-2 border-t border-slate-200 pt-2 text-[10.5px] text-slate-500">
       <span>
         {report.preparedBy && `Prepared by ${report.preparedBy} · `}
-        Source: Matrix module ({report.projectName}), {report.releaseLabel} · Cases from SpiraTest · Generated {dateTimeText(report.generatedAt)}
+        Source: Prod Testing ({report.projectName}), {report.releaseLabel} · Cases from SpiraTest · Generated {dateTimeText(report.generatedAt)}
       </span>
       <span>
         Page {page} / {pages}
@@ -259,9 +259,9 @@ function DetailPage({ report }: { report: MatrixReport }) {
       </div>
 
       <div>
-        <Heading note="Execution sessions started in the Matrix module.">4. Sessions</Heading>
+        <Heading note="Execution sessions started in Prod Testing.">4. Sessions</Heading>
         {report.sessions.length === 0 ? (
-          <p className="text-[12.5px] text-slate-600">No sessions yet. Start one from Matrix after loading Spira cases.</p>
+          <p className="text-[12.5px] text-slate-600">No sessions yet. Start one from Prod Testing after loading Spira cases.</p>
         ) : (
           <Table head={["Device", "Network", "Pack", "Module", "Tester", "Executed", "Passed", "Failed", "Updated"]} numeric={[5, 6, 7]}>
             {report.sessions.map((s) => (

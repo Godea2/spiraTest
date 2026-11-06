@@ -47,7 +47,7 @@ export function MatrixReportViewer({ report, onClose }: { report: MatrixReport; 
           <h2 id={titleId} className="truncate text-sm font-semibold">
             {report.title}
           </h2>
-          <p className="text-xs text-slate-500 dark:text-zinc-400">Matrix report · {readAt(report.generatedAt)}</p>
+          <p className="text-xs text-slate-500 dark:text-zinc-400">Prod Testing report · {readAt(report.generatedAt)}</p>
         </div>
         <Button size="sm" variant="primary" icon={Download} busy={pdf.busy} onClick={pdf.download}>
           {pdf.busy ? "Preparing PDF…" : "Download PDF"}

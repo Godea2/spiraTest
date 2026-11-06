@@ -146,7 +146,7 @@ export function matrixReportStatus(coverage: MatrixCoverage, failedRuns: number)
     return { status: "green", reason: "Every device × network cell is covered with no failures." };
   }
   if (coverage.executedCells === 0) {
-    return { status: "amber", reason: "Matrix execution has not started for this release." };
+    return { status: "amber", reason: "Prod Testing execution has not started for this release." };
   }
   return {
     status: "amber",

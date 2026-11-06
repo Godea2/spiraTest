@@ -184,7 +184,7 @@ export function MatrixWorkspace() {
       const counts = platformCounts(next.cases);
       logActivity({
         type: "week.loaded",
-        message: `Matrix: loaded ${next.cases.length} Spira cases in ${catalog.modules.length} modules for ${catalog.releaseLabel}.`,
+        message: `Prod Testing: loaded ${next.cases.length} Spira cases in ${catalog.modules.length} modules for ${catalog.releaseLabel}.`,
         details: {
           releaseId: catalog.releaseId,
           cases: next.cases.length,
@@ -240,12 +240,12 @@ export function MatrixWorkspace() {
       releaseId: store.releaseId ?? releaseId,
     });
     setMatrixReport(built);
-    toast.success("Matrix report ready");
+    toast.success("Prod Testing report ready");
   };
 
   if (!settings || projectId === null) {
     return (
-      <EmptyState icon={Grid3x3} title="Matrix coverage" action={<ButtonLink href="/settings">Open Settings</ButtonLink>}>
+      <EmptyState icon={Grid3x3} title="Prod Testing" action={<ButtonLink href="/settings">Open Settings</ButtonLink>}>
         Save project and Prod release 1.0.0.0.0006 in Settings first.
       </EmptyState>
     );
@@ -256,7 +256,7 @@ export function MatrixWorkspace() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <PageHeader
-        title="Matrix"
+        title="Prod Testing"
         description="Spira has iOS/Android modules only. Pick device + network + module to open a bucket — same cases, tracked for that cell (e.g. iOS · MTN · Accounts)."
         actions={
           <>
@@ -305,7 +305,7 @@ export function MatrixWorkspace() {
             </Button>
           }
         >
-          Matrix only has{" "}
+          Prod Testing only has{" "}
           <strong>
             {platforms?.android ?? 0} Android · {platforms?.ios ?? 0} iOS
           </strong>{" "}
