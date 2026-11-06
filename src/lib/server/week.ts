@@ -54,9 +54,10 @@ async function listWeekTestSets(
   projectId: number,
   releaseId: number,
   cycleId: CycleId | null,
+  releaseLabel: string,
 ): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
-  // Union release-planned sets with the cycle folder (Prod- Phase 1 / UAT / SIT). Spira’s
-  // release_id filter alone often returns only a slice; the folder is what you see in Spira UI.
+  // Union three Spira cuts so Prod Matrix gets every module (Accounts…Transfers × iOS/Android):
+  // 1) release_id filter, 2) cycle folder tree, 3) all project sets whose version matches the label.
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
   const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
   let folderName: string | null = null;
@@ -72,6 +73,22 @@ async function listWeekTestSets(
           isMobileWeekSet(t.name),
         );
         for (const t of inFolder) byId.set(t.testSetId, t);
+      }
+    }
+  }
+
+  const versionToken = (
+    (cycleId ? CYCLE_PRESETS[cycleId].versionNumber : "") ||
+    releaseLabel ||
+    ""
+  ).match(/1\.0\.0(?:\.0)?\.\d+/)?.[0];
+  if (versionToken && byId.size < 12) {
+    const all = await listTestSets(projectId, null);
+    for (const t of all) {
+      if (!isMobileWeekSet(t.name)) continue;
+      const ver = t.releaseVersion || "";
+      if (ver.includes(versionToken) || (ver.length > 0 && releaseLabel.includes(ver))) {
+        byId.set(t.testSetId, t);
       }
     }
   }
@@ -101,7 +118,12 @@ export async function loadWeekCatalog(input: {
           ? "sit"
           : detectCycle(input.releaseId, []);
 
-  const { sets: mobile, folderName, source } = await listWeekTestSets(input.projectId, input.releaseId, cycleId);
+  const { sets: mobile, folderName, source } = await listWeekTestSets(
+    input.projectId,
+    input.releaseId,
+    cycleId,
+    input.releaseLabel,
+  );
   if (mobile.length === 0) {
     throw new HttpError(
       400,

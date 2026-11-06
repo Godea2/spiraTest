@@ -375,8 +375,7 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
   const byMembership = new Map(cases.filter((c) => c.TestSetTestCaseId).map((c) => [c.TestSetTestCaseId!, c]));
   const byTestCase = new Map(cases.map((c) => [c.TestCaseId, c]));
 
-  return [...membership].map(([testSetTestCaseId, testCaseId]) => {
-    const details = byMembership.get(testSetTestCaseId) ?? byTestCase.get(testCaseId);
+  const toRow = (testSetTestCaseId: number, testCaseId: number, details: (typeof cases)[number] | undefined): SpiraSetCase => {
     const statusId = details?.ExecutionStatusId ?? null;
     return {
       testSetTestCaseId,
@@ -387,7 +386,19 @@ export async function getTestSetCases(projectId: number, testSetId: number): Pro
       executed: statusId !== null && EXECUTED_STATUS_IDS.has(statusId),
       customText: (details?.CustomProperties ?? []).map((p) => p.StringValue ?? "").filter(Boolean),
     };
-  });
+  };
+
+  if (membership.size > 0) {
+    return [...membership].map(([testSetTestCaseId, testCaseId]) =>
+      toRow(testSetTestCaseId, testCaseId, byMembership.get(testSetTestCaseId) ?? byTestCase.get(testCaseId)),
+    );
+  }
+
+  // Spira sometimes returns an empty mapping while the test-cases list still has members.
+  // Falling back here is what lets Matrix/UAT pull every Prod module, not only Accounts.
+  return cases
+    .filter((c) => c.TestSetTestCaseId != null)
+    .map((c) => toRow(c.TestSetTestCaseId!, c.TestCaseId, c));
 }
 
 export { RUNNER_NAME };

@@ -155,8 +155,11 @@ export function MatrixWorkspace() {
         },
       });
       toast.success(
-        `Loaded ${plural(catalog.modules.length, "module")} · ${counts.android.toLocaleString()} Android · ${counts.ios.toLocaleString()} iOS`,
+        `Loaded ${plural(catalog.modules.length, "module")} · ${catalog.caseCount.toLocaleString()} cases · ${counts.android.toLocaleString()} Android · ${counts.ios.toLocaleString()} iOS`,
       );
+      if (!catalogLooksComplete(next.cases)) {
+        toast.error("Still incomplete after reload — Spira did not return full iOS/Android modules. Try again or check Prod–Phase 1 in Spira.");
+      }
     } catch (err) {
       setLoadError(errorMessage(err));
     } finally {

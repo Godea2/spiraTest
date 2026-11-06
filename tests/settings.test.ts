@@ -86,6 +86,8 @@ describe("module and platform suggested from a Spira test set name", () => {
     ["Payments (Web)", "Payments", "Web"],
     ["Regression pack", "Regression pack", "Other"],
     ["Android", "Android", "Other"],
+    ["Bill Payment– iOS", "Bill Payment", "iOS"],
+    ["Cards — Android", "Cards", "Android"],
   ])("%s → %s / %s", (name, module, platform) => {
     expect(guessMapping(name)).toEqual({ module, platform });
   });

@@ -127,7 +127,16 @@ export function cycleSettingsPatch(
   };
 }
 
-const PLATFORM_SUFFIX = /^(.*?)[\s_()[\]-]*\b(android|ios|web)\b[\s)\]]*$/i;
+const PLATFORM_SUFFIX = /^(.*?)[\s_()[\]\-/\u2010-\u2015\u2212]*\b(android|ios|web)\b[\s)\]]*$/i;
+
+/** Normalize Spira name quirks (NBSP, en/em dashes) before platform detection. */
+function normalizeSetName(testSetName: string): string {
+  return testSetName
+    .trim()
+    .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " ")
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
+    .replace(/\s+/g, " ");
+}
 
 /**
  * Suggests a module and platform from a Spira test set name, for example
@@ -135,12 +144,24 @@ const PLATFORM_SUFFIX = /^(.*?)[\s_()[\]-]*\b(android|ios|web)\b[\s)\]]*$/i;
  * keep the whole name as the module.
  */
 export function guessMapping(testSetName: string): { module: string; platform: Platform } {
-  const name = testSetName.trim();
+  const name = normalizeSetName(testSetName);
   const match = PLATFORM_SUFFIX.exec(name);
-  if (!match || !match[1].trim()) return { module: name, platform: "Other" };
-  const suffix = match[2].toLowerCase();
-  const platform: Platform = suffix === "ios" ? "iOS" : suffix === "android" ? "Android" : "Web";
-  return { module: match[1].trim(), platform };
+  if (match?.[1]?.trim()) {
+    const suffix = match[2].toLowerCase();
+    const platform: Platform = suffix === "ios" ? "iOS" : suffix === "android" ? "Android" : "Web";
+    return { module: match[1].trim(), platform };
+  }
+  // Looser fallback: platform token anywhere near the end of the name.
+  const end = /\b(android|ios|web)\b/i.exec(name);
+  if (end) {
+    const suffix = end[1].toLowerCase();
+    const platform: Platform = suffix === "ios" ? "iOS" : suffix === "android" ? "Android" : "Web";
+    const module = `${name.slice(0, end.index)} ${name.slice(end.index + end[0].length)}`
+      .replace(/[\s\-_:/\\|]+/g, " ")
+      .trim();
+    if (module) return { module, platform };
+  }
+  return { module: name, platform: "Other" };
 }
 
 /**
