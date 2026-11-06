@@ -17,6 +17,7 @@ import {
   platformCounts,
   platformForDevice,
   replaceCatalog,
+  seedCatalogFromDrafts,
   type MatrixCellStatus,
   type MatrixDevice,
   type MatrixNetwork,
@@ -83,10 +84,13 @@ export function MatrixWorkspace() {
   }, [projectId]);
 
   useEffect(() => {
-    if (releaseId === null) return;
+    if (projectId === null || releaseId === null) return;
     const existing = listUatDrafts(releaseId);
     if (existing.length > 0) setUatDrafts(existing);
-  }, [releaseId]);
+    // Same Spira cases as UAT build: seed board denominators from those drafts when Matrix store is empty/stale.
+    const seeded = seedCatalogFromDrafts(projectId, existing, { releaseId, releaseLabel });
+    if (seeded) setStore(seeded);
+  }, [projectId, releaseId, releaseLabel]);
 
   const coverage = useMemo(() => (store ? buildCoverage(store, releaseId) : null), [store, releaseId]);
   const platforms = useMemo(() => (store ? platformCounts(store.cases) : null), [store]);
@@ -243,8 +247,7 @@ export function MatrixWorkspace() {
               </Button>
             }
           >
-            Pulls every iOS/Android test set on the Settings release — Accounts, Bills, Cards, Onboarding, the same modules as UAT build.
-            Cells stay 0/— until that load finishes.
+            Same Spira iOS/Android modules as UAT build (Accounts, Bills, Cards, …). Every network cell shares that one catalogue — Reload once, then MTN/Airtel/Glo all use the same totals.
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
@@ -293,7 +296,7 @@ export function MatrixWorkspace() {
               </tbody>
             </table>
             <p className="mt-3 text-xs text-slate-500 dark:text-zinc-500">
-              Click a cell to lock device × network. Denominators are the full Spira platform catalogue (Android OEMs share Android sets).
+              Click a cell to lock device × network. Same Spira cases for every network on that platform (Samsung×MTN and Samsung×Airtel share the Android sets).
             </p>
           </div>
         )}

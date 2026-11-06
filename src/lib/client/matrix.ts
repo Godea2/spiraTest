@@ -26,7 +26,7 @@ import {
   type MatrixSession,
   type MatrixStore,
 } from "@/lib/domain/matrix";
-import type { ExecutionStatus, Platform } from "@/lib/domain/types";
+import type { Draft, ExecutionStatus, Platform } from "@/lib/domain/types";
 import { logActivity } from "./activity";
 import { readItem, writeItem } from "./storage";
 import type { WeekCatalog } from "./week";
@@ -71,6 +71,28 @@ export function casesFromWeekCatalog(catalog: WeekCatalog): MatrixCase[] {
   return out;
 }
 
+/** Same Spira cases as UAT build drafts — one shared catalogue for every device × network cell. */
+export function casesFromDrafts(drafts: Draft[]): MatrixCase[] {
+  const out: MatrixCase[] = [];
+  for (const draft of drafts) {
+    for (const set of draft.testSets) {
+      for (const card of set.cards) {
+        out.push({
+          key: card.key,
+          testCaseId: card.testCaseId,
+          testSetId: card.testSetId,
+          testSetTestCaseId: card.testSetTestCaseId,
+          name: card.name,
+          module: draft.module,
+          platform: set.platform as Platform,
+          testSetName: set.testSetName,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 export function replaceCatalog(
   projectId: number,
   catalog: WeekCatalog,
@@ -90,6 +112,31 @@ export function replaceCatalog(
     message: `Matrix: loaded ${next.cases.length} Spira cases for ${catalog.releaseLabel}.`,
     details: { releaseId: catalog.releaseId, cases: next.cases.length },
   });
+  return next;
+}
+
+/**
+ * Fill Matrix planned totals from existing UAT/Prod drafts when the board store is empty
+ * or on a different release — same test cases for every MTN/Airtel/Glo cell.
+ */
+export function seedCatalogFromDrafts(
+  projectId: number,
+  drafts: Draft[],
+  release: { releaseId: number; releaseLabel: string },
+): MatrixStore | null {
+  const cases = casesFromDrafts(drafts);
+  if (cases.length === 0) return null;
+  const prev = loadMatrixStore(projectId);
+  if (prev.cases.length > 0 && prev.releaseId === release.releaseId) return prev;
+  const next: MatrixStore = {
+    ...prev,
+    projectId,
+    releaseId: release.releaseId,
+    releaseLabel: release.releaseLabel || drafts[0]?.releaseLabel || prev.releaseLabel,
+    catalogLoadedAt: new Date().toISOString(),
+    cases,
+  };
+  saveMatrixStore(next);
   return next;
 }
 
