@@ -27,13 +27,14 @@ import {
   currentStatus,
   EXECUTION_STATUS_NAMES,
   executionCards,
+  executionCardsForPlatform,
   executionCounts,
   MAX_EXECUTION_BATCH,
   STATUS_LABEL,
   TEST_SET_STATUS,
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
-import { EXECUTION_STATUSES, type Card, type DefectRecord, type ExecutionResult, type ExecutionRun, type ExecutionStatus } from "@/lib/domain/types";
+import { EXECUTION_STATUSES, type Card, type DefectRecord, type ExecutionResult, type ExecutionRun, type ExecutionStatus, type Platform } from "@/lib/domain/types";
 import { IncidentDialog } from "./incident-dialog";
 import { MarkMenu } from "./mark-menu";
 import { Runner, StatusButtons, StatusChip, STATUS_STYLE } from "./runner";
@@ -71,12 +72,15 @@ export function Execute({
   backHref,
   backLabel,
   hideBoard,
+  platformFilter,
 }: {
   id: string;
   /** Override the Completed / Drafts back link (e.g. UAT build). */
   backHref?: string;
   backLabel?: string;
   hideBoard?: boolean;
+  /** Matrix OEM cells: only show Spira cases for this platform (Android or iOS). */
+  platformFilter?: Platform | null;
 }) {
   const { draft, setDraft, error: loadError } = useDraft(id);
   const { spira } = useSettings();
@@ -120,7 +124,14 @@ export function Execute({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
-  const cards = useMemo(() => (draft ? executionCards(draft) : []), [draft]);
+  const cards = useMemo(() => {
+    if (!draft) return [];
+    return platformFilter ? executionCardsForPlatform(draft, platformFilter) : executionCards(draft);
+  }, [draft, platformFilter]);
+  const scopedTestSets = useMemo(() => {
+    if (!draft) return [];
+    return platformFilter ? draft.testSets.filter((s) => s.platform === platformFilter) : draft.testSets;
+  }, [draft, platformFilter]);
   const counts = useMemo(() => executionCounts(cards, draft?.execution), [cards, draft]);
   /** Defects raised for runs of this project, by run, so a failed case shows its incident. */
   const projectId = draft?.projectId ?? null;
@@ -474,7 +485,7 @@ export function Execute({
           Finish the review and live apply first, so the In Scope list here matches the test sets in Spira.
         </Notice>
       )}
-      {draft.testSets.map((s) => {
+      {scopedTestSets.map((s) => {
         const status = draft.execution?.testSets?.[s.testSetId];
         if (!status?.expectedId) return null;
         const expected = TEST_SET_STATUS_NAMES[status.expectedId];
@@ -544,7 +555,7 @@ export function Execute({
               "Statuses are from the comparison until Spira is checked."
             )}
             {spira?.siteUrl &&
-              draft.testSets.map((s) => (
+              scopedTestSets.map((s) => (
                 <a
                   key={s.testSetId}
                   href={`${spira.siteUrl}/${draft.projectId}/TestSet/${s.testSetId}.aspx`}
@@ -567,7 +578,7 @@ export function Execute({
       <Section
         icon={ListChecks}
         title="In Scope cases"
-        description={`${plural(counts.total, "case")} from ${plural(draft.testSets.length, "test set")}${defectCount ? `, ${defectCount} of them in Defects` : ""}${releaseText ? `, recorded against release ${releaseText}` : ""}.`}
+        description={`${plural(counts.total, "case")} from ${plural(scopedTestSets.length, "test set")}${platformFilter ? ` (${platformFilter} only)` : ""}${defectCount ? `, ${defectCount} of them in Defects` : ""}${releaseText ? `, recorded against release ${releaseText}` : ""}.`}
       >
         <div className="mb-4 flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -575,10 +586,10 @@ export function Execute({
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
               <input type="search" className="input pl-9" placeholder="Search by name or TC" aria-label="Search cases" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            {draft.testSets.length > 1 && (
+            {scopedTestSets.length > 1 && (
               <select className="input w-auto" aria-label="Test set" value={String(setTab)} onChange={(e) => setSetTab(e.target.value === "all" ? "all" : Number(e.target.value))}>
                 <option value="all">All test sets</option>
-                {draft.testSets.map((s) => <option key={s.testSetId} value={s.testSetId}>{s.testSetName}</option>)}
+                {scopedTestSets.map((s) => <option key={s.testSetId} value={s.testSetId}>{s.testSetName}</option>)}
               </select>
             )}
           </div>
@@ -659,10 +670,10 @@ export function Execute({
                       <span className="shrink-0 font-mono text-xs text-slate-500">TC{card.testCaseId}</span>
                       <span className="truncate text-sm font-medium hover:text-brand-700 dark:hover:text-brand-300">{card.name}</span>
                     </span>
-                    {(lastRun || draft.testSets.length > 1) && (
+                    {(lastRun || scopedTestSets.length > 1) && (
                       <span className="mt-0.5 truncate text-xs text-slate-500 dark:text-zinc-500">
-                        {draft.testSets.length > 1 && setName(card.testSetId)}
-                        {draft.testSets.length > 1 && lastRun && " · "}
+                        {scopedTestSets.length > 1 && setName(card.testSetId)}
+                        {scopedTestSets.length > 1 && lastRun && " · "}
                         {lastRun && `${STATUS_LABEL[lastRun.status]} here ${formatDateTime(lastRun.at)}${lastRun.tester ? ` by ${lastRun.tester}` : ""}`}
                       </span>
                     )}

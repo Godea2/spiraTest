@@ -6,7 +6,7 @@ import { Execute } from "@/app/(app)/drafts/[id]/execute/execute";
 import { useSettings } from "@/components/settings-context";
 import { Spinner } from "@/components/ui";
 import { setActiveMatrixCell, clearActiveMatrixCell } from "@/lib/client/matrix-context";
-import { MATRIX_DEVICES, MATRIX_NETWORKS, type MatrixDevice, type MatrixNetwork } from "@/lib/domain/matrix";
+import { MATRIX_DEVICES, MATRIX_NETWORKS, platformForDevice, type MatrixDevice, type MatrixNetwork } from "@/lib/domain/matrix";
 
 function isDevice(value: string | null): value is MatrixDevice {
   return !!value && (MATRIX_DEVICES as readonly string[]).includes(value);
@@ -38,8 +38,17 @@ function MatrixRunInner() {
   }, [settings?.projectId, settings?.releaseId, settings?.releaseLabel, device, network]);
 
   const cellLabel = isDevice(device) && isNetwork(network) ? `${device} · ${network}` : "Matrix";
+  const platformFilter = isDevice(device) ? platformForDevice(device) : null;
 
-  return <Execute id={params.id} backHref="/matrix" backLabel={`Matrix (${cellLabel})`} hideBoard />;
+  return (
+    <Execute
+      id={params.id}
+      backHref="/matrix"
+      backLabel={`Matrix (${cellLabel})`}
+      hideBoard
+      platformFilter={platformFilter}
+    />
+  );
 }
 
 /** Same Execute runner as UAT build, with Matrix device × network locked for the coverage board. */

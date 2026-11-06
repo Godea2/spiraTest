@@ -25,7 +25,7 @@ import {
 import { buildMatrixReport, type MatrixReport } from "@/lib/domain/matrix-report";
 import { listUatDrafts, materializeUatCatalog } from "@/lib/client/uat-build";
 import { loadWeekCatalog } from "@/lib/client/week";
-import { executionCards, executionCounts } from "@/lib/domain/execution";
+import { executionCardsForPlatform, executionCounts } from "@/lib/domain/execution";
 import type { Draft } from "@/lib/domain/types";
 import { StatusChip } from "../drafts/[id]/execute/runner";
 import { MatrixReportViewer } from "../reports/matrix-report-viewer";
@@ -90,6 +90,17 @@ export function MatrixWorkspace() {
 
   const coverage = useMemo(() => (store ? buildCoverage(store, releaseId) : null), [store, releaseId]);
   const platforms = useMemo(() => (store ? platformCounts(store.cases) : null), [store]);
+  const devicePlatform = platformForDevice(device);
+  const releaseMismatch =
+    !!store?.releaseLabel &&
+    !!releaseLabel &&
+    !store.releaseLabel.includes("0006") &&
+    releaseLabel.includes("0006");
+  const staleCatalog =
+    store?.releaseId !== null &&
+    releaseId !== null &&
+    store?.releaseId !== undefined &&
+    store.releaseId !== releaseId;
   const moduleDrafts = useMemo(
     () =>
       uatDrafts
@@ -193,13 +204,33 @@ export function MatrixWorkspace() {
 
       {loadError && <Notice tone="danger">{loadError}</Notice>}
       {!spira?.configured && <Notice tone="warning">Connect Spira in Settings before loading cases.</Notice>}
+      {(staleCatalog || releaseMismatch || (store?.releaseLabel && /0004/.test(store.releaseLabel))) && (
+        <Notice
+          tone="warning"
+          title="Catalogue is not Prod 1.0.0.0.0006"
+          action={
+            <Button size="sm" variant="primary" icon={RefreshCw} busy={loading} onClick={() => void loadCatalog()}>
+              Reload for Settings release
+            </Button>
+          }
+        >
+          Matrix loaded <strong>{store?.releaseLabel || "another release"}</strong>
+          {releaseLabel ? (
+            <>
+              {" "}
+              but Settings is <strong>{releaseLabel}</strong>
+            </>
+          ) : null}
+          . Spira Prod–Phase 1 is on <strong>1.0.0.0.0006</strong> — switch Settings to Prod, Save, then Reload.
+        </Notice>
+      )}
 
       <Section
         title="Coverage board"
         description={
           platforms && store?.catalogLoadedAt
-            ? `${releaseLabel} · ${platforms.total.toLocaleString()} Spira cases (${platforms.android.toLocaleString()} Android · ${platforms.ios.toLocaleString()} iOS) · ${coverage ? `${coverage.coveredCells} cells covered · ${coverage.executedCells} started` : ""}`
-            : `${releaseLabel} · Load Spira cases (same source as UAT build)`
+            ? `${store.releaseLabel || releaseLabel} · ${platforms.total.toLocaleString()} Spira cases (${platforms.android.toLocaleString()} Android · ${platforms.ios.toLocaleString()} iOS) · ${coverage ? `${coverage.coveredCells} cells covered · ${coverage.executedCells} started` : ""}`
+            : `${releaseLabel || "Settings release"} · Load Spira cases (same source as UAT build)`
         }
       >
         {!coverage || (!store?.catalogLoadedAt && coverage.executedCells === 0) ? (
@@ -322,10 +353,12 @@ export function MatrixWorkspace() {
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {moduleDrafts.map((d) => {
-              const cards = executionCards(d);
+              const cards = executionCardsForPlatform(d, devicePlatform);
+              if (cards.length === 0) return null;
               const counts = executionCounts(cards, d.execution);
               const executed = counts.total - counts.notRun;
               const href = `/matrix/run/${d.id}?device=${encodeURIComponent(device)}&network=${encodeURIComponent(network)}`;
+              const setName = d.testSets.find((s) => s.platform === devicePlatform)?.testSetName;
               return (
                 <li
                   key={d.id}
@@ -335,6 +368,7 @@ export function MatrixWorkspace() {
                     <p className="truncate font-semibold text-slate-900 dark:text-zinc-100">{d.module}</p>
                     <p className="mt-0.5 text-xs text-slate-500">
                       {plural(counts.total, "case")} · {executed} executed · {device} · {network}
+                      {setName ? ` · ${setName}` : ` · ${devicePlatform}`}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-1.5 text-[11px]">
