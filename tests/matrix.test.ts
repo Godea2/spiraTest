@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCoverage,
+  catalogLooksComplete,
   emptyMatrixStore,
   modulesInSession,
+  normalizeMatrixPlatform,
   platformForDevice,
+  repairMatrixCases,
   resultId,
   selectSessionCases,
   sessionCounts,
@@ -26,6 +29,24 @@ describe("matrix domain", () => {
     expect(platformForDevice("Samsung")).toBe("Android");
     expect(platformForDevice("itel")).toBe("Android");
     expect(platformForDevice("tecno")).toBe("Android");
+  });
+
+  it("recovers Android/iOS from Spira test-set names when tags are wrong", () => {
+    expect(normalizeMatrixPlatform("Cards - iOS", "Other")).toBe("iOS");
+    expect(normalizeMatrixPlatform("Accounts & Transactions- Android", "Web")).toBe("Android");
+    expect(normalizeMatrixPlatform("Cards - iOS", "iOS")).toBe("iOS");
+    const repaired = repairMatrixCases([
+      caseOf({
+        key: "1:1",
+        testCaseId: 1,
+        name: "Freeze",
+        module: "Cards",
+        platform: "Other",
+        testSetName: "Cards - iOS",
+      }),
+    ]);
+    expect(repaired[0].platform).toBe("iOS");
+    expect(catalogLooksComplete([])).toBe(false);
   });
 
   it("selects every Spira case on the device platform", () => {

@@ -1,4 +1,5 @@
 import { cardKey, effectiveColumn, isExecutedColumn } from "./board";
+import { normalizeMatrixPlatform } from "./matrix";
 import type {
   Card,
   Draft,
@@ -94,7 +95,7 @@ export function executionCards(draft: Draft): Card[] {
 /** Same as executionCards, limited to one Spira platform (Android or iOS) for Matrix OEM cells. */
 export function executionCardsForPlatform(draft: Draft, platform: Platform): Card[] {
   return draft.testSets
-    .filter((set) => set.platform === platform)
+    .filter((set) => normalizeMatrixPlatform(set.testSetName, set.platform) === platform)
     .flatMap((set) => set.cards.filter((card) => isExecutedColumn(effectiveColumn(card, draft.decisions))));
 }
 

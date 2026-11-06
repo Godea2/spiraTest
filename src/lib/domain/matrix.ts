@@ -3,6 +3,7 @@
  * Spira keeps module / iOS–Android depth; this module records compatibility cells
  * (OEM + carrier) without multiplying test sets in Spira.
  */
+import { guessMapping } from "./settings";
 import type { ExecutionStatus, Platform } from "./types";
 
 export const MATRIX_DEVICES = ["iOS", "itel", "Samsung", "tecno"] as const;
@@ -125,6 +126,35 @@ export function cellKey(device: MatrixDevice, network: MatrixNetwork): string {
 /** Which Spira platform a matrix device should run against. */
 export function platformForDevice(device: MatrixDevice): Platform {
   return device === "iOS" ? "iOS" : "Android";
+}
+
+const MOBILE: Platform[] = ["Android", "iOS"];
+
+/**
+ * Prefer an explicit Android/iOS tag; otherwise recover from the Spira test-set name
+ * ("Cards - iOS" → iOS). Stops stale "Other" tags from hiding whole modules on the board.
+ */
+export function normalizeMatrixPlatform(testSetName: string, platform: Platform | string | null | undefined): Platform {
+  if (platform === "Android" || platform === "iOS") return platform;
+  const guessed = guessMapping(testSetName || "").platform;
+  return guessed === "Android" || guessed === "iOS" ? guessed : platform === "Web" || platform === "Other" ? platform : "Other";
+}
+
+/** Re-tag cases from test-set names so Android/iOS counts and module lists stay correct. */
+export function repairMatrixCases(cases: MatrixCase[]): MatrixCase[] {
+  return cases.map((c) => {
+    const platform = normalizeMatrixPlatform(c.testSetName, c.platform);
+    const module = c.module?.trim() || guessMapping(c.testSetName || "").module || c.module;
+    if (platform === c.platform && module === c.module) return c;
+    return { ...c, platform, module };
+  });
+}
+
+/** True when the catalogue looks like a full Prod mobile pull (both platforms, several modules). */
+export function catalogLooksComplete(cases: MatrixCase[]): boolean {
+  const { android, ios } = platformCounts(cases);
+  const modules = new Set(cases.filter((c) => MOBILE.includes(c.platform)).map((c) => c.module)).size;
+  return android >= 100 && ios >= 100 && modules >= 5;
 }
 
 /** Cases for a new session: exact Spira cases for the device's platform (Android or iOS). */

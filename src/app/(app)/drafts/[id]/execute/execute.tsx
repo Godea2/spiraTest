@@ -34,6 +34,7 @@ import {
   TEST_SET_STATUS,
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
+import { normalizeMatrixPlatform } from "@/lib/domain/matrix";
 import { EXECUTION_STATUSES, type Card, type DefectRecord, type ExecutionResult, type ExecutionRun, type ExecutionStatus, type Platform } from "@/lib/domain/types";
 import { IncidentDialog } from "./incident-dialog";
 import { MarkMenu } from "./mark-menu";
@@ -130,7 +131,8 @@ export function Execute({
   }, [draft, platformFilter]);
   const scopedTestSets = useMemo(() => {
     if (!draft) return [];
-    return platformFilter ? draft.testSets.filter((s) => s.platform === platformFilter) : draft.testSets;
+    if (!platformFilter) return draft.testSets;
+    return draft.testSets.filter((s) => normalizeMatrixPlatform(s.testSetName, s.platform) === platformFilter);
   }, [draft, platformFilter]);
   const counts = useMemo(() => executionCounts(cards, draft?.execution), [cards, draft]);
   /** Defects raised for runs of this project, by run, so a failed case shows its incident. */

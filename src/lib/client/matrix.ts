@@ -3,6 +3,7 @@
  */
 import {
   buildCoverage,
+  catalogLooksComplete,
   emptyMatrixStore,
   environmentLabel,
   MATRIX_DEVICES,
@@ -11,8 +12,10 @@ import {
   MATRIX_PACKS,
   modulesInCatalog,
   modulesInSession,
+  normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
+  repairMatrixCases,
   resultId,
   selectSessionCases,
   sessionCounts,
@@ -36,10 +39,11 @@ const storeKey = (projectId: number) => `matrix:${projectId}`;
 export function loadMatrixStore(projectId: number): MatrixStore {
   const stored = readItem<MatrixStore>(storeKey(projectId));
   if (!stored || stored.projectId !== projectId) return emptyMatrixStore(projectId);
+  const cases = repairMatrixCases(stored.cases ?? []);
   return {
     ...emptyMatrixStore(projectId),
     ...stored,
-    cases: stored.cases ?? [],
+    cases,
     sessions: stored.sessions ?? [],
     results: stored.results ?? [],
   };
@@ -49,22 +53,46 @@ export function saveMatrixStore(store: MatrixStore): void {
   writeItem(storeKey(store.projectId), store);
 }
 
+function toMatrixCase(input: {
+  key: string;
+  testCaseId: number;
+  testSetId: number;
+  testSetTestCaseId: number;
+  name: string;
+  module: string;
+  platform: Platform | string;
+  testSetName: string;
+}): MatrixCase {
+  return {
+    key: input.key,
+    testCaseId: input.testCaseId,
+    testSetId: input.testSetId,
+    testSetTestCaseId: input.testSetTestCaseId,
+    name: input.name,
+    module: input.module,
+    platform: normalizeMatrixPlatform(input.testSetName, input.platform),
+    testSetName: input.testSetName,
+  };
+}
+
 /** Flatten a week catalog into matrix cases (one row per Spira set membership). */
 export function casesFromWeekCatalog(catalog: WeekCatalog): MatrixCase[] {
   const out: MatrixCase[] = [];
   for (const mod of catalog.modules) {
     for (const set of mod.testSets) {
       for (const card of set.cards) {
-        out.push({
-          key: card.key,
-          testCaseId: card.testCaseId,
-          testSetId: card.testSetId,
-          testSetTestCaseId: card.testSetTestCaseId,
-          name: card.name,
-          module: mod.module,
-          platform: set.platform as Platform,
-          testSetName: set.testSetName,
-        });
+        out.push(
+          toMatrixCase({
+            key: card.key,
+            testCaseId: card.testCaseId,
+            testSetId: card.testSetId,
+            testSetTestCaseId: card.testSetTestCaseId,
+            name: card.name,
+            module: mod.module,
+            platform: set.platform,
+            testSetName: set.testSetName,
+          }),
+        );
       }
     }
   }
@@ -77,16 +105,18 @@ export function casesFromDrafts(drafts: Draft[]): MatrixCase[] {
   for (const draft of drafts) {
     for (const set of draft.testSets) {
       for (const card of set.cards) {
-        out.push({
-          key: card.key,
-          testCaseId: card.testCaseId,
-          testSetId: card.testSetId,
-          testSetTestCaseId: card.testSetTestCaseId,
-          name: card.name,
-          module: draft.module,
-          platform: set.platform as Platform,
-          testSetName: set.testSetName,
-        });
+        out.push(
+          toMatrixCase({
+            key: card.key,
+            testCaseId: card.testCaseId,
+            testSetId: card.testSetId,
+            testSetTestCaseId: card.testSetTestCaseId,
+            name: card.name,
+            module: draft.module,
+            platform: set.platform,
+            testSetName: set.testSetName,
+          }),
+        );
       }
     }
   }
@@ -107,17 +137,29 @@ export function replaceCatalog(
     cases: casesFromWeekCatalog(catalog),
   };
   saveMatrixStore(next);
+  const counts = platformCounts(next.cases);
   logActivity({
     type: "matrix.catalogLoaded",
-    message: `Matrix: loaded ${next.cases.length} Spira cases for ${catalog.releaseLabel}.`,
-    details: { releaseId: catalog.releaseId, cases: next.cases.length },
+    message: `Matrix: loaded ${next.cases.length} Spira cases (${counts.android} Android · ${counts.ios} iOS) in ${catalog.modules.length} modules for ${catalog.releaseLabel}.`,
+    details: {
+      releaseId: catalog.releaseId,
+      cases: next.cases.length,
+      modules: catalog.modules.length,
+      android: counts.android,
+      ios: counts.ios,
+    },
   });
   return next;
 }
 
+function mobileScore(cases: MatrixCase[]): number {
+  const c = platformCounts(cases);
+  return c.android + c.ios;
+}
+
 /**
- * Fill Matrix planned totals from existing UAT/Prod drafts when the board store is empty
- * or on a different release — same test cases for every MTN/Airtel/Glo cell.
+ * Keep Matrix planned totals aligned with UAT drafts (same Spira cases for every network).
+ * Overwrites a stale/incomplete board catalogue when drafts have better Android+iOS coverage.
  */
 export function seedCatalogFromDrafts(
   projectId: number,
@@ -127,7 +169,15 @@ export function seedCatalogFromDrafts(
   const cases = casesFromDrafts(drafts);
   if (cases.length === 0) return null;
   const prev = loadMatrixStore(projectId);
-  if (prev.cases.length > 0 && prev.releaseId === release.releaseId) return prev;
+  const sameRelease = prev.releaseId === release.releaseId;
+  const draftScore = mobileScore(cases);
+  const prevScore = mobileScore(prev.cases);
+  const keepPrev =
+    sameRelease &&
+    prev.cases.length > 0 &&
+    catalogLooksComplete(prev.cases) &&
+    prevScore >= draftScore;
+  if (keepPrev) return prev;
   const next: MatrixStore = {
     ...prev,
     projectId,
@@ -320,6 +370,7 @@ export function resultsForSession(store: MatrixStore, session: MatrixSession): M
 
 export {
   buildCoverage,
+  catalogLooksComplete,
   environmentLabel,
   MATRIX_DEVICES,
   MATRIX_NETWORKS,
@@ -327,6 +378,7 @@ export {
   MATRIX_PACKS,
   modulesInCatalog,
   modulesInSession,
+  normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
   selectSessionCases,
