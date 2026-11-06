@@ -42,6 +42,17 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
   };
 }
 
+/** Prod / UAT mobile modules we always try to pair on both platforms. */
+const EXPECTED_MOBILE_STEMS = [
+  "accounts & transactions",
+  "bill payment",
+  "cards",
+  "core banking & integration",
+  "customer onboarding & home screen",
+  "profile & notifications",
+  "transfers",
+];
+
 function folderSubtreeIds(
   folders: Array<{ folderId: number; parentId: number | null; name: string }>,
   rootId: number,
@@ -50,14 +61,29 @@ function folderSubtreeIds(
   return [rootId, ...kids.flatMap((k) => folderSubtreeIds(folders, k.folderId))];
 }
 
+function moduleStem(name: string): { stem: string; platform: "iOS" | "Android" | "Other" } {
+  const { module, platform } = guessMapping(name);
+  const stem = module.toLowerCase().replace(/\s+/g, " ").trim();
+  if (platform === "iOS" || platform === "Android") return { stem, platform };
+  return { stem, platform: "Other" };
+}
+
+function stemsMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  // Transfer / Transfers
+  const strip = (s: string) => s.replace(/s\b/g, "").replace(/\s+/g, " ").trim();
+  return strip(a) === strip(b);
+}
+
 async function listWeekTestSets(
   projectId: number,
   releaseId: number,
   cycleId: CycleId | null,
   releaseLabel: string,
 ): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
-  // Union three Spira cuts so Prod Matrix gets every module (Accounts…Transfers × iOS/Android):
-  // 1) release_id filter, 2) cycle folder tree, 3) all project sets whose version matches the label.
+  // Union Spira cuts so Prod Matrix gets every module (Accounts…Transfers × iOS/Android).
+  // Collect every candidate set per module stem — empty stubs must not block the real set.
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
   const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
   let folderName: string | null = null;
@@ -82,12 +108,10 @@ async function listWeekTestSets(
     releaseLabel ||
     ""
   ).match(/1\.0\.0(?:\.0)?\.\d+/)?.[0];
-  // Always union by version so a module present on only one platform cut (e.g. Transfers Android)
-  // is not dropped when folder/release already returned 12+ other sets.
+
+  const allMobile = (await listTestSets(projectId, null)).filter((t) => isMobileWeekSet(t.name));
   if (versionToken) {
-    const all = await listTestSets(projectId, null);
-    for (const t of all) {
-      if (!isMobileWeekSet(t.name)) continue;
+    for (const t of allMobile) {
       const ver = t.releaseVersion || "";
       if (ver.includes(versionToken) || (ver.length > 0 && releaseLabel.includes(ver))) {
         byId.set(t.testSetId, t);
@@ -95,29 +119,18 @@ async function listWeekTestSets(
     }
   }
 
-  // Pair missing counterparts: if we have "Transfers - iOS" but not Android (or vice versa), pull it.
-  const loaded = [...byId.values()];
-  const byStem = new Map<string, { ios: boolean; android: boolean }>();
-  for (const t of loaded) {
-    const { module, platform } = guessMapping(t.name);
-    const stem = module.toLowerCase();
-    const row = byStem.get(stem) ?? { ios: false, android: false };
-    if (platform === "iOS") row.ios = true;
-    if (platform === "Android") row.android = true;
-    byStem.set(stem, row);
+  // Stems we already have, plus the known Prod seven — pull every iOS/Android counterpart by name.
+  const wantedStems = new Set<string>(EXPECTED_MOBILE_STEMS);
+  for (const t of byId.values()) {
+    const { stem, platform } = moduleStem(t.name);
+    if (platform !== "Other") wantedStems.add(stem);
   }
-  const needsPair = [...byStem.entries()].some(([, p]) => p.ios !== p.android);
-  if (needsPair) {
-    const all = await listTestSets(projectId, null);
-    for (const t of all) {
-      if (!isMobileWeekSet(t.name) || byId.has(t.testSetId)) continue;
-      const { module, platform } = guessMapping(t.name);
-      if (platform !== "iOS" && platform !== "Android") continue;
-      const pair = byStem.get(module.toLowerCase());
-      if (!pair) continue;
-      if ((platform === "iOS" && !pair.ios) || (platform === "Android" && !pair.android)) {
-        byId.set(t.testSetId, t);
-      }
+  for (const t of allMobile) {
+    if (byId.has(t.testSetId)) continue;
+    const { stem, platform } = moduleStem(t.name);
+    if (platform === "Other") continue;
+    if ([...wantedStems].some((want) => stemsMatch(want, stem))) {
+      byId.set(t.testSetId, t);
     }
   }
 
@@ -176,8 +189,20 @@ export async function loadWeekCatalog(input: {
     return { module, comparison };
   });
 
-  const byModule = new Map<string, TestSetComparison[]>();
+  // Per module + platform keep the richest set (most cases). Empty "Transfers - Android" stubs
+  // must not hide the real Transfers Android set that Spira also returns.
+  const bestByKey = new Map<string, { module: string; comparison: TestSetComparison }>();
   for (const row of loaded) {
+    if (row.comparison.platform !== "iOS" && row.comparison.platform !== "Android") continue;
+    const key = `${row.module.toLowerCase()}|${row.comparison.platform}`;
+    const prev = bestByKey.get(key);
+    if (!prev || row.comparison.cards.length > prev.comparison.cards.length) {
+      bestByKey.set(key, row);
+    }
+  }
+
+  const byModule = new Map<string, TestSetComparison[]>();
+  for (const row of bestByKey.values()) {
     byModule.set(row.module, [...(byModule.get(row.module) ?? []), row.comparison]);
   }
 
@@ -186,7 +211,7 @@ export async function loadWeekCatalog(input: {
     .map(([module, testSets]) => ({
       module,
       context: { projectId: input.projectId, releaseId: input.releaseId, module },
-      testSets,
+      testSets: testSets.sort((a, b) => a.platform.localeCompare(b.platform)),
       caseCount: testSets.reduce((n, s) => n + s.cards.length, 0),
     }));
 
@@ -197,7 +222,7 @@ export async function loadWeekCatalog(input: {
     folderName,
     source,
     modules,
-    testSetCount: mobile.length,
+    testSetCount: bestByKey.size,
     caseCount: modules.reduce((n, m) => n + m.caseCount, 0),
   };
 }
