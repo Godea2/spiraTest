@@ -10,6 +10,7 @@ import {
   MATRIX_NETWORKS,
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
+  matrixModuleLabel,
   modulesInCatalog,
   modulesInSession,
   normalizeMatrixPlatform,
