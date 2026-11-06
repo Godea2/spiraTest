@@ -43,15 +43,16 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
 }
 
 /** Prod / UAT mobile modules we always try to pair on both platforms. */
-const EXPECTED_MOBILE_STEMS = [
-  "accounts & transactions",
-  "bill payment",
-  "cards",
-  "core banking & integration",
-  "customer onboarding & home screen",
-  "profile & notifications",
-  "transfers",
+const EXPECTED_MODULES: Array<{ stem: string; label: string }> = [
+  { stem: "accounts & transactions", label: "Accounts & Transactions" },
+  { stem: "bill payment", label: "Bill Payment" },
+  { stem: "cards", label: "Cards" },
+  { stem: "core banking & integration", label: "Core Banking & Integration" },
+  { stem: "customer onboarding & home screen", label: "Customer Onboarding & Home Screen" },
+  { stem: "profile & notifications", label: "Profile & Notifications" },
+  { stem: "transfers", label: "Transfers" },
 ];
+const EXPECTED_MOBILE_STEMS = EXPECTED_MODULES.map((m) => m.stem);
 
 function folderSubtreeIds(
   folders: Array<{ folderId: number; parentId: number | null; name: string }>,
@@ -68,12 +69,21 @@ function moduleStem(name: string): { stem: string; platform: "iOS" | "Android" |
   return { stem, platform: "Other" };
 }
 
+/** Exact / Transfer↔Transfers match only — never substring (that pulled SIT "Profile" into Prod). */
 function stemsMatch(a: string, b: string): boolean {
   if (a === b) return true;
-  if (a.includes(b) || b.includes(a)) return true;
-  // Transfer / Transfers
   const strip = (s: string) => s.replace(/s\b/g, "").replace(/\s+/g, " ").trim();
   return strip(a) === strip(b);
+}
+
+function isExpectedProdStem(stem: string): boolean {
+  return EXPECTED_MOBILE_STEMS.some((want) => stemsMatch(want, stem));
+}
+
+function versionMatches(set: SpiraTestSetSummary, versionToken: string | undefined, releaseLabel: string): boolean {
+  if (!versionToken) return false;
+  const ver = set.releaseVersion || "";
+  return ver.includes(versionToken) || (ver.length > 0 && releaseLabel.includes(ver));
 }
 
 async function listWeekTestSets(
@@ -82,11 +92,12 @@ async function listWeekTestSets(
   cycleId: CycleId | null,
   releaseLabel: string,
 ): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
-  // Union Spira cuts so Prod Matrix gets every module (Accounts…Transfers × iOS/Android).
-  // Collect every candidate set per module stem — empty stubs must not block the real set.
+  // Prod cut: release plan + cycle folder + same version number only.
+  // Do not pull every fuzzy name match from the whole project (that mixed SIT/UAT into Matrix).
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
   const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
   let folderName: string | null = null;
+  const folderSetIds = new Set<number>();
 
   if (cycleId) {
     const wantFolder = CYCLE_PRESETS[cycleId].folderName;
@@ -98,7 +109,10 @@ async function listWeekTestSets(
         const inFolder = (await listTestSetsInFolder(projectId, folderId, null)).filter((t) =>
           isMobileWeekSet(t.name),
         );
-        for (const t of inFolder) byId.set(t.testSetId, t);
+        for (const t of inFolder) {
+          byId.set(t.testSetId, t);
+          folderSetIds.add(t.testSetId);
+        }
       }
     }
   }
@@ -112,25 +126,35 @@ async function listWeekTestSets(
   const allMobile = (await listTestSets(projectId, null)).filter((t) => isMobileWeekSet(t.name));
   if (versionToken) {
     for (const t of allMobile) {
-      const ver = t.releaseVersion || "";
-      if (ver.includes(versionToken) || (ver.length > 0 && releaseLabel.includes(ver))) {
-        byId.set(t.testSetId, t);
-      }
+      if (versionMatches(t, versionToken, releaseLabel)) byId.set(t.testSetId, t);
     }
   }
 
-  // Stems we already have, plus the known Prod seven — pull every iOS/Android counterpart by name.
-  const wantedStems = new Set<string>(EXPECTED_MOBILE_STEMS);
+  // Missing platform pair for an expected Prod module (e.g. Transfers Android): only add a
+  // counterpart that is on the same version or already in the cycle folder.
+  const present = new Map<string, { ios: boolean; android: boolean }>();
   for (const t of byId.values()) {
     const { stem, platform } = moduleStem(t.name);
-    if (platform !== "Other") wantedStems.add(stem);
+    if (!isExpectedProdStem(stem) || platform === "Other") continue;
+    const row = present.get(stem) ?? { ios: false, android: false };
+    if (platform === "iOS") row.ios = true;
+    if (platform === "Android") row.android = true;
+    present.set(stem, row);
   }
-  for (const t of allMobile) {
-    if (byId.has(t.testSetId)) continue;
-    const { stem, platform } = moduleStem(t.name);
-    if (platform === "Other") continue;
-    if ([...wantedStems].some((want) => stemsMatch(want, stem))) {
-      byId.set(t.testSetId, t);
+  for (const want of EXPECTED_MOBILE_STEMS) {
+    const row = [...present.entries()].find(([stem]) => stemsMatch(stem, want))?.[1] ?? {
+      ios: false,
+      android: false,
+    };
+    for (const need of ["iOS", "Android"] as const) {
+      if ((need === "iOS" && row.ios) || (need === "Android" && row.android)) continue;
+      const candidate = allMobile.find((t) => {
+        if (byId.has(t.testSetId)) return false;
+        const { stem, platform } = moduleStem(t.name);
+        if (platform !== need || !stemsMatch(stem, want)) return false;
+        return folderSetIds.has(t.testSetId) || versionMatches(t, versionToken, releaseLabel);
+      });
+      if (candidate) byId.set(candidate.testSetId, candidate);
     }
   }
 
@@ -189,15 +213,19 @@ export async function loadWeekCatalog(input: {
     return { module, comparison };
   });
 
-  // Per module + platform keep the richest set (most cases). Empty "Transfers - Android" stubs
-  // must not hide the real Transfers Android set that Spira also returns.
+  // Per module + platform keep the richest set (most cases). Empty stubs must not hide real sets.
+  // For Prod/UAT, only keep the expected seven module stems so SIT leftovers never appear.
+  const restrictToExpected = cycleId === "prod" || cycleId === "uat";
   const bestByKey = new Map<string, { module: string; comparison: TestSetComparison }>();
   for (const row of loaded) {
     if (row.comparison.platform !== "iOS" && row.comparison.platform !== "Android") continue;
-    const key = `${row.module.toLowerCase()}|${row.comparison.platform}`;
+    const stem = row.module.toLowerCase().replace(/\s+/g, " ").trim();
+    if (restrictToExpected && !isExpectedProdStem(stem)) continue;
+    const pretty = EXPECTED_MODULES.find((m) => stemsMatch(m.stem, stem))?.label ?? row.module;
+    const key = `${pretty.toLowerCase()}|${row.comparison.platform}`;
     const prev = bestByKey.get(key);
     if (!prev || row.comparison.cards.length > prev.comparison.cards.length) {
-      bestByKey.set(key, row);
+      bestByKey.set(key, { module: pretty, comparison: row.comparison });
     }
   }
 

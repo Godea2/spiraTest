@@ -299,7 +299,7 @@ export function MatrixWorkspace() {
           </EmptyState>
         ) : (
           <div className="flex flex-col gap-5">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <fieldset className="min-w-0">
                 <legend className="mb-2 text-xs font-medium text-slate-500 dark:text-zinc-500">Device</legend>
                 <div className="flex flex-wrap gap-2">
@@ -342,26 +342,6 @@ export function MatrixWorkspace() {
                 </div>
               </fieldset>
 
-              <label className="flex min-w-0 flex-col gap-1.5 text-sm sm:col-span-2 lg:col-span-1">
-                <span className="text-xs font-medium text-slate-500 dark:text-zinc-500">Module</span>
-                <select
-                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 dark:border-white/10 dark:bg-white/[0.04]"
-                  value={selectedModule?.draft.id ?? ""}
-                  onChange={(e) => setModuleId(e.target.value)}
-                  disabled={moduleRows.length === 0}
-                >
-                  {moduleRows.length === 0 ? (
-                    <option value="">No {devicePlatform} modules</option>
-                  ) : (
-                    moduleRows.map(({ draft: d, counts }) => (
-                      <option key={d.id} value={d.id}>
-                        {matrixModuleLabel(d.module)} ({counts.total})
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-
               <label className="flex min-w-0 flex-col gap-1.5 text-sm">
                 <span className="text-xs font-medium text-slate-500 dark:text-zinc-500">Tester</span>
                 <div className="relative">
@@ -386,13 +366,13 @@ export function MatrixWorkspace() {
                   </Button>
                 }
               >
-                Expected Accounts, Bill Payment, Cards, Core Banking, Onboarding, Profile, Transfers.
+                Expected the 7 Prod modules: Accounts, Bill Payment, Cards, Core Banking, Onboarding, Profile, Transfers.
               </Notice>
             ) : (
               <>
                 <fieldset>
                   <legend className="mb-2 text-xs font-medium text-slate-500 dark:text-zinc-500">
-                    Or tap a module ({devicePlatform})
+                    Module ({devicePlatform}) · {plural(moduleRows.length, "module")}
                   </legend>
                   <div className="flex flex-wrap gap-2">
                     {moduleRows.map(({ draft: d, counts }) => (
