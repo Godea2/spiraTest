@@ -233,7 +233,7 @@ export function MatrixWorkspace() {
             : `${releaseLabel || "Settings release"} · Load Spira cases (same source as UAT build)`
         }
       >
-        {!coverage || (!store?.catalogLoadedAt && coverage.executedCells === 0) ? (
+        {!coverage || !store?.catalogLoadedAt || store.cases.length === 0 ? (
           <EmptyState
             icon={Smartphone}
             title="No Spira catalogue yet"
@@ -244,6 +244,7 @@ export function MatrixWorkspace() {
             }
           >
             Pulls every iOS/Android test set on the Settings release — Accounts, Bills, Cards, Onboarding, the same modules as UAT build.
+            Cells stay 0/— until that load finishes.
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
