@@ -3,9 +3,12 @@ import {
   buildCoverage,
   catalogLooksComplete,
   emptyMatrixStore,
+  isProdMatrixModule,
+  matrixBucketKey,
   modulesInSession,
   normalizeMatrixPlatform,
   platformForDevice,
+  prodModuleLabel,
   repairMatrixCases,
   resultId,
   selectSessionCases,
@@ -156,5 +159,13 @@ describe("matrix domain", () => {
       caution: 0,
       remaining: 1,
     });
+  });
+
+  it("keys app-owned buckets by device × network × module (Spira stays platform-only)", () => {
+    expect(matrixBucketKey("iOS", "MTN", "Accounts & Transactions")).toBe("iOS|MTN|accounts & transactions");
+    expect(matrixBucketKey("Samsung", "Airtel", "Transfers - Android")).toBe("Samsung|Airtel|transfers");
+    expect(prodModuleLabel("Transfers - iOS")).toBe("Transfers");
+    expect(isProdMatrixModule("Cards")).toBe(true);
+    expect(isProdMatrixModule("Home Screen")).toBe(false);
   });
 });

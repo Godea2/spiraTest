@@ -7,15 +7,18 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, EmptyState, Notice, PageHeader, Section } from "@/components/ui";
+import { errorMessage } from "@/lib/client/api";
 import { storeEnvironment } from "@/lib/client/defects";
-import { getTester, setTester as storeTester } from "@/lib/client/execution";
+import { getTester, recordResults, setTester as storeTester } from "@/lib/client/execution";
+import { clearActiveMatrixCell, setActiveMatrixCell } from "@/lib/client/matrix-context";
 import {
   clearMatrixResult,
   environmentLabel,
   getMatrixSession,
   loadMatrixStore,
-  MATRIX_PACK_LABEL,
+  matrixModuleLabel,
   modulesInSession,
+  prodModuleLabel,
   recordMatrixResult,
   resultsForSession,
   sessionCounts,
@@ -24,6 +27,7 @@ import {
   type MatrixSession,
   type MatrixStore,
 } from "@/lib/client/matrix";
+import { listUatDrafts } from "@/lib/client/uat-build";
 import { STATUS_LABEL } from "@/lib/domain/execution";
 import { EXECUTION_STATUSES, type ExecutionStatus } from "@/lib/domain/types";
 import { StatusChip, STATUS_STYLE } from "../../drafts/[id]/execute/runner";
@@ -59,6 +63,8 @@ export function MatrixExecute() {
     setTester(getTester());
   }, []);
 
+  const [recording, setRecording] = useState(false);
+
   useEffect(() => {
     if (projectId === null) return;
     const next = loadMatrixStore(projectId);
@@ -67,11 +73,25 @@ export function MatrixExecute() {
     setSession(s);
     setMissing(!s);
     if (s?.module) setModuleTab(s.module);
-  }, [projectId, sessionId]);
+    if (s && settings?.releaseId != null) {
+      setActiveMatrixCell({
+        projectId,
+        releaseId: s.releaseId,
+        releaseLabel: s.releaseLabel,
+        device: s.device,
+        network: s.network,
+      });
+      storeEnvironment(`${environmentLabel(s.device, s.network)} · ${s.releaseLabel}`);
+    }
+    return () => clearActiveMatrixCell();
+  }, [projectId, sessionId, settings?.releaseId]);
 
   const resultMap = useMemo(() => (store && session ? resultsForSession(store, session) : new Map<string, MatrixResult>()), [store, session]);
   const counts = useMemo(() => (session && store ? sessionCounts(session, store.results) : null), [session, store]);
   const moduleRows = useMemo(() => (session ? modulesInSession(session.cases) : []), [session]);
+  const bucketTitle = session
+    ? `${session.module ? (prodModuleLabel(session.module) ?? matrixModuleLabel(session.module)) : "Module"} · ${environmentLabel(session.device, session.network)}`
+    : "Matrix bucket";
 
   const visible = useMemo(() => {
     if (!session) return [];
@@ -91,22 +111,40 @@ export function MatrixExecute() {
     storeTester(name);
   };
 
-  const mark = (card: MatrixCase, status: ExecutionStatus) => {
-    if (projectId === null || !session) return;
-    const next = recordMatrixResult({
-      projectId,
-      sessionId: session.id,
-      caseKey: card.key,
-      status,
-      comment,
-      tester,
-    });
-    setStore(next);
-    setComment("");
-    storeEnvironment(`${environmentLabel(session.device, session.network)} · ${session.releaseLabel}`);
-    toast.success(`${STATUS_LABEL[status]} · TC${card.testCaseId}`);
-    const remaining = visible.filter((c) => c.key !== card.key && !resultsForSession(next, session).has(c.key));
-    setOpenKey(remaining[0]?.key ?? null);
+  const mark = async (card: MatrixCase, status: ExecutionStatus) => {
+    if (projectId === null || !session || recording) return;
+    setRecording(true);
+    try {
+      const drafts = listUatDrafts(session.releaseId);
+      const want = (prodModuleLabel(session.module ?? card.module) ?? matrixModuleLabel(session.module ?? card.module)).toLowerCase();
+      const draft = drafts.find((d) => (prodModuleLabel(d.module) ?? matrixModuleLabel(d.module)).toLowerCase() === want);
+      if (draft) {
+        await recordResults(
+          draft.id,
+          card.testSetId,
+          [{ testCaseId: card.testCaseId, testSetTestCaseId: card.testSetTestCaseId, status, comment: comment.trim(), steps: [] }],
+          tester,
+        );
+      }
+      const next = recordMatrixResult({
+        projectId,
+        sessionId: session.id,
+        caseKey: card.key,
+        status,
+        comment,
+        tester,
+      });
+      setStore(next);
+      setComment("");
+      storeEnvironment(`${environmentLabel(session.device, session.network)} · ${session.releaseLabel}`);
+      toast.success(`${STATUS_LABEL[status]} · TC${card.testCaseId}${draft ? " · Spira updated" : ""}`);
+      const remaining = visible.filter((c) => c.key !== card.key && !resultsForSession(next, session).has(c.key));
+      setOpenKey(remaining[0]?.key ?? null);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setRecording(false);
+    }
   };
 
   const clear = (card: MatrixCase) => {
@@ -125,8 +163,8 @@ export function MatrixExecute() {
 
   if (missing || !session) {
     return (
-      <EmptyState icon={Smartphone} title="Session not found" action={<ButtonLink href="/matrix">Back to Matrix</ButtonLink>}>
-        That matrix session is missing or was removed.
+      <EmptyState icon={Smartphone} title="Bucket not found" action={<ButtonLink href="/matrix">Back to Matrix</ButtonLink>}>
+        That matrix bucket is missing or was removed. Open it again from Matrix.
       </EmptyState>
     );
   }
@@ -134,8 +172,8 @@ export function MatrixExecute() {
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
       <PageHeader
-        title={environmentLabel(session.device, session.network)}
-        description={`${MATRIX_PACK_LABEL[session.pack]}${session.module ? ` · ${session.module}` : ""} · ${session.releaseLabel} · Exact Spira cases · Marks stay in this app`}
+        title={bucketTitle}
+        description={`${session.releaseLabel} · Bucket for this device × network · Spira ${session.cases[0]?.platform ?? "mobile"} cases (no separate MTN/itel sets in Spira)`}
         actions={
           <ButtonLink href="/matrix" size="sm" icon={ArrowLeft}>
             Matrix
@@ -143,8 +181,9 @@ export function MatrixExecute() {
         }
       />
 
-      <Notice tone="info">
-        You are executing on <strong>{session.device}</strong> with <strong>{session.network}</strong>. Same Spira modules and case names as Prod–Phase 1 — mark Passed / Failed like UAT execute.
+      <Notice tone="info" title="App bucket · Spira stays iOS/Android">
+        Testing <strong>{session.device}</strong> on <strong>{session.network}</strong>. Pass/Fail writes to the Spira{" "}
+        {session.cases[0]?.platform ?? "platform"} set and counts for this bucket only.
       </Notice>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -264,9 +303,10 @@ export function MatrixExecute() {
                           <button
                             key={status}
                             type="button"
-                            onClick={() => mark(card, status)}
+                            disabled={recording}
+                            onClick={() => void mark(card, status)}
                             className={clsx(
-                              "rounded-lg px-3 py-1.5 text-xs font-semibold ring-2 ring-offset-1 ring-offset-transparent transition",
+                              "rounded-lg px-3 py-1.5 text-xs font-semibold ring-2 ring-offset-1 ring-offset-transparent transition disabled:opacity-50",
                               STATUS_STYLE[status].button,
                             )}
                           >

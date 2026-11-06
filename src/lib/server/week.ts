@@ -1,6 +1,7 @@
 import "server-only";
 import { cardKey } from "@/lib/domain/board";
 import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, isMobileWeekSet, type CycleId } from "@/lib/domain/settings";
+import { PROD_MATRIX_MODULES } from "@/lib/domain/matrix";
 import type { Card, ExecutionCaseInput, ExecutionResult, SpiraTestSetSummary, TestSetComparison, WorkflowContext } from "@/lib/domain/types";
 import { inPool, recordExecutions } from "./workflow";
 import { sealComparison } from "./seal";
@@ -42,16 +43,7 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
   };
 }
 
-/** Prod / UAT mobile modules we always try to pair on both platforms. */
-const EXPECTED_MODULES: Array<{ stem: string; label: string }> = [
-  { stem: "accounts & transactions", label: "Accounts & Transactions" },
-  { stem: "bill payment", label: "Bill Payment" },
-  { stem: "cards", label: "Cards" },
-  { stem: "core banking & integration", label: "Core Banking & Integration" },
-  { stem: "customer onboarding & home screen", label: "Customer Onboarding & Home Screen" },
-  { stem: "profile & notifications", label: "Profile & Notifications" },
-  { stem: "transfers", label: "Transfers" },
-];
+const EXPECTED_MODULES = PROD_MATRIX_MODULES.map((m) => ({ stem: m.stem, label: m.label }));
 const EXPECTED_MOBILE_STEMS = EXPECTED_MODULES.map((m) => m.stem);
 
 function folderSubtreeIds(

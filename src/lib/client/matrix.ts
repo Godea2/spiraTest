@@ -10,12 +10,16 @@ import {
   MATRIX_NETWORKS,
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
+  isProdMatrixModule,
+  matrixBucketKey,
   matrixModuleLabel,
   modulesInCatalog,
   modulesInSession,
   normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
+  prodModuleLabel,
+  PROD_MATRIX_MODULES,
   repairMatrixCases,
   resultId,
   selectSessionCases,
@@ -203,10 +207,11 @@ export function startMatrixSession(input: {
   if (!store.releaseId || store.cases.length === 0) {
     throw new Error("Load the Spira case catalogue for this release before starting a session.");
   }
+  const moduleLabel = input.module ? (prodModuleLabel(input.module) ?? matrixModuleLabel(input.module)) : null;
   const cases = selectSessionCases(store.cases, {
     device: input.device,
     pack: input.pack,
-    module: input.module,
+    module: moduleLabel,
   });
   if (cases.length === 0) {
     throw new Error(
@@ -224,7 +229,7 @@ export function startMatrixSession(input: {
     device: input.device,
     network: input.network,
     pack: input.pack,
-    module: input.pack === "module" ? input.module : null,
+    module: input.pack === "module" ? moduleLabel : null,
     tester: input.tester.trim(),
     createdAt: now,
     updatedAt: now,
@@ -235,16 +240,77 @@ export function startMatrixSession(input: {
   saveMatrixStore(next);
   logActivity({
     type: "matrix.sessionStarted",
-    message: `Matrix session ${environmentLabel(session.device, session.network)}: ${cases.length} case(s) (${session.pack}).`,
+    message: `Matrix bucket ${environmentLabel(session.device, session.network)}${session.module ? ` · ${session.module}` : ""}: ${cases.length} case(s).`,
     details: {
       sessionId: session.id,
       device: session.device,
       network: session.network,
       pack: session.pack,
+      module: session.module,
       cases: cases.length,
+      bucket: session.module ? matrixBucketKey(session.device, session.network, session.module) : null,
     },
   });
   return { store: next, session };
+}
+
+/**
+ * Find or create the app-owned bucket for device × network × module.
+ * Spira keeps one iOS/Android set; the bucket is how we test MTN/itel/etc. without new Spira sets.
+ */
+export function ensureMatrixBucket(input: {
+  projectId: number;
+  device: MatrixDevice;
+  network: MatrixNetwork;
+  module: string;
+  tester: string;
+}): { store: MatrixStore; session: MatrixSession; created: boolean } {
+  const store = loadMatrixStore(input.projectId);
+  if (!store.releaseId || store.cases.length === 0) {
+    throw new Error("Load Spira cases for Prod 1.0.0.0.0006 before opening a matrix bucket.");
+  }
+  const moduleLabel = prodModuleLabel(input.module) ?? matrixModuleLabel(input.module);
+  const existing = store.sessions.find(
+    (s) =>
+      s.releaseId === store.releaseId &&
+      s.device === input.device &&
+      s.network === input.network &&
+      s.pack === "module" &&
+      !!s.module &&
+      (prodModuleLabel(s.module) ?? matrixModuleLabel(s.module)) === moduleLabel,
+  );
+  if (existing) {
+    const cases = selectSessionCases(store.cases, {
+      device: input.device,
+      pack: "module",
+      module: moduleLabel,
+    });
+    if (cases.length === 0) {
+      throw new Error(`No Spira cases in module "${moduleLabel}" for ${input.device}.`);
+    }
+    const session: MatrixSession = {
+      ...existing,
+      cases,
+      tester: input.tester.trim() || existing.tester,
+      updatedAt: new Date().toISOString(),
+      module: moduleLabel,
+    };
+    const next = {
+      ...store,
+      sessions: [session, ...store.sessions.filter((s) => s.id !== session.id)].slice(0, 80),
+    };
+    saveMatrixStore(next);
+    return { store: next, session, created: false };
+  }
+  const started = startMatrixSession({
+    projectId: input.projectId,
+    device: input.device,
+    network: input.network,
+    pack: "module",
+    module: moduleLabel,
+    tester: input.tester,
+  });
+  return { ...started, created: true };
 }
 
 export function getMatrixSession(projectId: number, sessionId: string): MatrixSession | null {
@@ -369,16 +435,20 @@ export {
   buildCoverage,
   catalogLooksComplete,
   environmentLabel,
+  isProdMatrixModule,
   MATRIX_DEVICES,
   MATRIX_NETWORKS,
   MATRIX_PACK_LABEL,
   MATRIX_PACKS,
+  matrixBucketKey,
   matrixModuleLabel,
   modulesInCatalog,
   modulesInSession,
   normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
+  prodModuleLabel,
+  PROD_MATRIX_MODULES,
   selectSessionCases,
   sessionCounts,
 };

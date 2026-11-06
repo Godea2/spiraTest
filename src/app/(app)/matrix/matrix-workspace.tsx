@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import { FileChartColumn, Grid3x3, Play, RefreshCw, UserRound } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
@@ -9,9 +10,12 @@ import { Badge, Button, ButtonLink, EmptyState, Notice, PageHeader, Section, Spi
 import { errorMessage } from "@/lib/client/api";
 import { logActivity } from "@/lib/client/activity";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
+import { setActiveMatrixCell } from "@/lib/client/matrix-context";
 import {
   buildCoverage,
   catalogLooksComplete,
+  ensureMatrixBucket,
+  isProdMatrixModule,
   loadMatrixStore,
   MATRIX_DEVICES,
   MATRIX_NETWORKS,
@@ -19,6 +23,7 @@ import {
   normalizeMatrixPlatform,
   platformCounts,
   platformForDevice,
+  prodModuleLabel,
   replaceCatalog,
   seedCatalogFromDrafts,
   type MatrixCellStatus,
@@ -52,6 +57,7 @@ function draftHasPlatform(draft: Draft, platform: ReturnType<typeof platformForD
  * Coverage is a summary — not the main interaction.
  */
 export function MatrixWorkspace() {
+  const router = useRouter();
   const { settings, spira } = useSettings();
   const projectId = settings?.projectId ?? null;
   const releaseId = settings?.releaseId ?? null;
@@ -104,9 +110,9 @@ export function MatrixWorkspace() {
 
   const moduleRows = useMemo(() => {
     return uatDrafts
-      .filter((d) => draftHasPlatform(d, devicePlatform))
+      .filter((d) => draftHasPlatform(d, devicePlatform) && isProdMatrixModule(d.module))
       .slice()
-      .sort((a, b) => a.module.localeCompare(b.module))
+      .sort((a, b) => matrixModuleLabel(a.module).localeCompare(matrixModuleLabel(b.module)))
       .map((d) => {
         const cards = executionCardsForPlatform(d, devicePlatform);
         const counts = executionCounts(cards, d.execution);
@@ -127,9 +133,38 @@ export function MatrixWorkspace() {
   }, [moduleRows, moduleId]);
 
   const selectedModule = moduleRows.find((r) => r.draft.id === moduleId) ?? moduleRows[0] ?? null;
-  const runHref = selectedModule
-    ? `/matrix/run/${selectedModule.draft.id}?device=${encodeURIComponent(device)}&network=${encodeURIComponent(network)}`
-    : null;
+  const [openingBucket, setOpeningBucket] = useState(false);
+
+  const openBucket = () => {
+    if (!selectedModule || projectId === null || releaseId === null) return;
+    const moduleName = prodModuleLabel(selectedModule.draft.module) ?? matrixModuleLabel(selectedModule.draft.module);
+    setOpeningBucket(true);
+    try {
+      const { session, created } = ensureMatrixBucket({
+        projectId,
+        device,
+        network,
+        module: moduleName,
+        tester,
+      });
+      setActiveMatrixCell({
+        projectId,
+        releaseId,
+        releaseLabel: store?.releaseLabel || releaseLabel,
+        device,
+        network,
+      });
+      toast.success(
+        created
+          ? `Created bucket · ${device} · ${network} · ${moduleName}`
+          : `Opened bucket · ${device} · ${network} · ${moduleName}`,
+      );
+      router.push(`/matrix/${session.id}`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+      setOpeningBucket(false);
+    }
+  };
 
   const loadCatalog = useCallback(async () => {
     if (projectId === null || releaseId === null) {
@@ -220,7 +255,7 @@ export function MatrixWorkspace() {
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <PageHeader
         title="Matrix"
-        description="Pick device and network, then run the same Spira modules as UAT. Results go to Spira and count for that cell."
+        description="Spira has iOS/Android modules only. Pick device + network + module to open a bucket — same cases, tracked for that cell (e.g. iOS · MTN · Accounts)."
         actions={
           <>
             <Button
@@ -432,11 +467,9 @@ export function MatrixWorkspace() {
                         )}
                       </div>
                     </div>
-                    {runHref && (
-                      <ButtonLink href={runHref} variant="primary" icon={Play}>
-                        {selectedModule.executed ? "Continue module" : "Run module"}
-                      </ButtonLink>
-                    )}
+                    <Button variant="primary" icon={Play} busy={openingBucket} onClick={openBucket}>
+                      {selectedModule.executed ? "Continue bucket" : "Open bucket"}
+                    </Button>
                   </div>
                 )}
               </>

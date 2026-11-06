@@ -13,6 +13,33 @@ export type MatrixDevice = (typeof MATRIX_DEVICES)[number];
 export const MATRIX_NETWORKS = ["MTN", "Airtel", "Glo"] as const;
 export type MatrixNetwork = (typeof MATRIX_NETWORKS)[number];
 
+/** The seven Prod–Phase 1 mobile modules (Spira has iOS + Android sets; not per-carrier/OEM). */
+export const PROD_MATRIX_MODULES = [
+  { stem: "accounts & transactions", label: "Accounts & Transactions" },
+  { stem: "bill payment", label: "Bill Payment" },
+  { stem: "cards", label: "Cards" },
+  { stem: "core banking & integration", label: "Core Banking & Integration" },
+  { stem: "customer onboarding & home screen", label: "Customer Onboarding & Home Screen" },
+  { stem: "profile & notifications", label: "Profile & Notifications" },
+  { stem: "transfers", label: "Transfers" },
+] as const;
+
+export function prodModuleLabel(name: string): string | null {
+  const stem = matrixModuleLabel(name).toLowerCase().replace(/\s+/g, " ").trim();
+  const strip = (s: string) => s.replace(/s\b/g, "").trim();
+  const hit = PROD_MATRIX_MODULES.find((m) => m.stem === stem || strip(m.stem) === strip(stem));
+  return hit?.label ?? null;
+}
+
+export function isProdMatrixModule(name: string): boolean {
+  return prodModuleLabel(name) !== null;
+}
+
+/** Stable id for a device × network × module bucket (app-owned; Spira stays iOS/Android only). */
+export function matrixBucketKey(device: MatrixDevice, network: MatrixNetwork, module: string): string {
+  return `${device}|${network}|${matrixModuleLabel(module).toLowerCase()}`;
+}
+
 /** Full Spira platform catalogue, or one Spira module (Accounts, Bills, Cards, …). */
 export const MATRIX_PACKS = ["all", "module"] as const;
 /** `smoke` is legacy only — old sessions may still have it; new sessions cannot start as smoke. */
@@ -171,8 +198,11 @@ export function selectSessionCases(
   const platform = platformForDevice(input.device);
   let list = catalog.filter((c) => c.platform === platform);
   if (input.pack === "module") {
-    const want = (input.module ?? "").trim().toLowerCase();
-    list = list.filter((c) => c.module.toLowerCase() === want);
+    const want = (prodModuleLabel(input.module ?? "") ?? matrixModuleLabel(input.module ?? "")).toLowerCase();
+    list = list.filter((c) => {
+      const label = (prodModuleLabel(c.module) ?? matrixModuleLabel(c.module)).toLowerCase();
+      return label === want || c.module.toLowerCase() === want;
+    });
   }
   return list.sort(
     (a, b) => a.module.localeCompare(b.module) || a.name.localeCompare(b.name) || a.testCaseId - b.testCaseId,
