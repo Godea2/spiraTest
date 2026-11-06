@@ -159,7 +159,7 @@ function mobileScore(cases: MatrixCase[]): number {
 
 /**
  * Keep Matrix planned totals aligned with UAT drafts (same Spira cases for every network).
- * Overwrites a stale/incomplete board catalogue when drafts have better Android+iOS coverage.
+ * Only seeds when drafts clearly improve Android+iOS coverage — never downgrade a better board.
  */
 export function seedCatalogFromDrafts(
   projectId: number,
@@ -172,12 +172,8 @@ export function seedCatalogFromDrafts(
   const sameRelease = prev.releaseId === release.releaseId;
   const draftScore = mobileScore(cases);
   const prevScore = mobileScore(prev.cases);
-  const keepPrev =
-    sameRelease &&
-    prev.cases.length > 0 &&
-    catalogLooksComplete(prev.cases) &&
-    prevScore >= draftScore;
-  if (keepPrev) return prev;
+  // Keep whatever is already better or equal on this release (including a fresh Spira reload).
+  if (sameRelease && prev.cases.length > 0 && prevScore >= draftScore) return prev;
   const next: MatrixStore = {
     ...prev,
     projectId,

@@ -257,18 +257,19 @@ export function MatrixWorkspace() {
       {incompleteCatalog && !loading && (
         <Notice
           tone="warning"
-          title="Catalogue is incomplete"
+          title="Catalogue is incomplete — click Reload"
           action={
             <Button size="sm" variant="primary" icon={RefreshCw} busy={loading} onClick={() => void loadCatalog()}>
               Reload full catalogue
             </Button>
           }
         >
-          Expected ~7 modules with both Android and iOS. Right now:{" "}
+          Matrix only has{" "}
           <strong>
             {platforms?.android ?? 0} Android · {platforms?.ios ?? 0} iOS
           </strong>{" "}
-          across {plural(uatDrafts.length || 0, "module")}.
+          right now (need both platforms across ~7 modules like Spira Prod–Phase 1). Click{" "}
+          <strong>Reload full catalogue</strong>, wait for the toast with Android and iOS counts, then pick a module.
         </Notice>
       )}
 

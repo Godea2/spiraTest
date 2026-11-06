@@ -42,14 +42,21 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
   };
 }
 
+function folderSubtreeIds(
+  folders: Array<{ folderId: number; parentId: number | null; name: string }>,
+  rootId: number,
+): number[] {
+  const kids = folders.filter((f) => f.parentId === rootId);
+  return [rootId, ...kids.flatMap((k) => folderSubtreeIds(folders, k.folderId))];
+}
+
 async function listWeekTestSets(
   projectId: number,
   releaseId: number,
   cycleId: CycleId | null,
 ): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
-  // Same cut as Reports “this build”: sets planned on the working release, iOS/Android only.
-  // Also union the cycle folder (e.g. Prod- Phase 1) — Spira’s release filter alone can miss
-  // sets that still show 0006 in the UI, which left Matrix with only ~1 module.
+  // Union release-planned sets with the cycle folder (Prod- Phase 1 / UAT / SIT). Spira’s
+  // release_id filter alone often returns only a slice; the folder is what you see in Spira UI.
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
   const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
   let folderName: string | null = null;
@@ -60,16 +67,18 @@ async function listWeekTestSets(
     const folder = findCycleFolder(folders, wantFolder);
     if (folder) {
       folderName = folder.name;
-      const inFolder = (await listTestSetsInFolder(projectId, folder.folderId, null)).filter((t) =>
-        isMobileWeekSet(t.name),
-      );
-      for (const t of inFolder) byId.set(t.testSetId, t);
+      for (const folderId of folderSubtreeIds(folders, folder.folderId)) {
+        const inFolder = (await listTestSetsInFolder(projectId, folderId, null)).filter((t) =>
+          isMobileWeekSet(t.name),
+        );
+        for (const t of inFolder) byId.set(t.testSetId, t);
+      }
     }
   }
 
   const sets = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   if (sets.length === 0) return { sets: [], folderName: null, source: "release" };
-  const source = onRelease.length > 0 && folderName ? "release" : onRelease.length > 0 ? "release" : "folder";
+  const source = folderName && onRelease.length === 0 ? "folder" : "release";
   return { sets, folderName, source };
 }
 
