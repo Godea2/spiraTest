@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, CircleCheckBig, Copy, FolderOpen, KanbanSquare, Pencil, Play, Plus, Search, Smartphone, Trash2 } from "lucide-react";
+import { ArrowRight, CircleCheckBig, Copy, FolderOpen, HardDrive, KanbanSquare, Pencil, Play, Plus, Search, Smartphone, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,13 +10,15 @@ import { Badge, Button, ButtonLink, Dialog, EmptyState, Field, Notice, PageHeade
 import { errorMessage } from "@/lib/client/api";
 import { deleteDraft, duplicateDraft, listDrafts, renameDraft } from "@/lib/client/drafts";
 import { relativeTime, STATUS_LABEL, STATUS_TONE } from "@/lib/client/format";
+import { deleteCompletedDrafts, formatBytes, measureAppStorage, trimActivity } from "@/lib/client/storage-cleanup";
 import { completeWithoutChanges } from "@/lib/client/workflow";
 import { isCompleted } from "@/lib/domain/board";
 import { pushTarget } from "@/lib/domain/mirror";
 import { isUatDraftId } from "@/lib/domain/uat-build";
 import { COLUMN_LABELS, COLUMNS, type DraftSummary } from "@/lib/domain/types";
+import { toast } from "sonner";
 
-type Pending = { kind: "rename" | "delete"; draft: DraftSummary } | null;
+type Pending = { kind: "rename" | "delete" | "freeStorage"; draft?: DraftSummary } | null;
 
 const SCOPE_COLOR: Record<(typeof COLUMNS)[number], string> = {
   inScope: "bg-emerald-500",
@@ -222,7 +224,27 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
 
   const confirmPending = () => {
     if (!pending) return;
+    if (pending.kind === "freeStorage") {
+      setPending(null);
+      setBusy("free-storage");
+      try {
+        const { deleted, freedApprox } = deleteCompletedDrafts();
+        trimActivity(80);
+        toast.success(
+          deleted
+            ? `Deleted ${deleted} Completed draft${deleted === 1 ? "" : "s"} · freed ~${formatBytes(freedApprox)}`
+            : "No Completed drafts to delete",
+        );
+        void load();
+      } catch (err) {
+        setError(errorMessage(err));
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     const { kind, draft } = pending;
+    if (!draft) return;
     setPending(null);
     void run(draft.id, async () => {
       if (kind === "delete") deleteDraft(draft.id);
@@ -230,13 +252,36 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
     });
   };
 
+  const usage = typeof window !== "undefined" ? measureAppStorage() : null;
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={text.title}
         description={text.description}
-        actions={<ButtonLink href="/" variant="primary" icon={Plus}>New comparison</ButtonLink>}
+        actions={
+          <>
+            {bucket === "completed" && (inBucket?.length ?? 0) > 0 && (
+              <Button
+                icon={HardDrive}
+                variant="secondary"
+                busy={busy === "free-storage"}
+                onClick={() => setPending({ kind: "freeStorage" })}
+              >
+                Free storage
+              </Button>
+            )}
+            <ButtonLink href="/" variant="primary" icon={Plus}>New comparison</ButtonLink>
+          </>
+        }
       />
+      {bucket === "completed" && usage && usage.completedDrafts > 0 && (
+        <Notice tone="info" title="Free space from Completed, not UAT">
+          App storage ~{formatBytes(usage.bytes)} · {usage.completedDrafts} Completed draft
+          {usage.completedDrafts === 1 ? "" : "s"} (safe to delete) · {usage.uatDrafts} UAT module
+          {usage.uatDrafts === 1 ? "" : "s"} kept. Spira runs stay in Spira.
+        </Notice>
+      )}
       {error && <Notice tone="danger">{error}</Notice>}
       {moved.length > 0 && (
         <Notice
@@ -366,6 +411,23 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
       )}
 
       <Dialog
+        open={pending?.kind === "freeStorage"}
+        onClose={() => setPending(null)}
+        title="Delete all Completed drafts?"
+        footer={
+          <>
+            <Button onClick={() => setPending(null)}>Cancel</Button>
+            <Button variant="danger" onClick={confirmPending} busy={busy === "free-storage"}>
+              Free storage
+            </Button>
+          </>
+        }
+      >
+        Removes every Completed Compare draft from this browser ({usage?.completedDrafts ?? 0}). UAT build modules and
+        open Drafts stay. Spira test sets and runs are not changed.
+      </Dialog>
+
+      <Dialog
         open={pending?.kind === "delete"}
         onClose={() => setPending(null)}
         title="Delete this draft?"
@@ -376,7 +438,7 @@ export function DraftList({ bucket = "drafts" }: { bucket?: Bucket }) {
           </>
         }
       >
-        “{pending?.draft.name}” and its board decisions will be removed. Spira is not affected.
+        “{pending?.draft?.name}” and its board decisions will be removed. Spira is not affected.
       </Dialog>
 
       <Dialog
