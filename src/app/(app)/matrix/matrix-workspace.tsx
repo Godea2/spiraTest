@@ -32,6 +32,7 @@ import {
   type MatrixStore,
 } from "@/lib/client/matrix";
 import { buildMatrixReport, type MatrixReport } from "@/lib/domain/matrix-report";
+import { CYCLE_PRESETS, detectCycle, type CycleId } from "@/lib/domain/settings";
 import { listUatDrafts, materializeUatCatalog } from "@/lib/client/uat-build";
 import { loadWeekCatalog } from "@/lib/client/week";
 import { executionCardsForPlatform, executionCounts } from "@/lib/domain/execution";
@@ -40,6 +41,14 @@ import { StatusChip } from "../drafts/[id]/execute/runner";
 import { MatrixReportViewer } from "../reports/matrix-report-viewer";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Soft cycle detect from Settings (same rules as week catalog load). */
+function cycleFromSettings(releaseId: number | null, releaseLabel: string): CycleId | null {
+  if (releaseId === CYCLE_PRESETS.uat.releaseId || /1\.0\.0\.0\.0004/.test(releaseLabel)) return "uat";
+  if (/1\.0\.0\.0\.0006/.test(releaseLabel)) return "prod";
+  if (releaseId === CYCLE_PRESETS.sit.releaseId || /1\.0\.0\.0002/.test(releaseLabel)) return "sit";
+  return detectCycle(releaseId, []);
+}
 
 const CELL_LABEL: Record<MatrixCellStatus, string> = {
   notStarted: "Not started",
@@ -95,22 +104,22 @@ export function MatrixWorkspace() {
     if (seeded) setStore(seeded);
   }, [projectId, releaseId, releaseLabel]);
 
+  const cycle = cycleFromSettings(releaseId, releaseLabel);
+  const cycleLabel = cycle ? CYCLE_PRESETS[cycle].label : "this release";
+  const restrictToProdModules = cycle === "prod" || cycle === "uat";
+
   const coverage = useMemo(() => (store ? buildCoverage(store, releaseId) : null), [store, releaseId]);
   const platforms = useMemo(() => (store ? platformCounts(store.cases) : null), [store]);
   const devicePlatform = platformForDevice(device);
   const plannedForPlatform = platforms ? (devicePlatform === "iOS" ? platforms.ios : platforms.android) : 0;
   const activeCell = coverage?.cells.find((c) => c.device === device && c.network === network) ?? null;
-  const incompleteCatalog = !!store?.catalogLoadedAt && store.cases.length > 0 && !catalogLooksComplete(store.cases);
-  const releaseMismatch =
-    (!!store?.releaseLabel &&
-      !!releaseLabel &&
-      !store.releaseLabel.includes("0006") &&
-      releaseLabel.includes("0006")) ||
-    (store?.releaseId != null && releaseId != null && store.releaseId !== releaseId);
+  const incompleteCatalog =
+    restrictToProdModules && !!store?.catalogLoadedAt && store.cases.length > 0 && !catalogLooksComplete(store.cases);
+  const releaseMismatch = store?.releaseId != null && releaseId != null && store.releaseId !== releaseId;
 
   const moduleRows = useMemo(() => {
     return uatDrafts
-      .filter((d) => draftHasPlatform(d, devicePlatform) && isProdMatrixModule(d.module))
+      .filter((d) => draftHasPlatform(d, devicePlatform) && (!restrictToProdModules || isProdMatrixModule(d.module)))
       .slice()
       .sort((a, b) => matrixModuleLabel(a.module).localeCompare(matrixModuleLabel(b.module)))
       .map((d) => {
@@ -119,7 +128,7 @@ export function MatrixWorkspace() {
         return { draft: d, cards, counts, executed: counts.total - counts.notRun };
       })
       .filter((row) => row.cards.length > 0);
-  }, [uatDrafts, devicePlatform]);
+  }, [uatDrafts, devicePlatform, restrictToProdModules]);
 
   // Keep module selection valid when device (platform) changes.
   useEffect(() => {
@@ -170,7 +179,7 @@ export function MatrixWorkspace() {
 
   const loadCatalog = useCallback(async () => {
     if (projectId === null || releaseId === null) {
-      setLoadError("Choose Prod (1.0.0.0.0006) in Settings and save first.");
+      setLoadError("Choose SIT, UAT, or Prod in Settings (Testing cycle) and save first.");
       return;
     }
     setLoading(true);
@@ -193,21 +202,27 @@ export function MatrixWorkspace() {
         },
       });
       toast.success(
-        `Loaded ${plural(catalog.modules.length, "module")} · ${catalog.caseCount.toLocaleString()} cases · ${counts.android.toLocaleString()} Android · ${counts.ios.toLocaleString()} iOS`,
+        `Loaded ${catalog.releaseLabel} · ${plural(catalog.modules.length, "module")} · ${catalog.caseCount.toLocaleString()} cases · ${counts.android.toLocaleString()} Android · ${counts.ios.toLocaleString()} iOS`,
       );
-      if (!catalogLooksComplete(next.cases)) {
-        toast.error("Still incomplete after reload — Spira did not return full iOS/Android modules. Try again or check Prod–Phase 1 in Spira.");
+      if (restrictToProdModules && !catalogLooksComplete(next.cases)) {
+        toast.error("Still incomplete after reload — Spira did not return full iOS/Android modules. Try again or check the folder in Spira.");
       }
     } catch (err) {
       setLoadError(errorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, [projectId, releaseId, releaseLabel]);
+  }, [projectId, releaseId, releaseLabel, restrictToProdModules]);
+
+  useEffect(() => {
+    autoReloadTried.current = false;
+  }, [releaseId]);
 
   useEffect(() => {
     if (!spira?.configured || projectId === null || releaseId === null || store === null || loading) return;
-    if (!store.catalogLoadedAt) {
+    if (!store.catalogLoadedAt || releaseMismatch) {
+      if (releaseMismatch && autoReloadTried.current) return;
+      if (releaseMismatch) autoReloadTried.current = true;
       void loadCatalog();
       return;
     }
@@ -219,7 +234,7 @@ export function MatrixWorkspace() {
       autoReloadTried.current = true;
       void loadCatalog();
     }
-  }, [spira?.configured, projectId, releaseId, store, uatDrafts.length, loading, incompleteCatalog, loadCatalog]);
+  }, [spira?.configured, projectId, releaseId, store, uatDrafts.length, loading, incompleteCatalog, releaseMismatch, loadCatalog]);
 
   const changeTester = (name: string) => {
     setTester(name);
@@ -246,18 +261,18 @@ export function MatrixWorkspace() {
   if (!settings || projectId === null) {
     return (
       <EmptyState icon={Grid3x3} title="Prod Testing" action={<ButtonLink href="/settings">Open Settings</ButtonLink>}>
-        Save project and Prod release 1.0.0.0.0006 in Settings first.
+        Save project and pick SIT, UAT, or Prod in Settings first.
       </EmptyState>
     );
   }
 
-  const hasCatalog = !!store?.catalogLoadedAt && store.cases.length > 0;
+  const hasCatalog = !!store?.catalogLoadedAt && store.cases.length > 0 && !releaseMismatch;
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
       <PageHeader
         title="Prod Testing"
-        description="Spira has iOS/Android modules only. Pick device + network + module to open a bucket — same cases, tracked for that cell (e.g. iOS · MTN · Accounts)."
+        description={`Device × network buckets using Spira ${cycleLabel} cases. Switch cycle in Settings (SIT / UAT / Prod), then Reload — e.g. SIT Transfers on iOS · MTN.`}
         actions={
           <>
             <Button
@@ -276,23 +291,28 @@ export function MatrixWorkspace() {
 
       {loadError && <Notice tone="danger">{loadError}</Notice>}
       {!spira?.configured && <Notice tone="warning">Connect Spira in Settings before loading cases.</Notice>}
-      {(releaseMismatch || (store?.releaseLabel && /0004/.test(store.releaseLabel))) && (
+      {cycle === "sit" && hasCatalog && (
+        <Notice tone="info" title="Using SIT test cases">
+          Settings is on <strong>{releaseLabel || "SIT"}</strong>. Open a bucket (e.g. Transfers) to run those SIT cases for the device × network you pick. Results still write to Spira on this release.
+        </Notice>
+      )}
+      {releaseMismatch && (
         <Notice
           tone="warning"
-          title="Wrong release loaded"
+          title="Settings release changed"
           action={
             <Button size="sm" variant="primary" icon={RefreshCw} busy={loading} onClick={() => void loadCatalog()}>
-              Load Prod 0006
+              Load {cycleLabel}
             </Button>
           }
         >
-          Board has <strong>{store?.releaseLabel || "another release"}</strong>
+          Board still has <strong>{store?.releaseLabel || "another release"}</strong>
           {releaseLabel ? (
             <>
-              ; Settings is <strong>{releaseLabel}</strong>
+              ; Settings is now <strong>{releaseLabel}</strong>
             </>
           ) : null}
-          . Use Prod <strong>1.0.0.0.0006</strong>.
+          . Reload to pull that cycle&apos;s modules and cases.
         </Notice>
       )}
       {incompleteCatalog && !loading && (
@@ -309,8 +329,8 @@ export function MatrixWorkspace() {
           <strong>
             {platforms?.android ?? 0} Android · {platforms?.ios ?? 0} iOS
           </strong>{" "}
-          right now (need both platforms across ~7 modules like Spira Prod–Phase 1). Click{" "}
-          <strong>Reload full catalogue</strong>, wait for the toast with Android and iOS counts, then pick a module.
+          right now (need both platforms across ~7 modules). Click <strong>Reload full catalogue</strong>, wait for the
+          toast with Android and iOS counts, then pick a module.
         </Notice>
       )}
 
@@ -319,20 +339,21 @@ export function MatrixWorkspace() {
         description={
           hasCatalog
             ? `${store?.releaseLabel || releaseLabel} · ${platforms?.android ?? 0} Android · ${platforms?.ios ?? 0} iOS · ${plural(moduleRows.length, "module")} for ${devicePlatform}`
-            : "Load Spira cases once — every network shares that same catalogue."
+            : `Load Spira cases for ${cycleLabel} — every network shares that same catalogue.`
         }
       >
         {!hasCatalog ? (
           <EmptyState
             icon={Grid3x3}
-            title="Load Spira cases"
+            title={`Load ${cycleLabel} cases`}
             action={
               <Button icon={RefreshCw} onClick={() => void loadCatalog()} busy={loading} disabled={!spira?.configured || releaseId === null}>
                 Load from Spira
               </Button>
             }
           >
-            Pulls all Prod modules (Accounts, Bills, Cards, Onboarding, …) for Android and iOS — same source as UAT build.
+            Pulls mobile modules for <strong>{releaseLabel || cycleLabel}</strong> (Android and iOS) — same device ×
+            network buckets, using this cycle&apos;s test cases.
           </EmptyState>
         ) : (
           <div className="flex flex-col gap-5">

@@ -217,7 +217,7 @@ export function startMatrixSession(input: {
     throw new Error(
       input.pack === "module"
         ? `No Spira cases in module "${input.module}" for ${input.device}. Reload cases or pick another module.`
-        : `No Spira ${platformForDevice(input.device)} cases on this release. Reload cases from Settings release 1.0.0.0.0006.`,
+        : `No Spira ${platformForDevice(input.device)} cases on this release. Reload cases from the Settings cycle (SIT / UAT / Prod).`,
     );
   }
   const now = new Date().toISOString();
