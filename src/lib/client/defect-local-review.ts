@@ -22,7 +22,8 @@ export function setForLater(projectId: number, incidentId: number, forLater: boo
   const map = readLocalReview(projectId);
   const id = String(incidentId);
   if (!forLater) {
-    const { [id]: _, ...rest } = map;
+    const rest = { ...map };
+    delete rest[id];
     writeLocalReview(projectId, rest);
     return;
   }

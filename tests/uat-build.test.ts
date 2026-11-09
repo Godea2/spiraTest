@@ -18,7 +18,7 @@ describe("resetUatProgress", () => {
     baselineMembership: [],
     seal: "test",
   };
-  const module = { module: "Payments", testSets: [testSet] };
+  const weekModule = { module: "Payments", testSets: [testSet] };
 
   beforeEach(() => {
     for (const d of listUatDrafts(releaseId)) {
@@ -31,7 +31,7 @@ describe("resetUatProgress", () => {
   });
 
   it("clears local execution marks on UAT drafts for the release", () => {
-    const shaped = draftFromWeekModule(catalog, module);
+    const shaped = draftFromWeekModule(catalog, weekModule);
     putDraft({
       ...shaped,
       execution: {

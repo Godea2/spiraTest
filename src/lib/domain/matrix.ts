@@ -177,9 +177,9 @@ export function normalizeMatrixPlatform(testSetName: string, platform: Platform 
 export function repairMatrixCases(cases: MatrixCase[]): MatrixCase[] {
   return cases.map((c) => {
     const platform = normalizeMatrixPlatform(c.testSetName, c.platform);
-    const module = c.module?.trim() || guessMapping(c.testSetName || "").module || c.module;
-    if (platform === c.platform && module === c.module) return c;
-    return { ...c, platform, module };
+    const moduleName = c.module?.trim() || guessMapping(c.testSetName || "").module || c.module;
+    if (platform === c.platform && moduleName === c.module) return c;
+    return { ...c, platform, module: moduleName };
   });
 }
 

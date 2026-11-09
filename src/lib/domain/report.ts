@@ -1157,15 +1157,12 @@ export function buildReport(input: ReportInput): Report {
     );
 
   const openDefectsByModule = new Map<string, number>();
-  const openInBuildByModule = new Map<string, number>();
   const defectsByModule = new Map<string, number>();
   for (const row of defectRows) {
     for (const id of new Set(row.testCaseIds.flatMap((caseId) => [...(modulesOfCase.get(caseId) ?? [])]))) {
       defectsByModule.set(id, (defectsByModule.get(id) ?? 0) + 1);
       if (countsOnDefectReport(row.incident)) {
         openDefectsByModule.set(id, (openDefectsByModule.get(id) ?? 0) + 1);
-        // Out-of-scope notes do not block module readiness; they are tracked as scope drift instead.
-        if (row.phase !== "out") openInBuildByModule.set(id, (openInBuildByModule.get(id) ?? 0) + 1);
       }
     }
   }
@@ -1176,7 +1173,6 @@ export function buildReport(input: ReportInput): Report {
     const execPct = pct(t.executed, t.executable);
     const passPct = pct(t.outcomes.passed, t.executed);
     const openDefects = openDefectsByModule.get(id) ?? 0;
-    const openInBuild = openInBuildByModule.get(id) ?? 0;
     const fullyRun = t.executable > 0 && t.executed === t.executable;
     const passOk = t.executed > 0 ? (passPct ?? 0) >= targets.passRatePct : null;
     const noBlocked = t.outcomes.blocked === 0;

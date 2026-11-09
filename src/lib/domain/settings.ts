@@ -156,10 +156,10 @@ export function guessMapping(testSetName: string): { module: string; platform: P
   if (end) {
     const suffix = end[1].toLowerCase();
     const platform: Platform = suffix === "ios" ? "iOS" : suffix === "android" ? "Android" : "Web";
-    const module = `${name.slice(0, end.index)} ${name.slice(end.index + end[0].length)}`
+    const moduleName = `${name.slice(0, end.index)} ${name.slice(end.index + end[0].length)}`
       .replace(/[\s\-_:/\\|]+/g, " ")
       .trim();
-    if (module) return { module, platform };
+    if (moduleName) return { module: moduleName, platform };
   }
   return { module: name, platform: "Other" };
 }

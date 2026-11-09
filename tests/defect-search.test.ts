@@ -145,7 +145,7 @@ describe("searchDefect", () => {
     const out = await searchDefect(24, [draft], "unable to login, not getting otp", () => {});
     expect(out.cases.find((c) => c.target.card.key === "1:3")?.match).toMatchObject({ verdict: "possible", reason: expect.stringContaining("Spira did not answer") });
 
-    calls.api.mockImplementation(async (path: string, init: { body: { cases: Array<{ key: string }> } }) => {
+    calls.api.mockImplementation(async (path: string) => {
       if (path.endsWith("/understand")) return analysis;
       if (path.endsWith("/incidents")) return { incidents: [], complete: true };
       if (path.endsWith("/find-existing")) return { hits: [] };
