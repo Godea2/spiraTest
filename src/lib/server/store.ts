@@ -92,3 +92,36 @@ export async function writeItems(items: Array<{ key: string; value: unknown }>, 
   await rest("rpc/store_write", { method: "POST", body: { items: payload, written_at: updatedAt }, prefer: "return=minimal" });
   return payload.map((p) => ({ key: p.key, updatedAt, merged: p.kind === "activity" && !p.deleted }));
 }
+
+/**
+ * Undeletes soft-deleted drafts (and any other soft-deleted sync keys).
+ * Draft rows keep their `data` when Free storage / delete only sets deleted_at — this clears that flag
+ * so the next browser pull brings Completed boards back.
+ */
+export async function restoreSoftDeleted(): Promise<{ drafts: number; keys: number }> {
+  const now = new Date().toISOString();
+  const draftRows = (await (
+    await rest("drafts?deleted_at=not.is.null&select=id", {
+      method: "PATCH",
+      body: { deleted_at: null },
+      prefer: "return=representation",
+    })
+  ).json()) as Array<{ id: string }>;
+
+  const keyRows = (await (
+    await rest("sync_keys?deleted=eq.true&select=key", {
+      method: "PATCH",
+      body: { deleted: false, updated_at: now },
+      prefer: "return=representation",
+    })
+  ).json()) as Array<{ key: string }>;
+
+  // Soft-deleted "other" rows in app_store (e.g. matrix) keep value when deleted=true.
+  await rest("app_store?deleted=eq.true", {
+    method: "PATCH",
+    body: { deleted: false, updated_at: now },
+    prefer: "return=minimal",
+  });
+
+  return { drafts: draftRows.length, keys: keyRows.length };
+}

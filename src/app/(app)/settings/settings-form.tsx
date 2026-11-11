@@ -858,6 +858,37 @@ function SpiraConnection({ connection, onRetest }: { connection: Connection; onR
 
 function SharedStorage() {
   const sync = useSyncExternalStore(storeSync.subscribe, storeSync.state, () => INITIAL_SYNC);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
+
+  const restoreDeleted = async () => {
+    setRestoring(true);
+    setRestoreMsg(null);
+    try {
+      const out = await api<{ restored: boolean; drafts?: number; keys?: number; reason?: string }>("/api/store/restore", {
+        method: "POST",
+        body: {},
+      });
+      if (!out.restored) {
+        setRestoreMsg(out.reason ?? "Nothing to restore.");
+        return;
+      }
+      await storeSync.pull();
+      setRestoreMsg(
+        `Restored ${out.drafts ?? 0} draft${(out.drafts ?? 0) === 1 ? "" : "s"} and ${out.keys ?? 0} storage key${(out.keys ?? 0) === 1 ? "" : "s"}. Check Completed.`,
+      );
+      logActivity({
+        type: "store.restored",
+        message: `Restored soft-deleted shared storage (${out.drafts ?? 0} drafts, ${out.keys ?? 0} keys).`,
+        details: out,
+      });
+    } catch (err) {
+      setRestoreMsg(errorMessage(err));
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   return (
     <Section
       icon={Database}
@@ -865,13 +896,20 @@ function SharedStorage() {
       description="Drafts, executions, defects, activity, settings and report setups are saved in Supabase through the server, so every browser and teammate sees the same data. The browser never contacts Supabase and never sees its key."
       actions={
         sync.mode === "cloud" && (
-          <Button size="sm" icon={RefreshCw} onClick={() => void storeSync.sync()} busy={sync.busy}>Sync now</Button>
+          <>
+            <Button size="sm" icon={CloudDownload} onClick={() => void restoreDeleted()} busy={restoring}>
+              Restore deleted
+            </Button>
+            <Button size="sm" icon={RefreshCw} onClick={() => void storeSync.sync()} busy={sync.busy}>
+              Sync now
+            </Button>
+          </>
         )
       }
     >
       {sync.mode === "local" ? (
         <Notice tone="info" title="Saved in this browser only">
-          Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the server environment and run supabase/schema.sql in Supabase, then redeploy. What is saved here is uploaded the first time the app opens after that.
+          Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the server environment and run supabase/schema.sql in Supabase, then redeploy. What is saved here is uploaded the first time the app opens after that. Browser-only deletes cannot be restored from the cloud.
         </Notice>
       ) : sync.error ? (
         <Notice tone="warning" title="Changes are not saved to Supabase yet">
@@ -879,10 +917,16 @@ function SharedStorage() {
         </Notice>
       ) : sync.mode === "cloud" ? (
         <Notice tone="success">
-          Connected to Supabase.{sync.savedAt ? ` Last saved ${formatDateTime(sync.savedAt)}.` : " Everything is saved."}
+          Connected to Supabase.{sync.savedAt ? ` Last saved ${formatDateTime(sync.savedAt)}.` : " Everything is saved."} Use{" "}
+          <strong>Restore deleted</strong> if Free storage or a draft delete removed Completed boards that were synced here.
         </Notice>
       ) : (
         <div className="flex items-center gap-2 text-sm text-zinc-500"><Spinner /> Connecting…</div>
+      )}
+      {restoreMsg && (
+        <Notice tone={restoreMsg.startsWith("Restored") ? "success" : "warning"} className="mt-3">
+          {restoreMsg}
+        </Notice>
       )}
     </Section>
   );
