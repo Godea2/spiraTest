@@ -107,6 +107,25 @@ export function detectCycle(releaseId: number | null, releases: SpiraRelease[]):
   return null;
 }
 
+/**
+ * Soft cycle detect from Settings release id / label (no Spira release list needed).
+ * Same rules as week catalog load.
+ */
+export function softDetectCycle(releaseId: number | null, releaseLabel = ""): CycleId | null {
+  if (releaseId === CYCLE_PRESETS.uat.releaseId || /1\.0\.0\.0\.0004/.test(releaseLabel)) return "uat";
+  if (/1\.0\.0\.0\.0006/.test(releaseLabel)) return "prod";
+  if (releaseId === CYCLE_PRESETS.sit.releaseId || /1\.0\.0\.0002/.test(releaseLabel)) return "sit";
+  return detectCycle(releaseId, []);
+}
+
+/** Nav / page title for the build execute workspace from the active cycle. */
+export function buildWorkspaceLabel(cycle: CycleId | null): string {
+  if (cycle === "sit") return "SIT build";
+  if (cycle === "prod") return "Prod build";
+  if (cycle === "uat") return "UAT build";
+  return "Build execute";
+}
+
 /** Project + releases to apply for a cycle. Throws when UAT (or any version-matched cycle) is missing in Spira. */
 export function cycleSettingsPatch(
   releases: SpiraRelease[],

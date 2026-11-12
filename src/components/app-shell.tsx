@@ -33,14 +33,15 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { Toaster } from "sonner";
 import { api } from "@/lib/client/api";
 import { INITIAL_SYNC, storeSync } from "@/lib/client/store-sync";
+import { buildWorkspaceLabel, softDetectCycle } from "@/lib/domain/settings";
 import { Logo } from "./brand";
 import { useSettings } from "./settings-context";
 
-const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean }> = [
+const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean; buildNav?: boolean }> = [
   { href: "/", label: "Compare", icon: GitCompareArrows, match: (p) => p === "/" },
   { href: "/drafts", label: "Drafts", icon: KanbanSquare, match: (p) => p.startsWith("/drafts") },
   { href: "/completed", label: "Completed", icon: CircleCheckBig, match: (p) => p.startsWith("/completed") },
-  { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week") },
+  { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week"), buildNav: true },
   { href: "/notes", label: "Notes", icon: NotebookPen, match: (p) => p.startsWith("/notes") },
   { href: "/progress", label: "Progress", icon: ListChecks, match: (p) => p.startsWith("/progress") },
   { href: "/matrix", label: "Prod Testing", icon: Grid3x3, match: (p) => p.startsWith("/matrix") },
@@ -200,18 +201,23 @@ function StorageStatus({ rail }: { rail?: Rail }) {
 }
 
 function NavLinks({ pathname, onNavigate, layoutId, rail }: { pathname: string; onNavigate?: () => void; layoutId: string; rail?: Rail }) {
+  const { settings } = useSettings();
+  const cycle = softDetectCycle(settings?.releaseId ?? null, settings?.releaseLabel ?? "");
+  const buildLabel = buildWorkspaceLabel(cycle);
+
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
       {NAV.map((item) => {
         const active = item.match(pathname);
         const Icon = item.icon;
+        const label = item.buildNav ? buildLabel : item.label;
         return (
           <Link
             key={item.href}
             href={item.href}
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
-            title={rail ? item.label : undefined}
+            title={rail ? label : undefined}
             className={clsx(
               "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
               active ? "text-slate-900 dark:text-white" : "text-slate-600 hover:bg-slate-900/[0.04] hover:text-slate-900 dark:text-zinc-400 dark:hover:bg-white/[0.04] dark:hover:text-white",
@@ -226,7 +232,7 @@ function NavLinks({ pathname, onNavigate, layoutId, rail }: { pathname: string; 
               />
             )}
             <Icon className={clsx("relative size-[18px]", active && "text-brand-600 dark:text-brand-300")} aria-hidden />
-            <span className={clsx("relative", rail && "rail:sr-only")}>{item.label}</span>
+            <span className={clsx("relative", rail && "rail:sr-only")}>{label}</span>
           </Link>
         );
       })}

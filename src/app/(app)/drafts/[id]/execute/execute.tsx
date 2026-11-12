@@ -35,6 +35,7 @@ import {
   TEST_SET_STATUS_NAMES,
 } from "@/lib/domain/execution";
 import { normalizeMatrixPlatform } from "@/lib/domain/matrix";
+import { isUatDraftId } from "@/lib/domain/uat-build";
 import { EXECUTION_STATUSES, type Card, type DefectRecord, type ExecutionResult, type ExecutionRun, type ExecutionStatus, type Platform } from "@/lib/domain/types";
 import { IncidentDialog } from "./incident-dialog";
 import { MarkMenu } from "./mark-menu";
@@ -123,7 +124,7 @@ export function Execute({
   useEffect(() => {
     if (!loaded || checkedOnOpen.current) return;
     checkedOnOpen.current = true;
-    void checkSpira();
+    void checkSpira({ quiet: true });
     // Runs once when the draft is first available; later checks are on request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
@@ -193,14 +194,24 @@ export function Execute({
   const releaseText = draft.releaseLabel || draft.releaseId;
   const defectCount = cards.filter((c) => effectiveColumn(c, draft.decisions) === "defects").length;
 
-  async function checkSpira() {
+  async function checkSpira(opts?: { quiet?: boolean }) {
     setSync({ checking: true, errors: [] });
     try {
       const out = await refreshExecution(id);
       setDraft(out.draft);
       setSync({ checking: false, errors: out.errors });
+      if (!opts?.quiet && out.errors.length === 0) {
+        const cardsNow = executionCards(out.draft);
+        const c = executionCounts(cardsNow, out.draft.execution);
+        toast.success(
+          `Spira updated · ${c.passed} Passed · ${c.notRun} to run${c.failed ? ` · ${c.failed} Failed` : ""}`,
+        );
+      } else if (!opts?.quiet && out.errors.length > 0) {
+        toast.warning(`Checked Spira with ${out.errors.length} set error${out.errors.length === 1 ? "" : "s"}`);
+      }
     } catch (err) {
       setSync({ checking: false, errors: [errorMessage(err)] });
+      if (!opts?.quiet) toast.error(errorMessage(err));
     }
   }
 
@@ -461,7 +472,11 @@ export function Execute({
       {report && !job && (
         <Notice
           tone={report.failed.length || report.differing ? "warning" : "success"}
-          title={`${plural(report.recorded, "case")} recorded as ${STATUS_LABEL[report.status]} in ${report.seconds}s${report.stopped ? " (stopped)" : ""}`}
+          title={
+            report.recorded > 0 && !report.failed.length && !report.differing
+              ? `Spira updated · ${plural(report.recorded, "case")} ${STATUS_LABEL[report.status]} in ${report.seconds}s`
+              : `${plural(report.recorded, "case")} recorded as ${STATUS_LABEL[report.status]} in ${report.seconds}s${report.stopped ? " (stopped)" : ""}`
+          }
           action={<Button size="sm" variant="ghost" onClick={() => setReport(null)}>Dismiss</Button>}
         >
           <ul className="flex flex-col gap-1">
@@ -496,9 +511,15 @@ export function Execute({
         </Notice>
       )}
 
-      {!isCompleted(draft.status) && (
+      {!isCompleted(draft.status) && !isUatDraftId(draft.id) && (
         <Notice tone="warning" title="This draft is not completed yet">
           Finish the review and live apply first, so the In Scope list here matches the test sets in Spira.
+        </Notice>
+      )}
+      {isUatDraftId(draft.id) && (
+        <Notice tone="info" title="Spira build module">
+          Multi-select cases and mark <strong>Passed</strong> (or Fail / Block / Caution). Each save creates a Spira test run.
+          Use <strong>Check Spira again</strong> so existing Spira results show under Passed / To run.
         </Notice>
       )}
       {scopedTestSets.map((s) => {

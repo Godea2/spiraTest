@@ -2,7 +2,7 @@
 
 import { Bug, ChevronDown, ClipboardList, Eraser, Play, RefreshCw, Upload, UserRound } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, EmptyState, Notice, PageHeader, Section, Spinner } from "@/components/ui";
@@ -13,6 +13,7 @@ import type { PassProgressOutcome, ProgressPick } from "@/lib/client/progress";
 import { listUatDrafts, materializeUatCatalog, resetUatProgress } from "@/lib/client/uat-build";
 import { loadWeekCatalog, recordWeekPicks, weekCatalogAsDrafts, type WeekCatalog } from "@/lib/client/week";
 import { executionCards, executionCounts } from "@/lib/domain/execution";
+import { buildWorkspaceLabel, CYCLE_PRESETS, softDetectCycle } from "@/lib/domain/settings";
 import type { Draft } from "@/lib/domain/types";
 import { DefectWorkspace } from "../defects/defect-workspace";
 import { ImportPanel } from "../progress/import-panel";
@@ -22,9 +23,22 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 type Tab = "cases" | "defects" | "smoke";
 
+function platformCaseCounts(catalog: WeekCatalog): { android: number; ios: number } {
+  let android = 0;
+  let ios = 0;
+  for (const mod of catalog.modules) {
+    for (const set of mod.testSets) {
+      const n = set.cards.length;
+      if (set.platform === "Android") android += n;
+      else if (set.platform === "iOS") ios += n;
+    }
+  }
+  return { android, ios };
+}
+
 /**
- * UAT build: load Spira cases for the Settings release, run Pass/Fail like Completed,
- * search defects against this build, and optionally import a smoke pack.
+ * Build execute workspace: load Spira cases for the Settings release (SIT / UAT / Prod),
+ * Pass/Fail like Completed, search defects, optional smoke import.
  */
 export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
   const { settings, ai, spira } = useSettings();
@@ -36,10 +50,14 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>(initialTab ?? "cases");
   const [smokeOpen, setSmokeOpen] = useState(false);
+  const autoLoadTried = useRef(false);
 
   const projectId = settings?.projectId ?? null;
   const releaseId = settings?.releaseId ?? null;
   const releaseLabel = settings?.releaseLabel?.trim() || (releaseId !== null ? `RL:${releaseId}` : "");
+  const cycle = softDetectCycle(releaseId, releaseLabel);
+  const buildLabel = buildWorkspaceLabel(cycle);
+  const cycleHint = cycle ? CYCLE_PRESETS[cycle].hint : "Settings testing cycle";
 
   const importDrafts = useMemo(() => (catalog ? weekCatalogAsDrafts(catalog) : []), [catalog]);
 
@@ -47,6 +65,9 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     if (releaseId === null) return;
     const existing = listUatDrafts(releaseId);
     if (existing.length > 0) setUatDrafts(existing);
+    else setUatDrafts([]);
+    setCatalog(null);
+    autoLoadTried.current = false;
   }, [releaseId]);
 
   useEffect(() => {
@@ -55,7 +76,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
 
   const load = useCallback(async () => {
     if (projectId === null || releaseId === null) {
-      setLoadError("Choose the Testing cycle (UAT or SIT) in Settings and save first.");
+      setLoadError("Choose the Testing cycle (SIT, UAT, or Prod) in Settings and save first.");
       return;
     }
     setLoading(true);
@@ -65,12 +86,23 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
       setCatalog(next);
       const drafts = materializeUatCatalog(next);
       setUatDrafts(drafts);
+      const { android, ios } = platformCaseCounts(next);
       logActivity({
         type: "week.loaded",
-        message: `UAT build: loaded ${next.caseCount} Spira cases in ${next.modules.length} modules for ${next.releaseLabel}.`,
-        details: { releaseId: next.releaseId, modules: next.modules.length, cases: next.caseCount, source: "uat-build" },
+        message: `${buildLabel}: loaded ${next.caseCount} Spira cases in ${next.modules.length} modules for ${next.releaseLabel}.`,
+        details: {
+          releaseId: next.releaseId,
+          modules: next.modules.length,
+          cases: next.caseCount,
+          android,
+          ios,
+          source: "uat-build",
+          cycle,
+        },
       });
-      toast.success(`Loaded ${plural(next.caseCount, "case")} from Spira`);
+      toast.success(
+        `Loaded ${next.releaseLabel} · ${plural(next.modules.length, "module")} · ${next.caseCount.toLocaleString()} cases · ${android.toLocaleString()} Android · ${ios.toLocaleString()} iOS`,
+      );
       setTab("cases");
     } catch (err) {
       setCatalog(null);
@@ -79,7 +111,14 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, releaseId, releaseLabel]);
+  }, [projectId, releaseId, releaseLabel, buildLabel, cycle]);
+
+  useEffect(() => {
+    if (!spira?.configured || projectId === null || releaseId === null || loading) return;
+    if (uatDrafts.length > 0 || autoLoadTried.current) return;
+    autoLoadTried.current = true;
+    void load();
+  }, [spira?.configured, projectId, releaseId, uatDrafts.length, loading, load]);
 
   const changeTester = (name: string) => {
     setTester(name);
@@ -90,7 +129,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     if (releaseId === null) return;
     if (
       !window.confirm(
-        "Clear local UAT Execute / Progress marks for this build so regression can start fresh in this app?\n\nSpira runs and the Reports figures read from Spira are not changed.",
+        `Clear local ${buildLabel} Execute / Progress marks for this build so regression can start fresh in this app?\n\nSpira runs and the Reports figures read from Spira are not changed.`,
       )
     ) {
       return;
@@ -99,10 +138,10 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     setUatDrafts(listUatDrafts(releaseId));
     logActivity({
       type: "week.loaded",
-      message: `UAT build: cleared local progress on ${cleared} module draft(s) for release ${releaseId}.`,
+      message: `${buildLabel}: cleared local progress on ${cleared} module draft(s) for release ${releaseId}.`,
       details: { releaseId, cleared, source: "uat-build-reset" },
     });
-    toast.success(cleared ? `Cleared progress on ${plural(cleared, "module")}` : "UAT progress was already clear");
+    toast.success(cleared ? `Cleared progress on ${plural(cleared, "module")}` : "Progress was already clear");
   };
 
   const recordPicks = async (
@@ -115,7 +154,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     if (out.recorded > 0) {
       logActivity({
         type: "progress.recorded",
-        message: `Recorded ${out.recorded} UAT build run(s) on ${catalog.releaseLabel}${name ? ` (${name})` : ""}.`,
+        message: `Recorded ${out.recorded} ${buildLabel} run(s) on ${catalog.releaseLabel}${name ? ` (${name})` : ""}.`,
         details: { recorded: out.recorded, failed: out.failed.length, releaseId: catalog.releaseId, tester: name, source: "uat-build" },
       });
       if (releaseId !== null) setUatDrafts(listUatDrafts(releaseId));
@@ -131,11 +170,12 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
   };
 
   const hasCases = uatDrafts.length > 0;
+  const headerBadge = [releaseLabel, catalog?.folderName].filter(Boolean).join(" · ");
 
   if (!spira?.configured) {
     return (
       <Notice tone="warning" title="Spira is not connected" action={<ButtonLink href="/settings" size="sm">Settings</ButtonLink>}>
-        Connect Spira in Settings, then open UAT build again.
+        Connect Spira in Settings, then open {buildLabel} again.
       </Notice>
     );
   }
@@ -143,9 +183,9 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="UAT build"
-        description="Load this release’s iOS/Android cases from Spira, Pass or Fail them like Completed, and fail cases from a defect description — all written to Spira."
-        actions={releaseLabel && <Badge tone="brand">{releaseLabel}</Badge>}
+        title={buildLabel}
+        description={`Load ${cycle === "sit" ? "SIT Cycle 2" : "this release"}’s iOS/Android cases from Spira, multi-select Pass/Fail like Completed — every mark writes a Spira test run.`}
+        actions={headerBadge ? <Badge tone="brand">{headerBadge}</Badge> : null}
       />
 
       {projectId === null || releaseId === null ? (
@@ -158,10 +198,16 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
             </ButtonLink>
           }
         >
-          Set Testing cycle to <strong>UAT</strong> (or SIT), save, then come back here.
+          Set Testing cycle to <strong>SIT</strong> (or UAT / Prod), save, then come back here.
         </EmptyState>
       ) : (
         <>
+          {cycle === "sit" && (
+            <Notice tone="info" title="SIT Cycle 2">
+              Settings is on <strong>{releaseLabel || cycleHint}</strong>. Load modules, open one, Check Spira, then multi-select Pass — results go straight to Spira.
+            </Notice>
+          )}
+
           <Section
             icon={ClipboardList}
             title="Spira cases for this build"
@@ -198,6 +244,12 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
                 )}{" "}
                 in {plural(uatDrafts.length, "module")}
                 {catalog ? ` · ${plural(catalog.testSetCount, "test set")}` : ""}
+                {catalog
+                  ? (() => {
+                      const c = platformCaseCounts(catalog);
+                      return ` · ${c.android.toLocaleString()} Android · ${c.ios.toLocaleString()} iOS`;
+                    })()
+                  : null}
               </p>
             )}
             {!hasCases && !loading && !loadError && (
@@ -250,7 +302,10 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
           )}
 
           {tab === "cases" && hasCases && (
-            <Section title="Modules" description="Open a module to Pass, Fail, Block or Caution cases — same runner as Completed.">
+            <Section
+              title="Modules"
+              description="Open a module to multi-select Pass, Fail, Block or Caution — same runner as Completed. Marks write to Spira."
+            >
               <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {uatDrafts
                   .slice()
@@ -302,7 +357,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
             <Section
               icon={Bug}
               title="Defects on this build"
-              description="Paste a defect description. Gemini finds cases on this UAT build; Fail them in Spira and optionally log an incident."
+              description={`Paste a defect description. Gemini finds cases on this ${buildLabel}; Fail them in Spira and optionally log an incident.`}
             >
               <DefectWorkspace from={null} scopedDrafts={uatDrafts} embedded />
             </Section>
@@ -312,7 +367,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
             <Section
               icon={Upload}
               title="Smoke import"
-              description="Optional: map a UAT smoke pack (.xlsx / .csv) onto this build’s cases, then Record."
+              description="Optional: map a smoke pack (.xlsx / .csv) onto this build’s cases, then Record."
               actions={
                 <Button size="sm" variant="ghost" icon={ChevronDown} onClick={() => setSmokeOpen((o) => !o)}>
                   {smokeOpen ? "Hide help" : "Show help"}
@@ -355,7 +410,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
               <Link href="/settings" className="font-medium underline">
                 Settings → Testing cycle
               </Link>{" "}
-              should be UAT.
+              should be <strong>SIT</strong> for Cycle 2 (or UAT / Prod as needed).
             </Notice>
           )}
         </>

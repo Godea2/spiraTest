@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { deleteDraft, putDraft } from "@/lib/client/drafts";
 import { listUatDrafts, resetUatProgress } from "@/lib/client/uat-build";
 import { emptyExecution } from "@/lib/domain/execution";
-import { draftFromWeekModule, uatDraftId } from "@/lib/domain/uat-build";
+import { isCompleted } from "@/lib/domain/board";
+import { draftFromWeekModule, isUatDraftId, uatDraftId } from "@/lib/domain/uat-build";
 import type { TestSetComparison } from "@/lib/domain/types";
 
 describe("resetUatProgress", () => {
@@ -28,6 +29,14 @@ describe("resetUatProgress", () => {
         // gone
       }
     }
+  });
+
+  it("SIT/UAT module drafts are executable without a Completed Compare seal", () => {
+    const shaped = draftFromWeekModule(catalog, weekModule);
+    expect(isUatDraftId(shaped.id)).toBe(true);
+    expect(shaped.status).toBe("applied");
+    expect(isCompleted(shaped.status)).toBe(true);
+    expect(shaped.releaseId).toBe(releaseId);
   });
 
   it("clears local execution marks on UAT drafts for the release", () => {

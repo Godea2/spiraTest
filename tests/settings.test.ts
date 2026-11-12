@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadSettings, saveSettings } from "@/lib/client/settings-store";
 import { writeItem } from "@/lib/client/storage";
 import {
+  buildWorkspaceLabel,
   CYCLE_PRESETS,
   cycleSettingsPatch,
   detectCycle,
@@ -9,6 +10,7 @@ import {
   guessMapping,
   isMobileWeekSet,
   resolveCycleRelease,
+  softDetectCycle,
   TEAM_DEFAULTS,
   type SettingsUpdate,
 } from "@/lib/domain/settings";
@@ -166,6 +168,16 @@ describe("SIT / UAT testing cycles", () => {
       { folderId: 8, name: "API UAT" },
     ];
     expect(findCycleFolder(folders, CYCLE_PRESETS.uat.folderName)).toEqual({ folderId: 7, name: "UAT - Phase 1" });
+  });
+
+  it("soft-detects SIT from Settings release and labels the build workspace", () => {
+    expect(softDetectCycle(CYCLE_PRESETS.sit.releaseId, "1.0.0.0002 - Sprint3")).toBe("sit");
+    expect(softDetectCycle(null, "1.0.0.0002 - Sprint3")).toBe("sit");
+    expect(softDetectCycle(CYCLE_PRESETS.uat.releaseId, "")).toBe("uat");
+    expect(buildWorkspaceLabel("sit")).toBe("SIT build");
+    expect(buildWorkspaceLabel("uat")).toBe("UAT build");
+    expect(buildWorkspaceLabel("prod")).toBe("Prod build");
+    expect(buildWorkspaceLabel(null)).toBe("Build execute");
   });
 });
 

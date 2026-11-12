@@ -35,6 +35,7 @@ import {
   type ReportOptions,
 } from "@/lib/domain/report";
 import type { DefectBucket } from "@/lib/domain/incident-register";
+import { softDetectCycle } from "@/lib/domain/settings";
 import type { ReportCatalog } from "@/lib/domain/types";
 
 /** Defects logged in this browser for the "Defects today" KPI and section. */
@@ -67,18 +68,25 @@ const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green
 /** The build's name on the report and its choices. */
 const PHASE = "Phase 1";
 
-const KINDS: { kind: ReportKind; icon: LucideIcon; title: string; hint?: string }[] = [
-  { kind: "planned", icon: ClipboardList, title: "Planned test cases", hint: "Coverage before execution — zeros for run results" },
-  { kind: "build", icon: Target, title: `${PHASE}: scoped test cases` },
-  { kind: "buildVsPlan", icon: GitCompareArrows, title: `${PHASE}: scoped vs total test plan` },
-  { kind: "plan", icon: Layers, title: "Total test plan" },
-  { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier coverage from Prod Testing" },
-];
+function reportKinds(phase: string): { kind: ReportKind; icon: LucideIcon; title: string; hint?: string }[] {
+  return [
+    { kind: "planned", icon: ClipboardList, title: "Planned test cases", hint: "Coverage before execution — zeros for run results" },
+    { kind: "build", icon: Target, title: `${phase}: scoped test cases`, hint: "Spira runs for the Settings release only" },
+    {
+      kind: "buildVsPlan",
+      icon: GitCompareArrows,
+      title: `${phase}: scoped vs total test plan`,
+      hint: "Best for SIT / this-build executive packs from Spira",
+    },
+    { kind: "plan", icon: Layers, title: "Total test plan" },
+    { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier coverage from Prod Testing" },
+  ];
+}
 
-function KindPicker({ value, onChange }: { value: ReportKind; onChange: (kind: ReportKind) => void }) {
+function KindPicker({ value, onChange, phase }: { value: ReportKind; onChange: (kind: ReportKind) => void; phase: string }) {
   return (
     <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
-      {KINDS.map(({ kind, icon: Icon, title, hint }) => {
+      {reportKinds(phase).map(({ kind, icon: Icon, title, hint }) => {
         const selected = value === kind;
         const featured = kind === "planned" || kind === "buildVsPlan";
         const featuredTone =
@@ -183,6 +191,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const { settings, spira } = useSettings();
   const projectId = settings?.projectId ?? null;
   const configured = spira?.configured === true;
+  const cycle = softDetectCycle(settings?.releaseId ?? null, settings?.releaseLabel ?? "");
   const shared = useMemo(() => (share ? decodeShare(share) : null), [share]);
 
   const [catalogState, setCatalogState] = useState<CatalogState | null>(null);
@@ -235,19 +244,21 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const planRelease = settings?.planReleaseId ?? null;
   // The releases follow Settings (the working release, and the total test plan release);
   // only the report and its header are chosen here.
+  const phaseLabel = cycle === "sit" ? "SIT Cycle 2" : cycle === "prod" ? "Prod Phase 1" : PHASE;
+
   const options = useMemo((): ReportOptions | null => {
     if (!catalog || stored?.projectId !== projectId) return null;
     const saved = stored.options;
     if (stored.fromLink && saved) return saved;
-    const auto = { ...initialReportOptions(catalog.releases, settingsRelease, planRelease), phase: PHASE };
+    const auto = { ...initialReportOptions(catalog.releases, settingsRelease, planRelease), phase: phaseLabel };
     if (!saved) return withDefectBucket(auto, buckets, null);
     const { kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds } = saved;
     return withDefectBucket(
-      { ...auto, kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds },
+      { ...auto, kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds, phase: phaseLabel },
       buckets,
       defectBucketId ?? null,
     );
-  }, [catalog, stored, projectId, settingsRelease, planRelease, buckets]);
+  }, [catalog, stored, projectId, settingsRelease, planRelease, buckets, phaseLabel]);
 
   const update = (patch: Partial<ReportOptions>) => {
     if (!options || projectId === null || !stored) return;
@@ -450,7 +461,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
               </Button>
             }
           >
-            <KindPicker value={options.kind} onChange={(kind) => update({ kind })} />
+            <KindPicker value={options.kind} onChange={(kind) => update({ kind })} phase={phaseLabel} />
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Report title" hint="Empty uses the project name.">
@@ -492,6 +503,21 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                 {setupProblem}
               </Notice>
             )}
+            {cycle === "sit" && !isMatrix && (
+              <Notice
+                tone="info"
+                className="mt-5"
+                title="SIT Cycle 2 report"
+                action={
+                  <ButtonLink href="/uat-build" size="sm">
+                    Open SIT build
+                  </ButtonLink>
+                }
+              >
+                Settings is on <strong>{settings?.releaseLabel || "SIT"}</strong>. Generate / Read Spira again pulls live runs for this build
+                (PDF, Excel, share link). Use <strong>{phaseLabel}: scoped vs total test plan</strong> for the executive pack.
+              </Notice>
+            )}
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
               <Button variant="primary" icon={isMatrix ? Grid3x3 : FileChartColumn} onClick={() => void generate()} busy={busy} disabled={setupProblem !== null}>
@@ -506,6 +532,11 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                   title="Excel of every test case in the chosen Spira release (SIT or this build). Does not include step text."
                 >
                   Download test cases
+                </Button>
+              )}
+              {data && !isMatrix && report && (
+                <Button icon={Link2} variant="secondary" onClick={() => setShareOpen(true)} disabled={!shareRequest}>
+                  Share link
                 </Button>
               )}
               {isMatrix && (
@@ -526,7 +557,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             <p className="mt-2 text-xs text-slate-500 dark:text-zinc-400">
               {isMatrix
                 ? "Prod Testing report uses device × network results (same executive template: status, KPIs, board, PDF/Excel). Load cases and execute sessions in Prod Testing first."
-                : "Download test cases pulls the cases in the release selected above (pick Total test plan for SIT). Module, platform, TC id, name and status — not step text."}
+                : "Reports and Download test cases read Spira for the Settings release (SIT Cycle 2 when Testing cycle is SIT). PDF / Excel / share are on the report viewer after generate."}
             </p>
             {scopeChanged && !busy && (
               <Notice tone="info" className="mt-4">
