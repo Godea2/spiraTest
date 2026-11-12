@@ -4,13 +4,10 @@ import clsx from "clsx";
 import {
   Activity,
   Bug,
-  CircleCheckBig,
   ClipboardList,
   Database,
   FileChartColumn,
-  GitCompareArrows,
   Grid3x3,
-  KanbanSquare,
   ListChecks,
   LogOut,
   Menu,
@@ -37,10 +34,8 @@ import { buildWorkspaceLabel, softDetectCycle } from "@/lib/domain/settings";
 import { Logo } from "./brand";
 import { useSettings } from "./settings-context";
 
+/** Compare / Drafts / Completed stay reachable by URL; hidden from nav while SIT build is the main path. */
 const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean; buildNav?: boolean }> = [
-  { href: "/", label: "Compare", icon: GitCompareArrows, match: (p) => p === "/" },
-  { href: "/drafts", label: "Drafts", icon: KanbanSquare, match: (p) => p.startsWith("/drafts") },
-  { href: "/completed", label: "Completed", icon: CircleCheckBig, match: (p) => p.startsWith("/completed") },
   { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week"), buildNav: true },
   { href: "/notes", label: "Notes", icon: NotebookPen, match: (p) => p.startsWith("/notes") },
   { href: "/progress", label: "Progress", icon: ListChecks, match: (p) => p.startsWith("/progress") },
@@ -285,7 +280,7 @@ function SidebarContent({
   return (
     <div className={clsx("flex h-full flex-col gap-6 px-3 py-5", rail && "rail:px-2.5")}>
       <div className={clsx("flex items-center gap-2", rail && "rail:flex-col rail:gap-3")}>
-        <Link href="/" onClick={onNavigate} className={clsx("flex min-w-0 flex-1 items-center gap-3 px-2", rail && "rail:flex-none rail:px-0")} title="Test Set Reconciler">
+        <Link href="/uat-build" onClick={onNavigate} className={clsx("flex min-w-0 flex-1 items-center gap-3 px-2", rail && "rail:flex-none rail:px-0")} title="Test Set Reconciler">
           <Logo />
           <span className={clsx("min-w-0 leading-tight", rail && "rail:hidden")}>
             <span className="block truncate text-sm font-semibold tracking-tight">Test Set Reconciler</span>
@@ -359,7 +354,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <Menu className="size-5" aria-hidden />
         </button>
-        <Link href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
+        <Link href="/uat-build" className="flex items-center gap-2.5 font-semibold tracking-tight">
           <Logo />
           <span className="text-sm">Test Set Reconciler</span>
         </Link>

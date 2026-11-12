@@ -1,7 +1,16 @@
 import "server-only";
 import { cardKey } from "@/lib/domain/board";
-import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, isMobileWeekSet, type CycleId } from "@/lib/domain/settings";
 import { PROD_MATRIX_MODULES } from "@/lib/domain/matrix";
+import { CYCLE_PRESETS, detectCycle, findCycleFolder, guessMapping, isMobileWeekSet, type CycleId } from "@/lib/domain/settings";
+import {
+  dedupeAcrossModulesSamePlatform,
+  dedupeCardsByTestCaseId,
+  isExpectedProdStem,
+  normalizeModuleStem,
+  preferCatalogSet,
+  prettyModuleLabel,
+  stemsMatch,
+} from "@/lib/domain/week-catalog";
 import type { Card, ExecutionCaseInput, ExecutionResult, SpiraTestSetSummary, TestSetComparison, WorkflowContext } from "@/lib/domain/types";
 import { inPool, recordExecutions } from "./workflow";
 import { sealComparison } from "./seal";
@@ -43,8 +52,7 @@ function caseCard(testSetId: number, c: Awaited<ReturnType<typeof getTestSetCase
   };
 }
 
-const EXPECTED_MODULES = PROD_MATRIX_MODULES.map((m) => ({ stem: m.stem, label: m.label }));
-const EXPECTED_MOBILE_STEMS = EXPECTED_MODULES.map((m) => m.stem);
+const EXPECTED_MOBILE_STEMS = PROD_MATRIX_MODULES.map((m) => m.stem);
 
 function folderSubtreeIds(
   folders: Array<{ folderId: number; parentId: number | null; name: string }>,
@@ -56,20 +64,9 @@ function folderSubtreeIds(
 
 function moduleStem(name: string): { stem: string; platform: "iOS" | "Android" | "Other" } {
   const { module, platform } = guessMapping(name);
-  const stem = module.toLowerCase().replace(/\s+/g, " ").trim();
+  const stem = normalizeModuleStem(module);
   if (platform === "iOS" || platform === "Android") return { stem, platform };
   return { stem, platform: "Other" };
-}
-
-/** Exact / Transfer↔Transfers match only — never substring (that pulled SIT "Profile" into Prod). */
-function stemsMatch(a: string, b: string): boolean {
-  if (a === b) return true;
-  const strip = (s: string) => s.replace(/s\b/g, "").replace(/\s+/g, " ").trim();
-  return strip(a) === strip(b);
-}
-
-function isExpectedProdStem(stem: string): boolean {
-  return EXPECTED_MOBILE_STEMS.some((want) => stemsMatch(want, stem));
 }
 
 function versionMatches(set: SpiraTestSetSummary, versionToken: string | undefined, releaseLabel: string): boolean {
@@ -83,10 +80,16 @@ async function listWeekTestSets(
   releaseId: number,
   cycleId: CycleId | null,
   releaseLabel: string,
-): Promise<{ sets: SpiraTestSetSummary[]; folderName: string | null; source: "release" | "folder" }> {
+): Promise<{
+  sets: SpiraTestSetSummary[];
+  folderName: string | null;
+  source: "release" | "folder";
+  onReleaseIds: Set<number>;
+}> {
   // Prod cut: release plan + cycle folder + same version number only.
   // Do not pull every fuzzy name match from the whole project (that mixed SIT/UAT into Matrix).
   const onRelease = (await listTestSets(projectId, releaseId)).filter((t) => isMobileWeekSet(t.name));
+  const onReleaseIds = new Set(onRelease.map((t) => t.testSetId));
   const byId = new Map(onRelease.map((t) => [t.testSetId, t]));
   let folderName: string | null = null;
   const folderSetIds = new Set<number>();
@@ -151,9 +154,9 @@ async function listWeekTestSets(
   }
 
   const sets = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  if (sets.length === 0) return { sets: [], folderName: null, source: "release" };
+  if (sets.length === 0) return { sets: [], folderName: null, source: "release", onReleaseIds };
   const source = folderName && onRelease.length === 0 ? "folder" : "release";
-  return { sets, folderName, source };
+  return { sets, folderName, source, onReleaseIds };
 }
 
 /**
@@ -175,7 +178,7 @@ export async function loadWeekCatalog(input: {
           ? "sit"
           : detectCycle(input.releaseId, []);
 
-  const { sets: mobile, folderName, source } = await listWeekTestSets(
+  const { sets: mobile, folderName, source, onReleaseIds } = await listWeekTestSets(
     input.projectId,
     input.releaseId,
     cycleId,
@@ -191,8 +194,10 @@ export async function loadWeekCatalog(input: {
   const loaded = await inPool(mobile, 4, async (t) => {
     const cases = await getTestSetCases(input.projectId, t.testSetId);
     const { module, platform } = guessMapping(t.name);
-    const ctx: WorkflowContext = { projectId: input.projectId, releaseId: input.releaseId, module };
-    const cards = cases.map((c) => caseCard(t.testSetId, c));
+    const pretty = prettyModuleLabel(module);
+    const cards = dedupeCardsByTestCaseId(cases.map((c) => caseCard(t.testSetId, c)));
+    // Seal under the canonical module label so Execute / Pass verify against the draft context.
+    const ctx: WorkflowContext = { projectId: input.projectId, releaseId: input.releaseId, module: pretty };
     const comparison = sealComparison(ctx, {
       testSetId: t.testSetId,
       testSetName: t.name,
@@ -202,38 +207,64 @@ export async function loadWeekCatalog(input: {
       missingFromSpira: [],
       baselineMembership: cards.map((c) => c.testSetTestCaseId).sort((a, b) => a - b),
     });
-    return { module, comparison };
+    return { module: pretty, comparison, onRelease: onReleaseIds.has(t.testSetId) };
   });
 
-  // Per module + platform keep the richest set (most cases). Empty stubs must not hide real sets.
+  // Per module + platform: prefer the working-release set, then the richest set.
   // For Prod/UAT, only keep the expected seven module stems so SIT leftovers never appear.
   const restrictToExpected = cycleId === "prod" || cycleId === "uat";
-  const bestByKey = new Map<string, { module: string; comparison: TestSetComparison }>();
+  const bestByKey = new Map<string, { module: string; comparison: TestSetComparison; onRelease: boolean }>();
   for (const row of loaded) {
     if (row.comparison.platform !== "iOS" && row.comparison.platform !== "Android") continue;
-    const stem = row.module.toLowerCase().replace(/\s+/g, " ").trim();
+    const stem = normalizeModuleStem(row.module);
     if (restrictToExpected && !isExpectedProdStem(stem)) continue;
-    const pretty = EXPECTED_MODULES.find((m) => stemsMatch(m.stem, stem))?.label ?? row.module;
-    const key = `${pretty.toLowerCase()}|${row.comparison.platform}`;
+    const key = `${normalizeModuleStem(row.module)}|${row.comparison.platform}`;
     const prev = bestByKey.get(key);
-    if (!prev || row.comparison.cards.length > prev.comparison.cards.length) {
-      bestByKey.set(key, { module: pretty, comparison: row.comparison });
+    if (preferCatalogSet(prev, { comparison: row.comparison, onRelease: row.onRelease })) {
+      bestByKey.set(key, { module: row.module, comparison: row.comparison, onRelease: row.onRelease });
     }
   }
 
-  const byModule = new Map<string, TestSetComparison[]>();
+  const byModule = new Map<string, { testSets: TestSetComparison[]; onRelease: boolean }>();
   for (const row of bestByKey.values()) {
-    byModule.set(row.module, [...(byModule.get(row.module) ?? []), row.comparison]);
+    const prev = byModule.get(row.module);
+    byModule.set(row.module, {
+      testSets: [...(prev?.testSets ?? []), row.comparison],
+      onRelease: !!(prev?.onRelease || row.onRelease),
+    });
   }
 
-  const modules: WeekModule[] = [...byModule.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([module, testSets]) => ({
+  const drafted = dedupeAcrossModulesSamePlatform(
+    [...byModule.entries()].map(([module, row]) => ({
       module,
-      context: { projectId: input.projectId, releaseId: input.releaseId, module },
-      testSets: testSets.sort((a, b) => a.platform.localeCompare(b.platform)),
-      caseCount: testSets.reduce((n, s) => n + s.cards.length, 0),
-    }));
+      testSets: row.testSets.sort((a, b) => a.platform.localeCompare(b.platform)),
+      onRelease: row.onRelease,
+    })),
+  );
+
+  // Re-seal after cross-module card drops so Pass still verifies.
+  const modules: WeekModule[] = drafted
+    .sort((a, b) => a.module.localeCompare(b.module))
+    .map((row) => {
+      const ctx: WorkflowContext = { projectId: input.projectId, releaseId: input.releaseId, module: row.module };
+      const testSets = row.testSets.map((set) =>
+        sealComparison(ctx, {
+          testSetId: set.testSetId,
+          testSetName: set.testSetName,
+          platform: set.platform,
+          comparedAt: set.comparedAt,
+          cards: set.cards,
+          missingFromSpira: set.missingFromSpira,
+          baselineMembership: set.cards.map((c) => c.testSetTestCaseId).sort((a, b) => a - b),
+        }),
+      );
+      return {
+        module: row.module,
+        context: ctx,
+        testSets,
+        caseCount: testSets.reduce((n, s) => n + s.cards.length, 0),
+      };
+    });
 
   return {
     projectId: input.projectId,
@@ -242,7 +273,7 @@ export async function loadWeekCatalog(input: {
     folderName,
     source,
     modules,
-    testSetCount: bestByKey.size,
+    testSetCount: modules.reduce((n, m) => n + m.testSets.length, 0),
     caseCount: modules.reduce((n, m) => n + m.caseCount, 0),
   };
 }

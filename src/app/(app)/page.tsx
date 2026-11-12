@@ -1,8 +1,6 @@
-import type { Metadata } from "next";
-import { CompareWorkspace } from "./compare-workspace";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Compare" };
-
-export default function ComparePage() {
-  return <CompareWorkspace />;
+/** Home lands on the build execute workspace; Compare stays at /compare. */
+export default function HomePage() {
+  redirect("/uat-build");
 }
