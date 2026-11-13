@@ -7,5 +7,5 @@ export default async function UatBuildPage({ searchParams }: { searchParams: Pro
   const { tab } = await searchParams;
   const initial =
     tab === "defects" || tab === "smoke" || tab === "cases" ? (tab as "cases" | "defects" | "smoke") : undefined;
-  return <UatBuildWorkspace initialTab={initial} />;
+  return <UatBuildWorkspace cycle="uat" initialTab={initial} />;
 }

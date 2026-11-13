@@ -126,6 +126,27 @@ export function buildWorkspaceLabel(cycle: CycleId | null): string {
   return "Build execute";
 }
 
+/** Path for the build execute workspace for a cycle. */
+export function buildWorkspacePath(cycle: "sit" | "uat"): string {
+  return cycle === "sit" ? "/sit-build" : "/uat-build";
+}
+
+/**
+ * Settings fields for opening SIT or UAT build from the nav (known RL ids — no Spira release list needed).
+ */
+export function buildCycleSettingsPatch(cycleId: "sit" | "uat"): Pick<AppSettings, "projectId" | "releaseId" | "releaseLabel" | "planReleaseId"> {
+  const cycle = CYCLE_PRESETS[cycleId];
+  if (cycle.releaseId === null) {
+    throw new Error(`${cycle.label} release id is not configured.`);
+  }
+  return {
+    projectId: cycle.projectId,
+    releaseId: cycle.releaseId,
+    releaseLabel: cycle.releaseLabel,
+    planReleaseId: cycle.planReleaseId,
+  };
+}
+
 /** Project + releases to apply for a cycle. Throws when UAT (or any version-matched cycle) is missing in Spira. */
 export function cycleSettingsPatch(
   releases: SpiraRelease[],

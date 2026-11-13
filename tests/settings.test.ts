@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { loadSettings, saveSettings } from "@/lib/client/settings-store";
 import { writeItem } from "@/lib/client/storage";
 import {
+  buildCycleSettingsPatch,
   buildWorkspaceLabel,
+  buildWorkspacePath,
   CYCLE_PRESETS,
   cycleSettingsPatch,
   detectCycle,
@@ -178,6 +180,10 @@ describe("SIT / UAT testing cycles", () => {
     expect(buildWorkspaceLabel("uat")).toBe("UAT build");
     expect(buildWorkspaceLabel("prod")).toBe("Prod build");
     expect(buildWorkspaceLabel(null)).toBe("Build execute");
+    expect(buildWorkspacePath("sit")).toBe("/sit-build");
+    expect(buildWorkspacePath("uat")).toBe("/uat-build");
+    expect(buildCycleSettingsPatch("sit")).toMatchObject({ releaseId: CYCLE_PRESETS.sit.releaseId });
+    expect(buildCycleSettingsPatch("uat")).toMatchObject({ releaseId: CYCLE_PRESETS.uat.releaseId });
   });
 });
 

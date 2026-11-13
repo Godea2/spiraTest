@@ -10,10 +10,17 @@ import { errorMessage } from "@/lib/client/api";
 import { logActivity } from "@/lib/client/activity";
 import { getTester, setTester as storeTester } from "@/lib/client/execution";
 import type { PassProgressOutcome, ProgressPick } from "@/lib/client/progress";
+import { saveSettings } from "@/lib/client/settings-store";
 import { listUatDrafts, materializeUatCatalog, resetUatProgress } from "@/lib/client/uat-build";
 import { loadWeekCatalog, recordWeekPicks, weekCatalogAsDrafts, type WeekCatalog } from "@/lib/client/week";
 import { executionCards, executionCounts } from "@/lib/domain/execution";
-import { buildWorkspaceLabel, CYCLE_PRESETS, softDetectCycle } from "@/lib/domain/settings";
+import {
+  buildCycleSettingsPatch,
+  buildWorkspaceLabel,
+  buildWorkspacePath,
+  CYCLE_PRESETS,
+  softDetectCycle,
+} from "@/lib/domain/settings";
 import type { Draft } from "@/lib/domain/types";
 import { DefectWorkspace } from "../defects/defect-workspace";
 import { ImportPanel } from "../progress/import-panel";
@@ -37,11 +44,11 @@ function platformCaseCounts(catalog: WeekCatalog): { android: number; ios: numbe
 }
 
 /**
- * Build execute workspace: load Spira cases for the Settings release (SIT / UAT / Prod),
- * Pass/Fail like Completed, search defects, optional smoke import.
+ * Build execute workspace for a fixed cycle (SIT or UAT nav entry).
+ * Opening the page applies that cycle in Settings so catalog + Pass use the right Spira release.
  */
-export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
-  const { settings, ai, spira } = useSettings();
+export function UatBuildWorkspace({ initialTab, cycle }: { initialTab?: Tab; cycle: "sit" | "uat" }) {
+  const { settings, ai, spira, replace } = useSettings();
   const aiOn = !!ai?.configured;
   const [tester, setTester] = useState(() => getTester());
   const [catalog, setCatalog] = useState<WeekCatalog | null>(null);
@@ -51,32 +58,63 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initialTab ?? "cases");
   const [smokeOpen, setSmokeOpen] = useState(false);
   const autoLoadTried = useRef(false);
+  const cycleSynced = useRef<string | null>(null);
+
+  const buildLabel = buildWorkspaceLabel(cycle);
+  const basePath = buildWorkspacePath(cycle);
+  const cycleHint = CYCLE_PRESETS[cycle].hint;
+  const want = CYCLE_PRESETS[cycle];
+
+  // Pin Settings to this nav cycle so Reload / Pass hit the right Spira release.
+  useEffect(() => {
+    if (!settings) return;
+    const current = softDetectCycle(settings.releaseId, settings.releaseLabel ?? "");
+    if (current === cycle && cycleSynced.current === cycle) return;
+    if (settings.releaseId === want.releaseId && softDetectCycle(settings.releaseId, settings.releaseLabel ?? "") === cycle) {
+      cycleSynced.current = cycle;
+      return;
+    }
+    try {
+      const patch = buildCycleSettingsPatch(cycle);
+      const saved = saveSettings({
+        projectId: patch.projectId,
+        releaseId: patch.releaseId,
+        releaseLabel: patch.releaseLabel,
+        planReleaseId: patch.planReleaseId,
+        mappings: settings.mappings,
+        moduleAliases: settings.moduleAliases,
+      });
+      replace(saved);
+      cycleSynced.current = cycle;
+    } catch (err) {
+      setLoadError(errorMessage(err));
+    }
+  }, [settings, cycle, want.releaseId, replace]);
 
   const projectId = settings?.projectId ?? null;
   const releaseId = settings?.releaseId ?? null;
   const releaseLabel = settings?.releaseLabel?.trim() || (releaseId !== null ? `RL:${releaseId}` : "");
-  const cycle = softDetectCycle(releaseId, releaseLabel);
-  const buildLabel = buildWorkspaceLabel(cycle);
-  const cycleHint = cycle ? CYCLE_PRESETS[cycle].hint : "Settings testing cycle";
+  const settingsCycle = softDetectCycle(releaseId, releaseLabel);
+  const cycleReady = settingsCycle === cycle;
 
   const importDrafts = useMemo(() => (catalog ? weekCatalogAsDrafts(catalog) : []), [catalog]);
 
   useEffect(() => {
-    if (releaseId === null) return;
+    if (releaseId === null || !cycleReady) return;
     const existing = listUatDrafts(releaseId);
     if (existing.length > 0) setUatDrafts(existing);
     else setUatDrafts([]);
     setCatalog(null);
     autoLoadTried.current = false;
-  }, [releaseId]);
+  }, [releaseId, cycleReady]);
 
   useEffect(() => {
     if (initialTab) setTab(initialTab);
   }, [initialTab]);
 
   const load = useCallback(async () => {
-    if (projectId === null || releaseId === null) {
-      setLoadError("Choose the Testing cycle (SIT, UAT, or Prod) in Settings and save first.");
+    if (projectId === null || releaseId === null || !cycleReady) {
+      setLoadError(`Open Settings if ${buildLabel} could not switch to ${CYCLE_PRESETS[cycle].label}.`);
       return;
     }
     setLoading(true);
@@ -111,14 +149,14 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, releaseId, releaseLabel, buildLabel, cycle]);
+  }, [projectId, releaseId, releaseLabel, buildLabel, cycle, cycleReady]);
 
   useEffect(() => {
-    if (!spira?.configured || projectId === null || releaseId === null || loading) return;
+    if (!spira?.configured || projectId === null || releaseId === null || !cycleReady || loading) return;
     if (uatDrafts.length > 0 || autoLoadTried.current) return;
     autoLoadTried.current = true;
     void load();
-  }, [spira?.configured, projectId, releaseId, uatDrafts.length, loading, load]);
+  }, [spira?.configured, projectId, releaseId, cycleReady, uatDrafts.length, loading, load]);
 
   const changeTester = (name: string) => {
     setTester(name);
@@ -184,29 +222,29 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={buildLabel}
-        description={`Load ${cycle === "sit" ? "SIT Cycle 2" : "this release"}’s iOS/Android cases from Spira, multi-select Pass/Fail like Completed — every mark writes a Spira test run.`}
+        description={`Load ${cycle === "sit" ? "SIT Cycle 2" : "UAT Cycle 1"}’s iOS/Android cases from Spira, multi-select Pass/Fail — every mark writes a Spira test run.`}
         actions={headerBadge ? <Badge tone="brand">{headerBadge}</Badge> : null}
       />
 
-      {projectId === null || releaseId === null ? (
+      {projectId === null || releaseId === null || !cycleReady ? (
         <EmptyState
           icon={ClipboardList}
-          title="Choose the build first"
+          title={cycleReady ? "Choose the build first" : `Switching to ${CYCLE_PRESETS[cycle].label}…`}
           action={
             <ButtonLink href="/settings" variant="primary">
               Open Settings
             </ButtonLink>
           }
         >
-          Set Testing cycle to <strong>SIT</strong> (or UAT / Prod), save, then come back here.
+          {cycleReady
+            ? `Could not resolve the ${CYCLE_PRESETS[cycle].label} release. Check Settings.`
+            : `${cycleHint}. Applying the release in Settings so this page can load Spira cases.`}
         </EmptyState>
       ) : (
         <>
-          {cycle === "sit" && (
-            <Notice tone="info" title="SIT Cycle 2">
-              Settings is on <strong>{releaseLabel || cycleHint}</strong>. Load modules, open one, Check Spira, then multi-select Pass — results go straight to Spira.
-            </Notice>
-          )}
+          <Notice tone="info" title={cycle === "sit" ? "SIT Cycle 2" : "UAT Cycle 1"}>
+            Working release <strong>{releaseLabel || cycleHint}</strong>. Load modules, open one, Check Spira, then multi-select Pass — results go straight to Spira.
+          </Notice>
 
           <Section
             icon={ClipboardList}
@@ -343,7 +381,7 @@ export function UatBuildWorkspace({ initialTab }: { initialTab?: Tab }) {
                           )}
                           {counts.notRun > 0 && <Badge tone="neutral">{counts.notRun} to run</Badge>}
                         </div>
-                        <ButtonLink href={`/uat-build/${d.id}/execute`} size="sm" variant="primary" icon={Play}>
+                        <ButtonLink href={`${basePath}/${d.id}/execute`} size="sm" variant="primary" icon={Play}>
                           {executed ? "Continue" : "Run cases"}
                         </ButtonLink>
                       </li>

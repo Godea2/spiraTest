@@ -8,11 +8,9 @@ import {
   Database,
   FileChartColumn,
   Grid3x3,
-  ListChecks,
   LogOut,
   Menu,
   Moon,
-  NotebookPen,
   PanelLeftClose,
   PanelLeftOpen,
   ScanText,
@@ -30,15 +28,13 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { Toaster } from "sonner";
 import { api } from "@/lib/client/api";
 import { INITIAL_SYNC, storeSync } from "@/lib/client/store-sync";
-import { buildWorkspaceLabel, softDetectCycle } from "@/lib/domain/settings";
 import { Logo } from "./brand";
 import { useSettings } from "./settings-context";
 
-/** Compare / Drafts / Completed stay reachable by URL; hidden from nav while SIT build is the main path. */
-const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean; buildNav?: boolean }> = [
-  { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week"), buildNav: true },
-  { href: "/notes", label: "Notes", icon: NotebookPen, match: (p) => p.startsWith("/notes") },
-  { href: "/progress", label: "Progress", icon: ListChecks, match: (p) => p.startsWith("/progress") },
+/** Compare / Drafts / Completed / Notes / Progress stay reachable by URL; hidden from nav. */
+const NAV: Array<{ href: string; label: string; icon: LucideIcon; match: (p: string) => boolean }> = [
+  { href: "/sit-build", label: "SIT build", icon: ClipboardList, match: (p) => p.startsWith("/sit-build") },
+  { href: "/uat-build", label: "UAT build", icon: ClipboardList, match: (p) => p.startsWith("/uat-build") || p.startsWith("/week") },
   { href: "/matrix", label: "Prod Testing", icon: Grid3x3, match: (p) => p.startsWith("/matrix") },
   { href: "/defects", label: "Defects", icon: Bug, match: (p) => p.startsWith("/defects") },
   { href: "/reports", label: "Reports", icon: FileChartColumn, match: (p) => p.startsWith("/reports") },
@@ -196,16 +192,12 @@ function StorageStatus({ rail }: { rail?: Rail }) {
 }
 
 function NavLinks({ pathname, onNavigate, layoutId, rail }: { pathname: string; onNavigate?: () => void; layoutId: string; rail?: Rail }) {
-  const { settings } = useSettings();
-  const cycle = softDetectCycle(settings?.releaseId ?? null, settings?.releaseLabel ?? "");
-  const buildLabel = buildWorkspaceLabel(cycle);
-
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
       {NAV.map((item) => {
         const active = item.match(pathname);
         const Icon = item.icon;
-        const label = item.buildNav ? buildLabel : item.label;
+        const label = item.label;
         return (
           <Link
             key={item.href}
@@ -280,7 +272,7 @@ function SidebarContent({
   return (
     <div className={clsx("flex h-full flex-col gap-6 px-3 py-5", rail && "rail:px-2.5")}>
       <div className={clsx("flex items-center gap-2", rail && "rail:flex-col rail:gap-3")}>
-        <Link href="/uat-build" onClick={onNavigate} className={clsx("flex min-w-0 flex-1 items-center gap-3 px-2", rail && "rail:flex-none rail:px-0")} title="Test Set Reconciler">
+        <Link href="/sit-build" onClick={onNavigate} className={clsx("flex min-w-0 flex-1 items-center gap-3 px-2", rail && "rail:flex-none rail:px-0")} title="Test Set Reconciler">
           <Logo />
           <span className={clsx("min-w-0 leading-tight", rail && "rail:hidden")}>
             <span className="block truncate text-sm font-semibold tracking-tight">Test Set Reconciler</span>
@@ -354,7 +346,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <Menu className="size-5" aria-hidden />
         </button>
-        <Link href="/uat-build" className="flex items-center gap-2.5 font-semibold tracking-tight">
+        <Link href="/sit-build" className="flex items-center gap-2.5 font-semibold tracking-tight">
           <Logo />
           <span className="text-sm">Test Set Reconciler</span>
         </Link>

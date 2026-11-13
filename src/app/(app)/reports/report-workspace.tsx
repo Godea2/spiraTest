@@ -509,7 +509,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                 className="mt-5"
                 title="SIT Cycle 2 report"
                 action={
-                  <ButtonLink href="/uat-build" size="sm">
+                  <ButtonLink href="/sit-build" size="sm">
                     Open SIT build
                   </ButtonLink>
                 }

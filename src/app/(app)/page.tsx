@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** Home lands on the build execute workspace; Compare stays at /compare. */
+/** Home lands on SIT build; UAT build is a separate nav item. */
 export default function HomePage() {
-  redirect("/uat-build");
+  redirect("/sit-build");
 }
