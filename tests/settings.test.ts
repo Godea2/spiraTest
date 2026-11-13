@@ -182,8 +182,8 @@ describe("SIT / UAT testing cycles", () => {
     expect(buildWorkspaceLabel(null)).toBe("Build execute");
     expect(buildWorkspacePath("sit")).toBe("/sit-build");
     expect(buildWorkspacePath("uat")).toBe("/uat-build");
-    expect(buildCycleSettingsPatch("sit")).toMatchObject({ releaseId: CYCLE_PRESETS.sit.releaseId });
-    expect(buildCycleSettingsPatch("uat")).toMatchObject({ releaseId: CYCLE_PRESETS.uat.releaseId });
+    expect(buildCycleSettingsPatch("sit")).toMatchObject({ releaseId: 157, releaseLabel: CYCLE_PRESETS.sit.releaseLabel });
+    expect(buildCycleSettingsPatch("uat")).toMatchObject({ releaseId: 160, releaseLabel: CYCLE_PRESETS.uat.releaseLabel });
   });
 });
 

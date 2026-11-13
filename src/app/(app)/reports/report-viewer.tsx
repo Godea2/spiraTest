@@ -63,7 +63,10 @@ export function ReportViewer({
           <h2 id={titleId} className="truncate text-sm font-semibold">
             {report.title}
           </h2>
-          <p className="text-xs text-slate-500 dark:text-zinc-400">Read from Spira {readAt(report.generatedAt)}</p>
+          <p className="text-xs text-slate-500 dark:text-zinc-400">
+            {report.environment ? `${report.environment} · ` : ""}
+            Spira live {readAt(report.generatedAt)}
+          </p>
         </div>
         <Button size="sm" variant="primary" icon={Download} busy={pdf.busy} onClick={pdf.download}>
           {pdf.busy ? "Preparing PDF…" : "Download PDF"}

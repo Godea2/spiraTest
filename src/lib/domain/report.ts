@@ -602,6 +602,14 @@ export interface ModuleRow {
   lastRun: string | null;
 }
 
+/** Modules in this build with the most failed + blocked runs (executive hotspot list). */
+export function moduleHotspots(modules: ModuleRow[], limit = 5): ModuleRow[] {
+  return [...modules]
+    .filter((m) => m.inBuild && (m.outcomes.failed > 0 || m.outcomes.blocked > 0))
+    .sort((a, b) => b.outcomes.failed + b.outcomes.blocked - (a.outcomes.failed + a.outcomes.blocked))
+    .slice(0, limit);
+}
+
 export interface StreamRow extends StreamProgress {
   stream: Stream;
   execPct: number | null;

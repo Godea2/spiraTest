@@ -5,6 +5,7 @@ import {
   formatPct,
   LEVELS,
   MODULE_STATUS_LABEL,
+  moduleHotspots,
   pct,
   RETEST_LABEL,
   splitText,
@@ -104,7 +105,9 @@ function exitWord(report: Report): string {
 
 function PageHead({ report }: { report: Report }) {
   const rag = RAG[report.status];
+  const env = report.environment.trim() || report.labels.name;
   const subtitle = [
+    env,
     `${report.scopedName}${report.streams.length ? ` (${report.streams.join(", ")})` : ""}`,
     `Report date ${dateText(report.generatedAt)}`,
     report.window.text ? `Executions ${report.window.text}` : null,
@@ -115,6 +118,12 @@ function PageHead({ report }: { report: Report }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-300 pb-3">
       <div className="min-w-0">
+        <div className="mb-1.5 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded-md bg-slate-900 px-2 py-0.5 text-[10px] font-bold tracking-wide text-white uppercase">
+            {env}
+          </span>
+          <span className="text-[10.5px] font-medium tracking-wide text-slate-500 uppercase">Spira live runs</span>
+        </div>
         <h1 className="text-xl font-bold tracking-tight text-slate-900">{report.title}</h1>
         <p className="mt-0.5 text-[12.5px] text-slate-600">{subtitle.join(" · ")}</p>
       </div>
@@ -130,8 +139,9 @@ function PageFoot({ report, page, pages }: { report: Report; page: number; pages
   return (
     <footer className="mt-6 flex flex-wrap justify-between gap-2 border-t border-slate-200 pt-2 text-[10.5px] text-slate-500">
       <span>
-        {report.preparedBy && `Prepared by ${report.preparedBy} · `}Source: SpiraTest ({report.projectName}), {report.scopedName}
-        {report.scopedLabel !== report.scopedName && `, ${report.scopedLabel}`}
+        {report.preparedBy && `Prepared by ${report.preparedBy} · `}
+        Source of truth: SpiraTest runs for this build ({report.projectName} · {report.scopedName}
+        {report.scopedLabel !== report.scopedName && `, ${report.scopedLabel}`})
         {report.hasBaseline && `; total plan from ${report.baselineLabel}`} · Read live {dateTimeText(report.generatedAt)}
       </span>
       <span>
@@ -271,6 +281,8 @@ function SummaryPage({ report }: { report: Report }) {
   const exit = exitWord(report);
   const notStarted = report.modules.filter((m) => m.status === "notStarted").length;
   const blockedOrCaution = (["blocked", "caution"] as const).filter((o) => k.outcomes[o] > 0);
+  const hotspots = moduleHotspots(report.modules);
+
   const tiles = [
     hasBaseline && (
       <Kpi
@@ -306,8 +318,15 @@ function SummaryPage({ report }: { report: Report }) {
       split={<PlatformLine report={report} split={k.split.passed} />}
       color="#15803d"
     />,
+    <Kpi
+      key="failed"
+      label="Failed"
+      value={n(k.outcomes.failed)}
+      hint={k.outcomes.blocked ? `${n(k.outcomes.blocked)} blocked` : "Open failures"}
+      split={<PlatformLine report={report} split={k.split.failed} />}
+      color="#b91c1c"
+    />,
     <Kpi key="defects-today" label="Defects today" value={n(report.defects.today.length)} color="#b91c1c" />,
-    <Kpi key="open-defects" label="All-time defects" value={n(report.defects.everOpened)} color="#b91c1c" />,
     <Kpi
       key="left"
       label="Still to run"
@@ -517,11 +536,33 @@ function SummaryPage({ report }: { report: Report }) {
         )}
       </div>
 
+      {!planned && hotspots.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50/60 px-4 py-3">
+          <p className="text-[11px] font-semibold tracking-wide text-red-800 uppercase">Module hotspots (failed + blocked)</p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {hotspots.map((m) => (
+              <li key={m.id} className="flex flex-wrap items-baseline justify-between gap-2 text-[12.5px] text-slate-800">
+                <span className="font-medium">{m.name}</span>
+                <span className="tabular-nums text-slate-600">
+                  {n(m.outcomes.failed)} failed · {n(m.outcomes.blocked)} blocked · {formatPct(m.passPct)} pass
+                  {m.streams.length ? ` · ${m.streams.join(" / ")}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {report.notes && (
         <div className="rounded-lg border-l-4 border-slate-900 bg-slate-50 px-4 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-line text-slate-800">
           {report.notes}
         </div>
       )}
+
+      <p className="text-[11px] leading-relaxed text-slate-500">
+        Figures are Spira test runs for {report.environment || labels.name}
+        {report.streams.length > 1 ? ` across ${report.streams.join(" and ")}` : ""}. Local Completed drafts are not the source.
+      </p>
 
       <PlanTable report={report} />
     </>

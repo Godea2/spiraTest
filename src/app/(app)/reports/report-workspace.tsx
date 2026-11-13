@@ -7,11 +7,12 @@ import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
 import { Badge, Button, ButtonLink, Collapsible, EmptyState, Field, Notice, PageHeader, ProgressBar, Section, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/client/api";
-import { downloadScopeTestCases } from "@/lib/client/case-export";
+import { downloadEnvironmentTestcaseWorkbook, downloadScopeTestCases } from "@/lib/client/case-export";
 import { listBuckets } from "@/lib/client/defect-buckets";
 import { listDefects } from "@/lib/client/defects";
 import { loadMatrixStore, matrixCoverageFor } from "@/lib/client/matrix";
 import { exportReportWorkbook, loadCatalog, loadReportOptions, readReportData, recordSnapshot, saveReportOptions, type ReportProgress } from "@/lib/client/report";
+import { saveSettings } from "@/lib/client/settings-store";
 import { buildMatrixReport, type MatrixReport } from "@/lib/domain/matrix-report";
 import {
   buildReport,
@@ -35,7 +36,7 @@ import {
   type ReportOptions,
 } from "@/lib/domain/report";
 import type { DefectBucket } from "@/lib/domain/incident-register";
-import { softDetectCycle } from "@/lib/domain/settings";
+import { buildCycleSettingsPatch, buildWorkspacePath, CYCLE_PRESETS, softDetectCycle } from "@/lib/domain/settings";
 import type { ReportCatalog } from "@/lib/domain/types";
 
 /** Defects logged in this browser for the "Defects today" KPI and section. */
@@ -70,17 +71,54 @@ const PHASE = "Phase 1";
 
 function reportKinds(phase: string): { kind: ReportKind; icon: LucideIcon; title: string; hint?: string }[] {
   return [
-    { kind: "planned", icon: ClipboardList, title: "Planned test cases", hint: "Coverage before execution — zeros for run results" },
-    { kind: "build", icon: Target, title: `${phase}: scoped test cases`, hint: "Spira runs for the Settings release only" },
+    { kind: "planned", icon: ClipboardList, title: "Planned coverage", hint: "Inventory before execution — run KPIs zeroed" },
+    { kind: "build", icon: Target, title: `${phase}: this build`, hint: "Live Spira runs for the selected environment only" },
     {
       kind: "buildVsPlan",
       icon: GitCompareArrows,
-      title: `${phase}: scoped vs total test plan`,
-      hint: "Best for SIT / this-build executive packs from Spira",
+      title: `${phase}: vs total test plan`,
+      hint: "Executive pack — build measured against the plan release",
     },
-    { kind: "plan", icon: Layers, title: "Total test plan" },
-    { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier coverage from Prod Testing" },
+    { kind: "plan", icon: Layers, title: "Total test plan", hint: "Full plan release as the reported build" },
+    { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier board from Prod Testing" },
   ];
+}
+
+function EnvironmentSwitcher({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: "sit" | "uat" | null;
+  onChange: (cycle: "sit" | "uat") => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div role="radiogroup" aria-label="Environment" className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.04]">
+      {(["sit", "uat"] as const).map((id) => {
+        const selected = value === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            onClick={() => onChange(id)}
+            className={clsx(
+              "rounded-lg px-4 py-2 text-sm font-semibold transition",
+              selected
+                ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 dark:bg-white/10 dark:text-white dark:ring-white/15"
+                : "text-slate-600 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-white",
+              disabled && "cursor-not-allowed opacity-60",
+            )}
+          >
+            {CYCLE_PRESETS[id].label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function KindPicker({ value, onChange, phase }: { value: ReportKind; onChange: (kind: ReportKind) => void; phase: string }) {
@@ -188,10 +226,11 @@ function ReportSummary({ report, onOpen, onShare }: { report: Report; onOpen: ()
 }
 
 export function ReportWorkspace({ share }: { share: string | null }) {
-  const { settings, spira } = useSettings();
+  const { settings, spira, replace } = useSettings();
   const projectId = settings?.projectId ?? null;
   const configured = spira?.configured === true;
   const cycle = softDetectCycle(settings?.releaseId ?? null, settings?.releaseLabel ?? "");
+  const reportEnv: "sit" | "uat" | null = cycle === "sit" || cycle === "uat" ? cycle : null;
   const shared = useMemo(() => (share ? decodeShare(share) : null), [share]);
 
   const [catalogState, setCatalogState] = useState<CatalogState | null>(null);
@@ -244,17 +283,56 @@ export function ReportWorkspace({ share }: { share: string | null }) {
   const planRelease = settings?.planReleaseId ?? null;
   // The releases follow Settings (the working release, and the total test plan release);
   // only the report and its header are chosen here.
-  const phaseLabel = cycle === "sit" ? "SIT Cycle 2" : cycle === "prod" ? "Prod Phase 1" : PHASE;
+  const phaseLabel =
+    cycle === "sit" ? "SIT Cycle 2" : cycle === "uat" ? "UAT Cycle 1" : cycle === "prod" ? "Prod Phase 1" : PHASE;
+
+  const pinEnvironment = (next: "sit" | "uat") => {
+    if (!settings) return;
+    try {
+      const patch = buildCycleSettingsPatch(next);
+      const saved = saveSettings({
+        projectId: patch.projectId,
+        releaseId: patch.releaseId,
+        releaseLabel: patch.releaseLabel,
+        planReleaseId: patch.planReleaseId,
+        mappings: settings.mappings,
+        moduleAliases: settings.moduleAliases,
+      });
+      replace(saved);
+      setData(null);
+      setMatrixReport(null);
+      setReload((n) => n + 1);
+      toast.success(`Reports environment: ${CYCLE_PRESETS[next].label}`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
 
   const options = useMemo((): ReportOptions | null => {
     if (!catalog || stored?.projectId !== projectId) return null;
     const saved = stored.options;
     if (stored.fromLink && saved) return saved;
-    const auto = { ...initialReportOptions(catalog.releases, settingsRelease, planRelease), phase: phaseLabel };
+    const auto = {
+      ...initialReportOptions(catalog.releases, settingsRelease, planRelease),
+      phase: phaseLabel,
+      environment: phaseLabel,
+    };
     if (!saved) return withDefectBucket(auto, buckets, null);
     const { kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds } = saved;
     return withDefectBucket(
-      { ...auto, kind, title, preparedBy, goLive, defectNotes, defectBucketId, defectBucketName, defectRegisterIds, phase: phaseLabel },
+      {
+        ...auto,
+        kind,
+        title,
+        preparedBy,
+        goLive,
+        defectNotes,
+        defectBucketId,
+        defectBucketName,
+        defectRegisterIds,
+        phase: phaseLabel,
+        environment: phaseLabel,
+      },
       buckets,
       defectBucketId ?? null,
     );
@@ -377,6 +455,52 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     }
   };
 
+  /** Master + Summary + By Status + per-module sheets for SIT or UAT. */
+  const downloadWorkbook = async (target: "sit" | "uat") => {
+    if (projectId === null) return;
+    const patch = buildCycleSettingsPatch(target);
+    if (patch.releaseId === null) {
+      toast.error(`${CYCLE_PRESETS[target].label} release is not configured.`);
+      return;
+    }
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
+    setError(null);
+    setProgress({ step: `Preparing ${CYCLE_PRESETS[target].label} workbook`, done: 0, total: 1 });
+    try {
+      if (settings && softDetectCycle(settings.releaseId, settings.releaseLabel ?? "") !== target) {
+        const saved = saveSettings({
+          projectId: patch.projectId,
+          releaseId: patch.releaseId,
+          releaseLabel: patch.releaseLabel,
+          planReleaseId: patch.planReleaseId,
+          mappings: settings.mappings,
+          moduleAliases: settings.moduleAliases,
+        });
+        replace(saved);
+      }
+      const fresh = await loadCatalog(projectId, controller.signal);
+      setCatalogState({ projectId, catalog: fresh, error: null });
+      const out = await downloadEnvironmentTestcaseWorkbook({
+        catalog: fresh,
+        cycle: target,
+        releaseId: patch.releaseId,
+        releaseLabel: patch.releaseLabel,
+        mappings: settings?.mappings ?? [],
+        siteUrl: spira?.siteUrl ?? null,
+        onProgress: setProgress,
+        signal: controller.signal,
+      });
+      toast.success(`${out.environment}: ${out.cases.toLocaleString()} cases in ${out.sets} sets — workbook downloaded.`);
+      setReload((n) => n + 1);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") setError(errorMessage(err));
+    } finally {
+      if (abort.current === controller) setProgress(null);
+    }
+  };
+
   // The link carries the report as it was read (its type), and the module mappings of its test sets.
   const shareRequest = useMemo((): ShareRequest | null => {
     if (!options || !catalog || projectId === null) return null;
@@ -409,10 +533,19 @@ export function ReportWorkspace({ share }: { share: string | null }) {
         <PageHeader
           eyebrow={
             <>
-              <FileChartColumn className="size-4" aria-hidden /> Reports
+              <FileChartColumn className="size-4" aria-hidden /> Quality assurance
             </>
           }
           title="Executive test report"
+          description="SIT and UAT packs from live Spira runs — generate the boardroom PDF/Excel, or download the full testcase workbook (Master + modules + status)."
+          actions={
+            reportEnv ? (
+              <Badge tone="brand">
+                {reportEnv === "sit" ? "SIT Cycle 2" : "UAT Cycle 1"}
+                {settings?.releaseLabel ? ` · ${settings.releaseLabel}` : ""}
+              </Badge>
+            ) : null
+          }
         />
 
         {share && !shared && (
@@ -455,13 +588,28 @@ export function ReportWorkspace({ share }: { share: string | null }) {
         {catalog && options && (
           <Section
             title="Report setup"
+            description="Pick the environment, choose the pack type, then generate or download the testcase workbook."
             actions={
               <Button size="sm" variant="ghost" icon={RefreshCw} onClick={() => setReload((n) => n + 1)} disabled={busy}>
                 Refresh lists
               </Button>
             }
           >
-            <KindPicker value={options.kind} onChange={(kind) => update({ kind })} phase={phaseLabel} />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-zinc-400">Environment</span>
+                <EnvironmentSwitcher value={reportEnv} onChange={pinEnvironment} disabled={busy || !settings} />
+              </div>
+              {reportEnv && (
+                <ButtonLink href={buildWorkspacePath(reportEnv)} size="sm">
+                  Open {reportEnv === "sit" ? "SIT" : "UAT"} build
+                </ButtonLink>
+              )}
+            </div>
+
+            <div className="mt-5">
+              <KindPicker value={options.kind} onChange={(kind) => update({ kind })} phase={phaseLabel} />
+            </div>
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Report title" hint="Empty uses the project name.">
@@ -503,19 +651,10 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                 {setupProblem}
               </Notice>
             )}
-            {cycle === "sit" && !isMatrix && (
-              <Notice
-                tone="info"
-                className="mt-5"
-                title="SIT Cycle 2 report"
-                action={
-                  <ButtonLink href="/sit-build" size="sm">
-                    Open SIT build
-                  </ButtonLink>
-                }
-              >
-                Settings is on <strong>{settings?.releaseLabel || "SIT"}</strong>. Generate / Read Spira again pulls live runs for this build
-                (PDF, Excel, share link). Use <strong>{phaseLabel}: scoped vs total test plan</strong> for the executive pack.
+            {!isMatrix && reportEnv && (
+              <Notice tone="info" className="mt-5" title={`${phaseLabel} · Spira source of truth`}>
+                Working release <strong>{settings?.releaseLabel || CYCLE_PRESETS[reportEnv].releaseLabel}</strong>. Prefer{" "}
+                <strong>{phaseLabel}: vs total test plan</strong> for the executive pack. Workbooks include Master, Summary, By Status, and one sheet per module.
               </Notice>
             )}
 
@@ -524,15 +663,24 @@ export function ReportWorkspace({ share }: { share: string | null }) {
                 {isMatrix ? "Generate Prod Testing report" : data ? "Read Spira again" : "Generate report"}
               </Button>
               {!isMatrix && (
-                <Button
-                  icon={Download}
-                  onClick={() => void downloadCases()}
-                  busy={busy}
-                  disabled={setupProblem !== null || scopedSets === 0}
-                  title="Excel of every test case in the chosen Spira release (SIT or this build). Does not include step text."
-                >
-                  Download test cases
-                </Button>
+                <>
+                  <Button icon={Download} onClick={() => void downloadWorkbook("sit")} busy={busy} disabled={!configured || projectId === null} title="Master + modules + status for SIT Cycle 2">
+                    SIT testcase workbook
+                  </Button>
+                  <Button icon={Download} onClick={() => void downloadWorkbook("uat")} busy={busy} disabled={!configured || projectId === null} title="Master + modules + status for UAT Cycle 1">
+                    UAT testcase workbook
+                  </Button>
+                  <Button
+                    icon={Download}
+                    variant="ghost"
+                    onClick={() => void downloadCases()}
+                    busy={busy}
+                    disabled={setupProblem !== null || scopedSets === 0}
+                    title="Flat Excel of the currently selected report scope"
+                  >
+                    Flat export
+                  </Button>
+                </>
               )}
               {data && !isMatrix && report && (
                 <Button icon={Link2} variant="secondary" onClick={() => setShareOpen(true)} disabled={!shareRequest}>
@@ -557,7 +705,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
             <p className="mt-2 text-xs text-slate-500 dark:text-zinc-400">
               {isMatrix
                 ? "Prod Testing report uses device × network results (same executive template: status, KPIs, board, PDF/Excel). Load cases and execute sessions in Prod Testing first."
-                : "Reports and Download test cases read Spira for the Settings release (SIT Cycle 2 when Testing cycle is SIT). PDF / Excel / share are on the report viewer after generate."}
+                : "Generate opens the executive viewer (PDF / Excel / share). SIT and UAT workbooks are multi-sheet packs from Spira — no step text."}
             </p>
             {scopeChanged && !busy && (
               <Notice tone="info" className="mt-4">

@@ -2,6 +2,7 @@ import {
   addSnapshot,
   defaultReportOptions,
   formatPct,
+  moduleHotspots,
   OUTCOME_LABEL,
   OUTCOMES,
   snapshotOf,
@@ -117,18 +118,21 @@ export function buildReportSummaryGrid(report: Report): (string | number)[][] {
   const blank: (string | number)[] = [];
   const row = (label: string, value: string | number = ""): (string | number)[] => [label, value];
   const section = (title: string): (string | number)[] => [title, ""];
+  const hotspots = moduleHotspots(report.modules);
+
   return [
     row("Report", report.title),
     row("Overall status", report.status.toUpperCase()),
     row("Status reason", report.statusReason),
     row("Project", `${report.projectName} (${report.projectId})`),
-    row("Cycle", report.environment),
+    row("Environment", report.environment || report.labels.name),
     row("In scope", report.scopedLabel),
     row("Baseline", report.baselineLabel),
     row("Prepared by", report.preparedBy),
     row("Go-live", report.goLive ?? ""),
     row("Read from Spira", when(report.generatedAt)),
     row("Executions", report.window.text ?? ""),
+    row("Source of truth", "Spira test runs for this build (not local Completed drafts)"),
     row("Counted as", "Test runs: each case once per platform it is planned on"),
     blank,
     section("Key figures"),
@@ -159,6 +163,13 @@ export function buildReportSummaryGrid(report: Report): (string | number)[][] {
         `${k.split.inScope[s] ?? 0} in scope · ${k.split.executed[s] ?? 0} executed · ${k.split.passed[s] ?? 0} passed · ${k.split.failed[s] ?? 0} failed`,
       ),
     ),
+    blank,
+    section("Module hotspots"),
+    ...(hotspots.length
+      ? hotspots.map((m) =>
+          row(m.name, `${m.outcomes.failed} failed · ${m.outcomes.blocked} blocked · ${formatPct(m.passPct)} pass · ${m.streams.join("/")}`),
+        )
+      : [row("None", "No modules with failed or blocked runs in this build")]),
     blank,
     section("Narrative"),
     row("Headline", report.narrative.headline),

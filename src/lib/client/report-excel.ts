@@ -150,7 +150,7 @@ function addSummarySheet(wb: Workbook, report: Report): void {
 
   sheet.mergeCells("A2:B2");
   const subtitle = sheet.getCell("A2");
-  subtitle.value = `${report.projectName} · ${report.environment} · ${report.scopedLabel}`;
+  subtitle.value = `${report.environment || report.labels.name} · ${report.projectName} · ${report.scopedLabel} · Spira live runs`;
   subtitle.font = { name: "Calibri", size: 11, color: { argb: "FF475569" } };
 
   sheet.getCell("A3").value = "Overall status";
@@ -177,7 +177,8 @@ function addSummarySheet(wb: Workbook, report: Report): void {
       r += 1;
       continue;
     }
-    const isSection = value === "" && ["Key figures", "By platform", "Narrative"].includes(String(label));
+    const isSection =
+      value === "" && ["Key figures", "By platform", "Module hotspots", "Narrative"].includes(String(label));
     const labelCell = sheet.getCell(r, 1);
     const valueCell = sheet.getCell(r, 2);
     labelCell.value = label;

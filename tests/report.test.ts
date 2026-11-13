@@ -16,6 +16,7 @@ import {
   folderFamily,
   initialReportOptions,
   levelOf,
+  moduleHotspots,
   moduleId,
   isApiRelatedDefect,
   isDoneStatus,
@@ -473,7 +474,9 @@ describe("report document", () => {
       "Defects captured today",
       "4d. Defect register: severity and priority",
       "Defects today",
-      "All-time defects",
+      "Failed",
+      "Module hotspots (failed + blocked)",
+      "Spira live runs",
       "Key risks and actions",
       "Open defects",
       "Page 4 / 4",
@@ -615,12 +618,26 @@ describe("report snapshots", () => {
   });
 });
 
+describe("module hotspots", () => {
+  it("ranks in-build modules by failed + blocked", () => {
+    const report = buildReport(input({ options: options({ environment: "SIT Cycle 2", phase: "Phase 1" }) }));
+    const hot = moduleHotspots(report.modules);
+    expect(hot.length).toBeGreaterThan(0);
+    expect(hot[0].name).toBe("Payments");
+    expect(hot[0].outcomes.failed + hot[0].outcomes.blocked).toBeGreaterThan(0);
+  });
+});
+
 describe("report Excel shaping", () => {
   it("builds a cover-style Summary grid with key sections", async () => {
     const { buildReportSummaryGrid, fitSheetColumns } = await import("@/lib/client/report");
     const grid = buildReportSummaryGrid(buildReport(input()));
     expect(grid[0]).toEqual(["Report", expect.any(String)]);
+    expect(grid.some((r) => r[0] === "Environment")).toBe(true);
+    expect(grid.some((r) => r[0] === "Source of truth")).toBe(true);
     expect(grid.some((r) => r[0] === "Key figures")).toBe(true);
+    expect(grid.some((r) => r[0] === "Module hotspots")).toBe(true);
+    expect(grid.some((r) => r[0] === "By platform")).toBe(true);
     expect(grid.some((r) => r[0] === "Narrative")).toBe(true);
     expect(grid.some((r) => r[0] === "Pass rate")).toBe(true);
 
