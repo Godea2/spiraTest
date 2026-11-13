@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { CircleCheck, ClipboardList, Download, Eye, FileChartColumn, GitCompareArrows, Grid3x3, Layers, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
+import { CircleCheck, ClipboardList, Download, Eye, FileChartColumn, GitCompareArrows, Grid3x3, Link2, NotebookPen, RefreshCw, Settings2, Target, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSettings } from "@/components/settings-context";
@@ -69,6 +69,7 @@ const STATUS_TONE: Record<RagStatus, "success" | "warning" | "danger"> = { green
 /** The build's name on the report and its choices. */
 const PHASE = "Phase 1";
 
+/** Visible report types on the hub. `plan` and `matrix` stay in the domain for shares / older saves. */
 function reportKinds(phase: string): { kind: ReportKind; icon: LucideIcon; title: string; hint?: string }[] {
   return [
     { kind: "planned", icon: ClipboardList, title: "Planned coverage", hint: "Inventory before execution — run KPIs zeroed" },
@@ -79,9 +80,11 @@ function reportKinds(phase: string): { kind: ReportKind; icon: LucideIcon; title
       title: `${phase}: vs total test plan`,
       hint: "Executive pack — build measured against the plan release",
     },
-    { kind: "plan", icon: Layers, title: "Total test plan", hint: "Full plan release as the reported build" },
-    { kind: "matrix", icon: Grid3x3, title: "Prod Testing coverage", hint: "OEM × carrier board from Prod Testing" },
   ];
+}
+
+function visibleReportKind(kind: ReportKind): ReportKind {
+  return kind === "plan" || kind === "matrix" ? "buildVsPlan" : kind;
 }
 
 function EnvironmentSwitcher({
@@ -123,16 +126,9 @@ function EnvironmentSwitcher({
 
 function KindPicker({ value, onChange, phase }: { value: ReportKind; onChange: (kind: ReportKind) => void; phase: string }) {
   return (
-    <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+    <div role="radiogroup" aria-label="Report" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {reportKinds(phase).map(({ kind, icon: Icon, title, hint }) => {
         const selected = value === kind;
-        const featured = kind === "planned" || kind === "buildVsPlan";
-        const featuredTone =
-          kind === "planned"
-            ? "bg-gradient-to-br from-slate-700 via-slate-800 to-slate-900 text-white shadow-lg shadow-slate-900/25 hover:-translate-y-0.5 hover:shadow-xl"
-            : "bg-gradient-to-br from-amber-500 via-orange-500 to-orange-600 text-white shadow-lg shadow-orange-500/30 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-orange-500/40";
-        const selectedRing =
-          kind === "planned" ? "ring-4 ring-slate-400/60 dark:ring-slate-300/40" : "ring-4 ring-orange-300/70 dark:ring-orange-400/50";
         return (
           <button
             key={kind}
@@ -142,24 +138,19 @@ function KindPicker({ value, onChange, phase }: { value: ReportKind; onChange: (
             onClick={() => onChange(kind)}
             className={clsx(
               "relative flex min-h-28 cursor-pointer flex-col justify-between gap-4 rounded-xl p-4 text-left transition focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:outline-none dark:focus-visible:ring-offset-zinc-900",
-              featured ? featuredTone : "well hover:border-slate-300 dark:hover:border-white/20",
-              selected && (featured ? selectedRing : "ring-2 ring-brand-500 dark:ring-brand-400"),
+              "well hover:border-slate-300 dark:hover:border-white/20",
+              selected && "border-slate-900/15 bg-slate-50 ring-2 ring-slate-900/80 dark:border-white/20 dark:bg-white/[0.06] dark:ring-white/70",
             )}
           >
-            <span
-              className={clsx(
-                "grid size-9 place-items-center rounded-lg",
-                featured ? "bg-white/20 ring-1 ring-white/30" : "bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10",
-              )}
-            >
+            <span className="grid size-9 place-items-center rounded-lg bg-white text-slate-500 ring-1 ring-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10">
               <Icon className="size-[18px]" aria-hidden />
             </span>
             <span className="flex flex-col gap-1">
               <span className="flex items-end justify-between gap-2">
-                <span className="text-[15px] leading-snug font-semibold">{title}</span>
-                {selected && <CircleCheck className={clsx("size-5 shrink-0", featured ? "text-white" : "text-brand-600 dark:text-brand-400")} aria-hidden />}
+                <span className="text-[15px] leading-snug font-semibold text-slate-900 dark:text-white">{title}</span>
+                {selected && <CircleCheck className="size-5 shrink-0 text-slate-800 dark:text-zinc-100" aria-hidden />}
               </span>
-              {hint && <span className={clsx("text-[12px] leading-snug", featured ? "text-white/80" : "text-slate-500 dark:text-zinc-400")}>{hint}</span>}
+              {hint && <span className="text-[12px] leading-snug text-slate-500 dark:text-zinc-400">{hint}</span>}
             </span>
           </button>
         );
@@ -322,7 +313,7 @@ export function ReportWorkspace({ share }: { share: string | null }) {
     return withDefectBucket(
       {
         ...auto,
-        kind,
+        kind: visibleReportKind(kind),
         title,
         preparedBy,
         goLive,
